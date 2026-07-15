@@ -1,3 +1,10 @@
+import {
+  clearSessionToken,
+  createAuthorizedFetch,
+  readSessionToken,
+  saveSessionToken,
+} from "./auth-client.mjs";
+
 let currentReport = null;
 let currentMabangTask = null;
 let currentMabangView = "orders";
@@ -6,12 +13,15 @@ let lastRunMode = "analyze";
 let scheduledFilterSequence = 0;
 let currentRunNowTaskId = null;
 let scheduledPollTimer = null;
+let applicationInitialized = false;
+let authenticationEnabled = false;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
 const resultsEl = $("results");
 const emptyStateEl = $("workspaceEmptyState");
 const MAX_REFERENCE_IMAGE_BYTES = 2 * 1024 * 1024;
+const TRANSPARENT_PIXEL = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";
 const RECENT_TASKS_KEY = "commerce-ops-recent-tasks";
 const MABANG_USERNAME_KEY = "commerce-ops-mabang-username";
 const MABANG_PASSWORD_KEY = "commerce-ops-mabang-password";
@@ -39,6 +49,89 @@ const MABANG_ORDER_FILTER_OPERATORS = [
 const MABANG_ORDER_FILTER_PREFERRED_FIELDS = ["平台", "店铺名", "店长", "订单状态", "仓库"];
 let mabangOrderFilterSequence = 0;
 let lastFocusedElement = null;
+
+function setAuthError(message = "") {
+  const error = $("authError");
+  error.textContent = message;
+  error.hidden = !message;
+}
+
+function showAuthGate(message = "") {
+  if (scheduledPollTimer) {
+    clearInterval(scheduledPollTimer);
+    scheduledPollTimer = null;
+  }
+  $("appShell").hidden = true;
+  $("authGate").hidden = false;
+  $("logoutBtn").hidden = true;
+  setAuthError(message);
+  $("authToken").value = "";
+  requestAnimationFrame(() => $("authToken").focus());
+}
+
+function initializeApplication() {
+  if (applicationInitialized) return;
+  applicationInitialized = true;
+  updatePlatformDetection();
+  renderRecentTasks();
+  setWorkflowStep(1, 0);
+  const rememberedMabangUsername = localStorage.getItem(MABANG_USERNAME_KEY) || "";
+  const rememberedMabangPassword = localStorage.getItem(MABANG_PASSWORD_KEY) || "";
+  $("mabangUsername").value = rememberedMabangUsername;
+  $("mabangPassword").value = rememberedMabangPassword;
+  $("mabangRememberCredentials").checked = Boolean(rememberedMabangUsername && rememberedMabangPassword);
+  updateForgetCredentialsButton();
+  $("scheduledTaskMonthDay").innerHTML = Array.from({ length: 31 }, (_, index) => `<option value="${index + 1}">${index + 1} 日</option>`).join("") + '<option value="last">每月最后一天</option>';
+  updateScheduledFormVisibility();
+  setOrderDatePreset("7");
+  switchMabangView("orders");
+  switchPage(location.hash.slice(1) || "link");
+}
+
+function showApplication() {
+  $("authGate").hidden = true;
+  $("appShell").hidden = false;
+  $("logoutBtn").hidden = !authenticationEnabled;
+  setAuthError();
+  initializeApplication();
+  if (applicationInitialized && currentMabangView === "scheduled" && !scheduledPollTimer) {
+    switchMabangView("scheduled");
+  }
+}
+
+function handleUnauthorized() {
+  if (!authenticationEnabled) return;
+  clearSessionToken();
+  showAuthGate("访问已失效，请重新输入访问密钥。");
+}
+
+const authorizedFetch = createAuthorizedFetch({ onUnauthorized: handleUnauthorized });
+
+function authHeaders(token) {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function loadAuthenticationStatus() {
+  const token = readSessionToken();
+  const response = await fetch("/api/auth/status", { headers: authHeaders(token) });
+  if (!response.ok) throw new Error("无法读取认证状态");
+  return response.json();
+}
+
+async function initializeAccess() {
+  try {
+    const status = await loadAuthenticationStatus();
+    authenticationEnabled = Boolean(status.authenticationEnabled);
+    if (!authenticationEnabled || status.authenticated) {
+      showApplication();
+      return;
+    }
+    clearSessionToken();
+    showAuthGate();
+  } catch {
+    showAuthGate("无法连接主服务，请确认服务已经启动。");
+  }
+}
 
 const PAGE_META = {
   link: {
@@ -191,7 +284,7 @@ function hideModal() {
 }
 
 async function postJson(url, body) {
-  const response = await fetch(url, {
+  const response = await authorizedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -202,7 +295,7 @@ async function postJson(url, body) {
 }
 
 async function apiJson(url, { method = "GET", body } = {}) {
-  const response = await fetch(url, {
+  const response = await authorizedFetch(url, {
     method,
     headers: body === undefined ? undefined : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -222,6 +315,27 @@ function esc(value) {
 
 function imageProxy(url) {
   return url ? `/api/image?url=${encodeURIComponent(url)}` : "";
+}
+
+function protectedImageAttributes(url) {
+  return `src="${TRANSPARENT_PIXEL}" data-protected-image="${esc(imageProxy(url))}"`;
+}
+
+function hydrateProtectedImages(root = document) {
+  root.querySelectorAll("img[data-protected-image]").forEach(async (image) => {
+    const proxyUrl = image.dataset.protectedImage;
+    image.removeAttribute("data-protected-image");
+    try {
+      const response = await authorizedFetch(proxyUrl);
+      if (!response.ok) throw new Error("图片加载失败");
+      const objectUrl = URL.createObjectURL(await response.blob());
+      image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+      image.src = objectUrl;
+    } catch {
+      image.removeAttribute("src");
+      image.classList.add("image-unavailable");
+    }
+  });
 }
 
 function readFileAsDataUrl(file) {
@@ -248,7 +362,7 @@ async function getTopImagePayload() {
 
 function renderSkuImage(url) {
   if (!url) return "-";
-  return `<a href="${imageProxy(url)}" target="_blank" rel="noreferrer"><img class="sku-thumb" src="${imageProxy(url)}" alt="SKU 图" width="54" height="54" loading="lazy"></a>`;
+  return `<a href="${esc(url)}" target="_blank" rel="noreferrer"><img class="sku-thumb" ${protectedImageAttributes(url)} alt="SKU 图" width="54" height="54" loading="lazy"></a>`;
 }
 
 function platformName(value) {
@@ -429,7 +543,7 @@ function renderProducts(products, modules) {
     <section class="product-grid">
       ${products.map((product, index) => `
         <article class="product-card">
-          ${product.mainImage ? `<img src="${imageProxy(product.mainImage)}" alt="${currentReport?.discovery ? `TOP ${index + 1} 主图` : index === 0 ? "我的主图" : "竞品主图"}" width="640" height="640" loading="lazy">` : ""}
+          ${product.mainImage ? `<img ${protectedImageAttributes(product.mainImage)} alt="${currentReport?.discovery ? `TOP ${index + 1} 主图` : index === 0 ? "我的主图" : "竞品主图"}" width="640" height="640" loading="lazy">` : ""}
           <div class="product-body">
             <h3>${currentReport?.discovery ? `TOP ${index + 1}` : index === 0 ? "我的链接" : `竞品 ${index}`}</h3>
             <div><strong>平台：</strong>${esc(platformName(product.platform))}</div>
@@ -718,7 +832,7 @@ function getMabangOrderFilters() {
 async function loadMabangFieldCatalog(kind) {
   const view = kind === "inventory" ? "inventory" : "orders";
   if (!mabangFieldCatalog[view].length) {
-    const response = await fetch(`/api/mabang-data/fields?kind=${view}`);
+    const response = await authorizedFetch(`/api/mabang-data/fields?kind=${view}`);
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || "无法加载马帮字段列表。");
     mabangFieldCatalog[view] = data.columns || [];
@@ -859,7 +973,7 @@ async function fetchMabangResult(page = 1, { useDraft = false } = {}) {
     query,
     field,
   });
-  const response = await fetch(`/api/mabang-data/result?${params}`);
+  const response = await authorizedFetch(`/api/mabang-data/result?${params}`);
   const data = await response.json();
   if (!response.ok || data.ok === false) throw new Error(data.error || "无法读取采集结果。");
   if (requestSeq !== mabangResultRequestSeq || currentMabangTask?.taskId !== taskId) return;
@@ -1024,7 +1138,7 @@ function renderScheduledRuns() {
           <td>${esc(run.notificationStatus || "-")}</td><td>${esc(run.errorMessage || "-")}</td>
           <td><div class="table-actions">
             <button type="button" data-run-action="detail" data-run-id="${esc(run.id)}">查看详情</button>
-            ${run.exportFileId && run.fileStatus === "available" ? `<a href="/api/mabang/export-files/${encodeURIComponent(run.exportFileId)}/download">下载</a>` : ""}
+            ${run.exportFileId && run.fileStatus === "available" ? `<button type="button" data-run-action="download" data-run-id="${esc(run.id)}" data-file-id="${esc(run.exportFileId)}">下载</button>` : ""}
             ${["failed", "partial_success", "skipped"].includes(run.status) ? `<button type="button" data-run-action="retry" data-run-id="${esc(run.id)}">重新执行</button>` : ""}
           </div></td>
         </tr>`;
@@ -1517,6 +1631,25 @@ async function showRunDetails(runId) {
 async function handleScheduledRunAction(button) {
   const id = button.dataset.runId;
   if (button.dataset.runAction === "detail") return showRunDetails(id);
+  if (button.dataset.runAction === "download") {
+    const fileId = button.dataset.fileId;
+    const response = await authorizedFetch(`/api/mabang/export-files/${encodeURIComponent(fileId)}/download`);
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || "文件下载失败。");
+    }
+    const disposition = response.headers.get("content-disposition") || "";
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "mabang-export.xlsx";
+    const objectUrl = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+    return;
+  }
   if (button.dataset.runAction === "retry") {
     const result = await apiJson(`/api/mabang/scheduled-runs/${encodeURIComponent(id)}/retry`, { method: "POST", body: {} });
     await refreshScheduledData({ quiet: true });
@@ -1622,6 +1755,7 @@ function renderReport(report) {
     }
     if (report.mainImageAnalysis) sections.push(renderMainImageAnalysis(report.mainImageAnalysis));
     resultsEl.innerHTML = sections.join("");
+    hydrateProtectedImages(resultsEl);
     return;
   }
   const sections = [
@@ -1635,6 +1769,7 @@ function renderReport(report) {
   }
   if (report.mainImageAnalysis) sections.push(renderMainImageAnalysis(report.mainImageAnalysis));
   resultsEl.innerHTML = sections.join("");
+  hydrateProtectedImages(resultsEl);
 }
 
 function plainTextFromHtml(html) {
@@ -1962,7 +2097,7 @@ async function exportMabangData() {
   try {
     setMabangBusy(true);
     setMabangTaskState("正在生成 Excel", "正在整理当前采集结果，请稍候。", "loading");
-    const response = await fetch("/api/mabang-data/export", {
+    const response = await authorizedFetch("/api/mabang-data/export", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2194,17 +2329,35 @@ $("topImage").addEventListener("change", async () => {
   }
 });
 
-updatePlatformDetection();
-renderRecentTasks();
-setWorkflowStep(1, 0);
-const rememberedMabangUsername = localStorage.getItem(MABANG_USERNAME_KEY) || "";
-const rememberedMabangPassword = localStorage.getItem(MABANG_PASSWORD_KEY) || "";
-$("mabangUsername").value = rememberedMabangUsername;
-$("mabangPassword").value = rememberedMabangPassword;
-$("mabangRememberCredentials").checked = Boolean(rememberedMabangUsername && rememberedMabangPassword);
-updateForgetCredentialsButton();
-$("scheduledTaskMonthDay").innerHTML = Array.from({ length: 31 }, (_, index) => `<option value="${index + 1}">${index + 1} 日</option>`).join("") + '<option value="last">每月最后一天</option>';
-updateScheduledFormVisibility();
-setOrderDatePreset("7");
-switchMabangView("orders");
-switchPage(location.hash.slice(1) || "link");
+$("authForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const token = $("authToken").value.trim();
+  const submit = $("authSubmit");
+  setAuthError();
+  submit.disabled = true;
+  try {
+    const response = await fetch("/api/auth/verify", {
+      method: "POST",
+      headers: authHeaders(token),
+    });
+    if (!response.ok) throw new Error("访问密钥错误");
+    const result = await response.json().catch(() => ({}));
+    if (!result.authenticated) throw new Error("访问密钥错误");
+    saveSessionToken(token);
+    authenticationEnabled = true;
+    showApplication();
+  } catch {
+    clearSessionToken();
+    setAuthError("访问密钥错误");
+    $("authToken").select();
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+$("logoutBtn").addEventListener("click", () => {
+  clearSessionToken();
+  showAuthGate();
+});
+
+initializeAccess();

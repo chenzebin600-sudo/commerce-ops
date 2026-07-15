@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-for (const file of ["public/app.js", "server.mjs", "scheduler.mjs"]) {
+for (const file of ["public/app.js", "public/auth-client.mjs", "lib/app-access.mjs", "server.mjs", "scheduler.mjs"]) {
   const result = spawnSync(process.execPath, ["--check", file], { cwd: rootDir, encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr || `${file} syntax check failed`);
 }

@@ -6,6 +6,14 @@ import os from "node:os";
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import {
+  appStartupMessages,
+  authenticationApiResponse,
+  createAccessPolicy,
+  isLoopbackBindHost,
+  protectedApiAccessResponse,
+  resolveAppConfig,
+} from "./lib/app-access.mjs";
 import { loadLocalEnv } from "./lib/env.mjs";
 import { createMabangWorkerRunner } from "./lib/mabang-worker-runner.mjs";
 import { openSchedulerDatabase } from "./lib/mabang-scheduler/db.mjs";
@@ -15,8 +23,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 loadLocalEnv(__dirname);
 
-const port = Number(process.env.PORT || 3000);
-const host = process.env.HOST || "0.0.0.0";
+const appConfig = resolveAppConfig(process.env);
+const { port, host } = appConfig;
+const accessPolicy = createAccessPolicy(appConfig);
 const chromePort = Number(process.env.CHROME_DEBUG_PORT || 9222);
 const adAnalyzerPort = Number(process.env.AD_ANALYZER_PORT || 4173);
 const adAnalyzerDir = "D:\\codex\\Lazada-Sponsored Max analysis\\webapp";
@@ -24,6 +33,7 @@ const adAnalyzerDir = "D:\\codex\\Lazada-Sponsored Max analysis\\webapp";
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".png": "image/png",
@@ -230,7 +240,7 @@ async function ensureAdAnalyzerServer() {
     env: {
       ...process.env,
       PORT: String(adAnalyzerPort),
-      HOST: "0.0.0.0",
+      HOST: "127.0.0.1",
     },
     detached: true,
     stdio: "ignore",
@@ -1837,6 +1847,16 @@ async function callDeepSeekMainImage({ model, report }) {
 }
 
 async function handleApi(req, res, url) {
+  const authResponse = authenticationApiResponse({
+    method: req.method,
+    pathname: url.pathname,
+    headers: req.headers,
+  }, accessPolicy);
+  if (authResponse) return json(res, authResponse.status, authResponse.body);
+
+  const accessResponse = protectedApiAccessResponse(req.headers, accessPolicy);
+  if (accessResponse) return json(res, accessResponse.status, accessResponse.body);
+
   const schedulerHandled = await handleMabangSchedulerApi(req, res, url);
   if (schedulerHandled) return true;
 
@@ -2208,8 +2228,10 @@ function getLanUrls() {
 }
 
 server.listen(port, host, () => {
-  console.log(`Marketplace competitor tool: http://127.0.0.1:${port}`);
-  for (const lanUrl of getLanUrls()) console.log(`LAN: ${lanUrl}`);
+  for (const message of appStartupMessages(appConfig, accessPolicy)) console.log(message);
+  if (!isLoopbackBindHost(host)) {
+    for (const lanUrl of getLanUrls()) console.log(`LAN: ${lanUrl}`);
+  }
   ensureAdAnalyzerServer().then((status) => {
     if (status.ok) console.log(`Ad analyzer: http://127.0.0.1:${adAnalyzerPort}`);
     else console.warn(`Ad analyzer unavailable: ${status.error}`);

@@ -8,8 +8,22 @@
     <link rel="stylesheet" href="/styles.css?v=20260715-mabang-inventory-scheduler-1" />
   </head>
   <body>
+    <section id="authGate" class="auth-gate" aria-labelledby="authTitle" hidden>
+      <form id="authForm" class="auth-panel">
+        <span class="auth-brand" aria-hidden="true">CO</span>
+        <span class="page-context">COMMERCE OPS ACCESS</span>
+        <h1 id="authTitle">访问验证</h1>
+        <p>请输入访问密钥后继续。</p>
+        <label class="field-block auth-field">
+          <span>访问密钥</span>
+          <input id="authToken" type="password" autocomplete="current-password" required />
+        </label>
+        <p id="authError" class="field-error" role="alert" hidden></p>
+        <button id="authSubmit" type="submit">进入系统</button>
+      </form>
+    </section>
     <a class="skip-link" href="#workspace">跳到主要内容</a>
-    <main class="app-layout">
+    <main id="appShell" class="app-layout" hidden>
       <aside class="sidebar" aria-label="主导航">
         <div class="sidebar-brand">
           <span class="brand-mark" aria-hidden="true">CO</span>
@@ -69,6 +83,7 @@
               <strong id="systemStatus">Lazada / Shopee / TikTok Shop</strong>
             </div>
             <button id="openChromeBtn" class="button-secondary" type="button">验证浏览器</button>
+            <button id="logoutBtn" class="button-tertiary" type="button" hidden>退出系统</button>
           </div>
         </header>
 
@@ -649,6 +664,6 @@
         <div class="dialog-actions"><button class="button-secondary" type="button" data-close-dialog="runNowConfirmDialog">取消</button><button id="confirmRunNowBtn" type="button">确认执行</button></div>
       </dialog>
     </main>
-    <script src="/app.js?v=20260715-mabang-inventory-scheduler-1"></script>
+    <script type="module" src="/app.js?v=20260715-access-auth-1"></script>
   </body>
 </html>
