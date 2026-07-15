@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Lazada、Shopee、TikTok Shop 竞品分析、关键词研究、订单采集与广告分析工作台" />
+    <title>跨境电商 AI 运营工作台</title>
+    <link rel="stylesheet" href="/styles.css?v=20260715-mabang-inventory-scheduler-1" />
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">跳到主要内容</a>
+    <main class="app-layout">
+      <aside class="sidebar" aria-label="主导航">
+        <div class="sidebar-brand">
+          <span class="brand-mark" aria-hidden="true">CO</span>
+          <div class="brand-copy">
+            <strong>Commerce Ops</strong>
+            <span>跨境运营工作台</span>
+          </div>
+        </div>
+
+        <nav class="page-tabs" aria-label="功能页面">
+          <div class="nav-group">
+            <span class="nav-group-label">竞品研究</span>
+            <button class="tab-button active" type="button" data-page="link" aria-controls="page-link" aria-current="page">
+              <span class="nav-monogram" aria-hidden="true">L</span>
+              <span>链接维度竞品分析</span>
+            </button>
+            <button class="tab-button" type="button" data-page="keyword" aria-controls="page-keyword">
+              <span class="nav-monogram" aria-hidden="true">K</span>
+              <span>搜索关键词竞品分析</span>
+            </button>
+          </div>
+          <div class="nav-group">
+            <span class="nav-group-label">运营数据</span>
+            <button class="tab-button" type="button" data-page="mabang" aria-controls="page-mabang">
+              <span class="nav-monogram" aria-hidden="true">M</span>
+              <span>马帮数据</span>
+            </button>
+            <button class="tab-button" type="button" data-page="ads" aria-controls="page-ads">
+              <span class="nav-monogram" aria-hidden="true">A</span>
+              <span>Lazada 广告分析</span>
+            </button>
+          </div>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="server-state">
+            <span class="state-indicator" aria-hidden="true"></span>
+            <div>
+              <strong>主服务器在线</strong>
+              <span>本机 Chrome 验证模式</span>
+            </div>
+          </div>
+          <button id="sidebarToggleBtn" class="sidebar-toggle" type="button" aria-expanded="true">收起导航</button>
+        </div>
+      </aside>
+
+      <div id="workspace" class="workspace">
+        <header class="topbar">
+          <div class="page-heading">
+            <span class="page-context">AI COMMERCE OPERATIONS</span>
+            <h1 id="pageTitle">链接维度竞品分析</h1>
+            <p id="pageSubtitle">抓取跨平台商品数据，完成 SKU 智能匹配、价格对比和主图分析。</p>
+          </div>
+          <div class="topbar-actions">
+            <div class="source-state" aria-label="数据源状态">
+              <span class="source-state-label">数据源</span>
+              <strong id="systemStatus">Lazada / Shopee / TikTok Shop</strong>
+            </div>
+            <button id="openChromeBtn" class="button-secondary" type="button">验证浏览器</button>
+          </div>
+        </header>
+
+        <div id="status" class="global-status" role="status" aria-live="polite">等待任务</div>
+
+        <section id="page-link" class="page-section active" aria-labelledby="pageTitle">
+          <ol class="workflow-steps" aria-label="竞品分析流程">
+            <li class="workflow-step active" data-workflow-step="1"><span>1</span><strong>输入链接</strong><small>识别平台与商品</small></li>
+            <li class="workflow-step" data-workflow-step="2"><span>2</span><strong>采集数据</strong><small>读取商品和 SKU</small></li>
+            <li class="workflow-step" data-workflow-step="3"><span>3</span><strong>AI 分析</strong><small>翻译、匹配与结论</small></li>
+            <li class="workflow-step" data-workflow-step="4"><span>4</span><strong>导出结果</strong><small>Excel 与主图建议</small></li>
+          </ol>
+
+          <section class="panel input-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>新建链接分析任务</h2>
+                <p>至少填写一个商品链接即可运行。系统会自动识别平台。</p>
+              </div>
+              <div id="platformDetection" class="platform-detection" aria-live="polite">
+                <span class="platform-tag neutral">等待链接</span>
+              </div>
+            </div>
+
+            <div class="link-form-grid">
+              <label class="field-block">
+                <span>我的商品链接 <small>可选</small></span>
+                <input id="myUrl" name="myUrl" type="url" inputmode="url" autocomplete="off" aria-describedby="myUrlHelp linkValidation" placeholder="粘贴 Lazada、Shopee 或 TikTok Shop 商品链接…" />
+                <small id="myUrlHelp" class="field-help">用于建立基准商品。只分析竞品时可以留空。</small>
+              </label>
+              <label class="field-block">
+                <span>竞品商品链接 <small>可选</small></span>
+                <textarea id="competitorUrls" name="competitorUrls" rows="4" autocomplete="off" aria-describedby="competitorUrlsHelp linkValidation" placeholder="每行一个竞品链接，支持 Lazada / Shopee / TikTok Shop…"></textarea>
+                <small id="competitorUrlsHelp" class="field-help">支持一个或多个链接，每行填写一个。</small>
+              </label>
+            </div>
+            <p id="linkValidation" class="field-error" role="alert" hidden></p>
+
+            <details class="advanced-settings">
+              <summary>模型设置</summary>
+              <label class="field-block compact-field">
+                <span>DeepSeek 模型</span>
+                <input id="model" name="model" autocomplete="off" value="deepseek-chat" />
+              </label>
+            </details>
+
+            <div class="action-bar">
+              <div class="secondary-actions">
+                <button id="fetchOnlyBtn" class="button-secondary" type="button">只获取信息</button>
+                <button id="mainImageBtn" class="button-tertiary" type="button" disabled>分析主图</button>
+                <button id="exportExcelBtn" class="button-tertiary" type="button" disabled>导出 Excel</button>
+              </div>
+              <button id="extractBtn" type="button">获取信息并分析</button>
+            </div>
+          </section>
+
+          <section id="workspaceEmptyState" class="empty-state" aria-label="结果区域">
+            <div class="empty-state-copy">
+              <span class="empty-state-index">RESULT</span>
+              <h2>分析结果会显示在这里</h2>
+              <p>完成采集后，可查看商品基础信息、SKU 横向价格对比、属性差异和 AI 结论。</p>
+            </div>
+            <div class="recent-tasks">
+              <div class="recent-tasks-head">
+                <h3>最近任务</h3>
+                <span>保存在当前浏览器</span>
+              </div>
+              <div id="recentTasksList" class="recent-tasks-list">
+                <p class="muted">暂无最近任务</p>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section id="page-keyword" class="page-section" hidden>
+          <section class="panel keyword-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>关键词销量 TOP5 分析</h2>
+                <p>输入关键词、国家和站点，也可以上传产品图片和描述提高匹配精度。</p>
+              </div>
+            </div>
+            <div class="keyword-grid">
+              <label class="field-block">
+                <span>关键词</span>
+                <input id="topKeyword" name="topKeyword" autocomplete="off" placeholder="例如：portable monitor / power bank / fan…" />
+              </label>
+              <label class="field-block">
+                <span>国家</span>
+                <select id="topCountry" name="topCountry" autocomplete="off">
+                  <option value="ph">菲律宾 PH</option>
+                  <option value="th">泰国 TH</option>
+                  <option value="my">马来西亚 MY</option>
+                  <option value="sg">新加坡 SG</option>
+                  <option value="vn">越南 VN</option>
+                  <option value="id">印度尼西亚 ID</option>
+                </select>
+              </label>
+              <label class="field-block">
+                <span>站点</span>
+                <select id="topSite" name="topSite" autocomplete="off">
+                  <option value="lazada">Lazada</option>
+                  <option value="shopee">Shopee</option>
+                  <option value="tiktok">TikTok Shop</option>
+                </select>
+              </label>
+            </div>
+            <div class="reference-grid">
+              <label class="field-block">
+                <span>产品图片 <small>可选，最大 2MB</small></span>
+                <input id="topImage" name="topImage" type="file" accept="image/*" />
+              </label>
+              <label class="field-block">
+                <span>产品描述 <small>可选</small></span>
+                <textarea id="topDescription" name="topDescription" rows="3" autocomplete="off" placeholder="例如：22 inch IPS gaming monitor, 100Hz, frameless…"></textarea>
+              </label>
+            </div>
+            <div id="topImagePreview" class="image-preview" hidden></div>
+            <div class="action-bar single-action">
+              <span class="action-note">系统将收集销量靠前的 5 个商品并调用 DeepSeek 分析。</span>
+              <button id="discoverTopBtn" type="button">收集 TOP5 并分析</button>
+            </div>
+          </section>
+        </section>
+
+        <section id="page-mabang" class="page-section" hidden>
+          <section class="panel mabang-panel">
+            <div class="panel-heading mabang-heading">
+              <div>
+                <h2>马帮 ERP 数据中心</h2>
+                <p>使用你的马帮账号获取订单或库存数据，结果可直接预览并导出 Excel。</p>
+              </div>
+              <div class="segmented-control mabang-segmented-control" role="tablist" aria-label="马帮数据类型">
+                <button class="mabang-view-tab active" type="button" role="tab" data-mabang-view="orders" aria-selected="true" aria-controls="mabangOrdersPanel">订单信息</button>
+                <button class="mabang-view-tab" type="button" role="tab" data-mabang-view="inventory" aria-selected="false" aria-controls="mabangInventoryPanel">库存信息</button>
+                <button class="mabang-view-tab" type="button" role="tab" data-mabang-view="scheduled" aria-selected="false" aria-controls="mabangScheduledPanel">定时任务</button>
+              </div>
+            </div>
+
+            <div id="mabangCredentialSection" class="credential-section" aria-labelledby="mabangCredentialTitle">
+              <div class="section-title-row">
+                <div>
+                  <h3 id="mabangCredentialTitle">账号验证</h3>
+                  <p>默认仅用于本次采集；启用“记住账号和密码”后，会保存在当前浏览器。</p>
+                </div>
+                <span id="mabangLoginState" class="status-badge neutral">尚未验证</span>
+              </div>
+              <div class="credential-grid">
+                <label class="field-block">
+                  <span>马帮账号</span>
+                  <input id="mabangUsername" name="mabangUsername" autocomplete="username" placeholder="请输入马帮登录账号" />
+                </label>
+                <label class="field-block">
+                  <span>马帮密码</span>
+                  <span class="password-field">
+                    <input id="mabangPassword" name="mabangPassword" type="password" autocomplete="current-password" placeholder="请输入马帮登录密码" />
+                    <button id="mabangPasswordToggle" class="icon-text-button" type="button" aria-pressed="false">显示</button>
+                  </span>
+                </label>
+                <button id="mabangTestLoginBtn" class="button-secondary credential-action" type="button">测试登录</button>
+              </div>
+              <div class="credential-preference-row">
+                <label class="check-field">
+                  <input id="mabangRememberCredentials" type="checkbox" />
+                  <span>在这台浏览器记住账号和密码</span>
+                </label>
+                <button id="mabangForgetCredentialsBtn" class="text-action" type="button">清除已保存凭证</button>
+              </div>
+              <p class="credential-note">仅建议在个人专用电脑启用。密码会保存在此浏览器的本地数据中，不会发送到本项目的文件或日志。</p>
+            </div>
+
+            <div id="mabangOrdersPanel" class="mabang-view-panel" role="tabpanel">
+              <div class="section-title-row compact">
+                <div>
+                  <h3>订单信息获取</h3>
+                  <p>按付款日期查询订单。单次日期范围最多 93 天。</p>
+                </div>
+              </div>
+              <div class="mabang-filter-grid">
+                <label class="field-block">
+                  <span>付款日期开始 <small>必选</small></span>
+                  <input id="mabangOrderStartDate" name="mabangOrderStartDate" type="date" autocomplete="off" required />
+                </label>
+                <label class="field-block">
+                  <span>付款日期结束 <small>必选</small></span>
+                  <input id="mabangOrderEndDate" name="mabangOrderEndDate" type="date" autocomplete="off" required />
+                </label>
+                <button id="mabangOrderFetchBtn" type="button">获取订单信息</button>
+              </div>
+              <div class="date-presets" role="group" aria-label="快捷日期范围">
+                <span>快捷日期</span>
+                <button class="date-preset-button" type="button" data-date-preset="today">今天</button>
+                <button class="date-preset-button" type="button" data-date-preset="yesterday">昨天</button>
+                <button class="date-preset-button" type="button" data-date-preset="7">近 7 天</button>
+                <button class="date-preset-button" type="button" data-date-preset="14">近 14 天</button>
+                <button class="date-preset-button" type="button" data-date-preset="30">近 30 天</button>
+              </div>
+              <div class="order-filter-builder" aria-labelledby="mabangOrderFilterTitle">
+                <div class="order-filter-builder-head">
+                  <div>
+                    <div class="order-filter-title-row">
+                      <strong id="mabangOrderFilterTitle">其它筛选条件</strong>
+                      <span id="mabangOrderFilterFieldCount" class="field-count-badge">正在加载字段</span>
+                    </div>
+                    <p>可按需添加多个字段，采集结果必须同时满足全部条件。</p>
+                  </div>
+                  <button id="mabangAddOrderFilterBtn" class="button-secondary" type="button" disabled>添加筛选字段</button>
+                </div>
+                <div id="mabangOrderFilterList" class="order-filter-list"></div>
+                <p id="mabangOrderFilterEmpty" class="order-filter-empty">未添加其它筛选条件，将只按付款日期获取订单。</p>
+              </div>
+            </div>
+
+            <div id="mabangInventoryPanel" class="mabang-view-panel" role="tabpanel" hidden>
+              <div class="section-title-row compact">
+                <div>
+                  <h3>库存信息获取</h3>
+                  <p>获取当前账号有权限查看的完整库存明细和库存汇总。</p>
+                </div>
+              </div>
+              <div class="inventory-action-row">
+                <p class="action-note">库存数据可能较多，采集时间取决于马帮当前数据量。</p>
+                <button id="mabangInventoryFetchBtn" type="button">获取库存信息</button>
+              </div>
+            </div>
+
+            <div id="mabangScheduledPanel" class="mabang-view-panel scheduled-panel" role="tabpanel" hidden>
+              <div class="scheduled-toolbar">
+                <div>
+                  <div class="scheduled-title-line">
+                    <h3>马帮数据定时导出</h3>
+                    <span id="schedulerStatusBadge" class="status-badge neutral">正在检查调度器</span>
+                  </div>
+                  <p>后台按计划采集订单或库存、生成 Excel，并发送钉钉执行通知。</p>
+                </div>
+                <div class="scheduled-actions">
+                  <button id="newScheduledTaskBtn" type="button">新建定时任务</button>
+                  <button id="manageMabangAccountsBtn" class="button-secondary" type="button">马帮账号配置</button>
+                  <button id="manageDingtalkBtn" class="button-secondary" type="button">钉钉机器人设置</button>
+                  <button id="toggleScheduledRunsBtn" class="button-tertiary" type="button">执行记录</button>
+                  <button id="refreshScheduledBtn" class="button-tertiary" type="button">刷新任务状态</button>
+                </div>
+              </div>
+
+              <div id="scheduledTaskSummary" class="mabang-summary-grid scheduled-summary"></div>
+
+              <section id="scheduledTasksView" aria-labelledby="scheduledTasksTitle">
+                <div class="section-title-row compact">
+                  <div>
+                    <h3 id="scheduledTasksTitle">任务列表</h3>
+                    <p id="scheduledTasksHint">暂无定时任务</p>
+                  </div>
+                </div>
+                <div id="scheduledTasksTable" class="table-wrap scheduled-table-wrap"></div>
+              </section>
+
+              <section id="scheduledRunsView" aria-labelledby="scheduledRunsTitle" hidden>
+                <div class="section-title-row compact scheduled-run-heading">
+                  <div>
+                    <h3 id="scheduledRunsTitle">执行记录</h3>
+                    <p id="scheduledRunsHint">查看后台执行结果、文件和错误摘要。</p>
+                  </div>
+                  <label class="field-block compact-field">
+                    <span>状态</span>
+                    <select id="scheduledRunStatusFilter" autocomplete="off">
+                      <option value="">全部状态</option>
+                      <option value="pending">等待执行</option>
+                      <option value="running">执行中</option>
+                      <option value="success">成功</option>
+                      <option value="partial_success">部分成功</option>
+                      <option value="failed">失败</option>
+                      <option value="skipped">已跳过</option>
+                      <option value="cancelled">已取消</option>
+                    </select>
+                  </label>
+                </div>
+                <div id="scheduledRunsTable" class="table-wrap scheduled-table-wrap"></div>
+              </section>
+            </div>
+
+            <div id="mabangTaskState" class="mabang-task-state" aria-live="polite">
+              <span class="task-state-dot" aria-hidden="true"></span>
+              <div>
+                <strong>等待开始</strong>
+                <p>选择数据类型并填写账号密码后开始采集。</p>
+              </div>
+            </div>
+          </section>
+
+          <section id="mabangResultPanel" class="panel mabang-result-panel" hidden>
+            <div class="result-toolbar">
+              <div>
+                <span class="page-context">MABANG DATA</span>
+                <h2 id="mabangResultTitle">采集结果</h2>
+                <p id="mabangResultSummary">暂无数据</p>
+              </div>
+              <div class="result-actions">
+                <button id="mabangClearFilterBtn" class="button-tertiary" type="button" disabled>清除筛选</button>
+                <button id="mabangExportBtn" class="button-secondary" type="button" disabled>导出当前结果</button>
+              </div>
+            </div>
+            <div id="mabangSummaryCards" class="mabang-summary-grid"></div>
+            <div class="data-toolbar">
+              <label class="field-block mabang-result-field">
+                <span id="mabangFilterFieldLabel">筛选字段</span>
+                <select id="mabangFilterField" autocomplete="off">
+                  <option value="__all__">全部字段</option>
+                </select>
+              </label>
+              <label class="field-block">
+                <span>筛选关键词</span>
+                <input id="mabangResultQuery" type="search" autocomplete="off" placeholder="订单号、SKU、店铺、仓库…" />
+              </label>
+              <button id="mabangSearchBtn" class="button-secondary mabang-search-button" type="button" disabled>查找</button>
+              <label class="field-block page-size-field">
+                <span>每页显示</span>
+                <select id="mabangPageSize" autocomplete="off">
+                  <option value="25">25 条</option>
+                  <option value="50" selected>50 条</option>
+                  <option value="100">100 条</option>
+                  <option value="200">200 条</option>
+                </select>
+              </label>
+            </div>
+            <p id="mabangFilterHint" class="filter-hint">选择字段后输入关键词，结果和 Excel 导出会使用同一筛选条件。</p>
+            <div id="mabangDataTable" class="table-wrap mabang-table-wrap"></div>
+            <div class="pagination-bar">
+              <span id="mabangPageInfo">第 1 / 1 页</span>
+              <div>
+                <button id="mabangPrevPage" class="button-secondary" type="button" disabled>上一页</button>
+                <button id="mabangNextPage" class="button-secondary" type="button" disabled>下一页</button>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section id="page-ads" class="page-section" hidden>
+          <section class="panel ads-panel">
+            <div class="panel-heading ads-head">
+              <div>
+                <h2>Lazada Sponsored Max 广告分析</h2>
+                <p>上传 Lazada 广告 Excel，分析推广计划、产品系列和推广链接表现。</p>
+              </div>
+              <a id="adsOpenLink" class="button-secondary button-link" href="#" target="_blank" rel="noreferrer">新窗口打开</a>
+            </div>
+            <div id="adsStatus" class="inline-state">正在连接广告分析子项目…</div>
+            <iframe id="adsFrame" class="ads-frame" title="Lazada Sponsored Max 广告分析" src="about:blank"></iframe>
+          </section>
+        </section>
+
+        <section id="results" class="results" aria-live="polite"></section>
+      </div>
+
+      <div id="serverVerifyModal" class="modal-backdrop" hidden>
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle" aria-describedby="modalText" tabindex="-1">
+          <div class="modal-status-mark" aria-hidden="true"></div>
+          <h2 id="modalTitle">正在获取信息，请等待</h2>
+          <p id="modalText">主服务器正在抓取商品信息。</p>
+          <div id="modalActions" class="modal-actions" hidden>
+            <button id="modalCloseBtn" class="button-secondary" type="button">已完成验证，关闭弹窗</button>
+          </div>
+        </div>
+      </div>
+
+      <dialog id="scheduledTaskDialog" class="management-dialog management-dialog-wide" aria-labelledby="scheduledTaskDialogTitle">
+        <form id="scheduledTaskForm">
+          <div class="dialog-heading">
+            <div>
+              <span class="page-context">SCHEDULED EXPORT</span>
+              <h2 id="scheduledTaskDialogTitle">新建定时任务</h2>
+              <p>选择订单或库存，配置后台导出周期和通知方式。</p>
+            </div>
+            <button class="dialog-close" type="button" data-close-dialog="scheduledTaskDialog" aria-label="关闭">×</button>
+          </div>
+          <input id="scheduledTaskId" type="hidden" />
+
+          <fieldset class="form-section">
+            <legend>基础信息</legend>
+            <div class="dialog-form-grid">
+              <label class="field-block">
+                <span>导出内容 <small>必选</small></span>
+                <select id="scheduledTaskType" required>
+                  <option value="order_export">订单信息</option>
+                  <option value="inventory_export">库存信息</option>
+                </select>
+              </label>
+              <label class="field-block">
+                <span>马帮账号配置 <small>必选</small></span>
+                <select id="scheduledTaskAccount" required></select>
+              </label>
+              <label class="field-block dialog-grid-span-2">
+                <span>任务名称 <small>必填</small></span>
+                <input id="scheduledTaskName" maxlength="80" autocomplete="off" required placeholder="例如：菲律宾兰双满每日订单" />
+              </label>
+              <label class="field-block dialog-grid-span-2">
+                <span>任务描述 <small>可选</small></span>
+                <textarea id="scheduledTaskDescription" rows="2" maxlength="500"></textarea>
+              </label>
+              <label class="field-block">
+                <span>时区</span>
+                <select id="scheduledTaskTimezone">
+                  <option value="Asia/Shanghai">Asia/Shanghai</option>
+                  <option value="Asia/Manila">Asia/Manila</option>
+                  <option value="Asia/Bangkok">Asia/Bangkok</option>
+                  <option value="Asia/Kuala_Lumpur">Asia/Kuala_Lumpur</option>
+                  <option value="Asia/Ho_Chi_Minh">Asia/Ho_Chi_Minh</option>
+                  <option value="Asia/Jakarta">Asia/Jakarta</option>
+                  <option value="Asia/Singapore">Asia/Singapore</option>
+                </select>
+              </label>
+              <label class="check-field dialog-check-field">
+                <input id="scheduledTaskEnabled" type="checkbox" checked />
+                <span>创建后立即启用</span>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>执行周期</legend>
+            <div class="dialog-form-grid schedule-config-grid">
+              <label class="field-block">
+                <span>周期</span>
+                <select id="scheduledTaskScheduleType">
+                  <option value="daily">每日</option>
+                  <option value="weekly">每周</option>
+                  <option value="monthly">每月</option>
+                </select>
+              </label>
+              <label class="field-block">
+                <span>执行时间</span>
+                <input id="scheduledTaskTime" type="time" value="08:30" required />
+              </label>
+              <div id="scheduledWeeklyConfig" class="schedule-dependent dialog-grid-span-2" hidden>
+                <span class="control-label">执行星期</span>
+                <div class="weekday-selector" role="group" aria-label="每周执行日期">
+                  <label><input type="checkbox" value="1" />一</label><label><input type="checkbox" value="2" />二</label>
+                  <label><input type="checkbox" value="3" />三</label><label><input type="checkbox" value="4" />四</label>
+                  <label><input type="checkbox" value="5" />五</label><label><input type="checkbox" value="6" />六</label>
+                  <label><input type="checkbox" value="7" />日</label>
+                </div>
+              </div>
+              <div id="scheduledMonthlyConfig" class="schedule-dependent dialog-grid-span-2" hidden>
+                <label class="field-block">
+                  <span>每月执行日</span>
+                  <select id="scheduledTaskMonthDay"></select>
+                </label>
+                <p class="inline-guidance">选择 29、30 或 31 日时，如当月没有该日期，将在当月最后一天执行。</p>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset id="scheduledInventoryScopeSection" class="form-section" hidden>
+            <legend>库存导出范围</legend>
+            <p class="form-section-note">任务执行时获取该马帮账号有权限查看的完整库存快照，无需设置付款日期或订单筛选条件。</p>
+          </fieldset>
+
+          <fieldset id="scheduledOrderDateSection" class="form-section">
+            <legend>付款日期范围</legend>
+            <div class="dialog-form-grid">
+              <label class="field-block dialog-grid-span-2">
+                <span>动态范围</span>
+                <select id="scheduledTaskDateMode">
+                  <option value="today">当天</option><option value="yesterday" selected>前一天</option>
+                  <option value="last_7_days">近 7 天（含执行当天）</option><option value="last_14_days">近 14 天</option>
+                  <option value="last_30_days">近 30 天</option><option value="this_week">本周</option>
+                  <option value="previous_week">上一周</option><option value="this_month">本月</option>
+                  <option value="previous_month">上一个月</option><option value="relative">自定义相对日期</option>
+                  <option value="fixed">固定日期范围</option>
+                </select>
+              </label>
+              <div id="scheduledRelativeDateConfig" class="dialog-grid-span-2 relative-date-grid" hidden>
+                <label class="field-block"><span>执行日前 N 天</span><input id="scheduledRelativeStart" type="number" min="0" max="365" value="7" /></label>
+                <span class="range-separator">至</span>
+                <label class="field-block"><span>执行日前 M 天</span><input id="scheduledRelativeEnd" type="number" min="0" max="365" value="1" /></label>
+              </div>
+              <div id="scheduledFixedDateConfig" class="dialog-grid-span-2 relative-date-grid" hidden>
+                <label class="field-block"><span>开始日期</span><input id="scheduledFixedStart" type="date" /></label>
+                <span class="range-separator">至</span>
+                <label class="field-block"><span>结束日期</span><input id="scheduledFixedEnd" type="date" /></label>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset id="scheduledOrderFilterSection" class="form-section">
+            <div class="fieldset-heading">
+              <legend>订单筛选条件</legend>
+              <button id="addScheduledFilterBtn" class="button-secondary" type="button">添加筛选条件</button>
+            </div>
+            <p class="form-section-note">不同字段使用 AND；同一条件中的多个值使用 OR。</p>
+            <div id="scheduledFilterList" class="scheduled-filter-list"></div>
+            <p id="scheduledFilterEmpty" class="order-filter-empty">未添加筛选条件，将按付款日期导出全部订单。</p>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>文件与通知</legend>
+            <div class="dialog-form-grid">
+              <label class="field-block">
+                <span>文件保留</span>
+                <select id="scheduledTaskRetention">
+                  <option value="7">7 天</option><option value="30" selected>30 天</option>
+                  <option value="90">90 天</option><option value="forever">永久保留</option>
+                </select>
+              </label>
+              <label class="field-block">
+                <span>钉钉机器人</span>
+                <select id="scheduledTaskDingtalk"><option value="">不使用机器人</option></select>
+              </label>
+              <label class="check-field dialog-check-field"><input id="scheduledTaskNotify" type="checkbox" checked /><span>启用钉钉通知</span></label>
+              <label class="check-field dialog-check-field"><input id="scheduledTaskCatchUp" type="checkbox" checked /><span>服务离线后 2 小时内补执行</span></label>
+            </div>
+          </fieldset>
+
+          <div id="scheduledTaskFormError" class="form-error" role="alert" hidden></div>
+          <div class="dialog-actions">
+            <button class="button-secondary" type="button" data-close-dialog="scheduledTaskDialog">取消</button>
+            <button id="saveScheduledTaskBtn" type="submit">保存任务</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog id="mabangAccountDialog" class="management-dialog" aria-labelledby="mabangAccountDialogTitle">
+        <div class="dialog-heading">
+          <div><span class="page-context">SERVER CREDENTIALS</span><h2 id="mabangAccountDialogTitle">马帮账号配置</h2><p>凭证加密保存在服务器，仅后台任务使用。</p></div>
+          <button class="dialog-close" type="button" data-close-dialog="mabangAccountDialog" aria-label="关闭">×</button>
+        </div>
+        <div id="mabangAccountProfileList" class="management-list"></div>
+        <form id="mabangAccountProfileForm" class="management-form">
+          <input id="mabangAccountProfileId" type="hidden" />
+          <div class="dialog-form-grid">
+            <label class="field-block"><span>配置名称</span><input id="mabangAccountProfileName" required maxlength="80" /></label>
+            <label class="field-block"><span>马帮账号</span><input id="mabangAccountProfileUsername" required autocomplete="username" /></label>
+            <label class="field-block dialog-grid-span-2"><span>马帮密码 <small id="mabangAccountPasswordHint">必填</small></span><input id="mabangAccountProfilePassword" type="password" autocomplete="new-password" /></label>
+            <label class="check-field dialog-check-field"><input id="mabangAccountProfileEnabled" type="checkbox" checked /><span>启用此账号配置</span></label>
+          </div>
+          <div id="mabangAccountFormError" class="form-error" role="alert" hidden></div>
+          <div class="dialog-actions"><button id="resetMabangAccountBtn" class="button-secondary" type="button">新建配置</button><button type="submit">保存账号配置</button></div>
+        </form>
+      </dialog>
+
+      <dialog id="dingtalkConfigDialog" class="management-dialog" aria-labelledby="dingtalkConfigDialogTitle">
+        <div class="dialog-heading">
+          <div><span class="page-context">DINGTALK ROBOT</span><h2 id="dingtalkConfigDialogTitle">钉钉机器人设置</h2><p>Webhook 与加签 Secret 加密保存，不会回传原文。</p></div>
+          <button class="dialog-close" type="button" data-close-dialog="dingtalkConfigDialog" aria-label="关闭">×</button>
+        </div>
+        <div id="dingtalkConfigList" class="management-list"></div>
+        <form id="dingtalkConfigForm" class="management-form">
+          <input id="dingtalkConfigId" type="hidden" />
+          <div class="dialog-form-grid">
+            <label class="field-block"><span>配置名称</span><input id="dingtalkConfigName" required maxlength="80" /></label>
+            <label class="field-block"><span>Webhook URL</span><input id="dingtalkWebhookUrl" type="url" autocomplete="off" /></label>
+            <label class="field-block"><span>加签 Secret <small>可选</small></span><input id="dingtalkSecret" type="password" autocomplete="new-password" /></label>
+            <label class="field-block"><span>指定手机号 <small>逗号分隔</small></span><input id="dingtalkAtMobiles" inputmode="tel" /></label>
+            <label class="check-field dialog-check-field"><input id="dingtalkEnabled" type="checkbox" checked /><span>启用机器人</span></label>
+            <label class="check-field dialog-check-field"><input id="dingtalkAtAll" type="checkbox" /><span>@所有人</span></label>
+            <label class="check-field dialog-check-field"><input id="dingtalkNotifySuccess" type="checkbox" checked /><span>成功时通知</span></label>
+            <label class="check-field dialog-check-field"><input id="dingtalkNotifyFailure" type="checkbox" checked /><span>失败时通知</span></label>
+            <label class="check-field dialog-check-field"><input id="dingtalkNotifyEmpty" type="checkbox" checked /><span>无数据时通知</span></label>
+          </div>
+          <div id="dingtalkFormError" class="form-error" role="alert" hidden></div>
+          <div class="dialog-actions"><button id="resetDingtalkBtn" class="button-secondary" type="button">新建配置</button><button type="submit">保存机器人配置</button></div>
+        </form>
+      </dialog>
+
+      <dialog id="scheduledRunDetailDialog" class="management-dialog management-dialog-wide" aria-labelledby="scheduledRunDetailTitle">
+        <div class="dialog-heading">
+          <div><span class="page-context">RUN DETAILS</span><h2 id="scheduledRunDetailTitle">执行详情</h2><p id="scheduledRunDetailSubtitle"></p></div>
+          <button class="dialog-close" type="button" data-close-dialog="scheduledRunDetailDialog" aria-label="关闭">×</button>
+        </div>
+        <div id="scheduledRunDetailContent"></div>
+      </dialog>
+
+      <dialog id="runNowConfirmDialog" class="management-dialog confirmation-dialog" aria-labelledby="runNowConfirmTitle">
+        <div class="dialog-heading">
+          <div><span class="page-context">RUN NOW</span><h2 id="runNowConfirmTitle">立即执行任务</h2><p>确认后任务将在后台异步执行。</p></div>
+          <button class="dialog-close" type="button" data-close-dialog="runNowConfirmDialog" aria-label="关闭">×</button>
+        </div>
+        <div id="runNowConfirmContent" class="confirmation-summary"></div>
+        <div class="dialog-actions"><button class="button-secondary" type="button" data-close-dialog="runNowConfirmDialog">取消</button><button id="confirmRunNowBtn" type="button">确认执行</button></div>
+      </dialog>
+    </main>
+    <script src="/app.js?v=20260715-mabang-inventory-scheduler-1"></script>
+  </body>
+</html>

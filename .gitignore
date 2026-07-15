@@ -1,0 +1,56 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+
+# Dependencies and language caches
+node_modules/
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.py[cod]
+
+# Runtime data and generated files
+data/
+storage/
+exports/
+uploads/
+temp/
+tmp/
+logs/
+.mabang-exports/
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.xlsx
+*.xls
+*.csv
+
+# Browser sessions and UI test artifacts
+ui-check/
+**/chrome-profile/
+**/chrome-user-data/
+**/Chrome User Data/
+**/User Data/
+.chrome-debug/
+chrome-debug-data/
+playwright-report/
+test-results/
+
+# Build and coverage output
+coverage/
+dist/
+build/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini

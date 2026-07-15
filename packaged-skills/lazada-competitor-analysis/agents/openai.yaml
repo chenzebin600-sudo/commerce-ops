@@ -1,0 +1,6 @@
+interface:
+  display_name: "Lazada Competitor Analysis"
+  short_description: "Extract Lazada product data and compare competitors."
+  default_prompt: "Use $lazada-competitor-analysis to compare my Lazada product link against competitor links and recommend improvements."
+policy:
+  allow_implicit_invocation: true

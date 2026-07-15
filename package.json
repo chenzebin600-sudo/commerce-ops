@@ -1,0 +1,14 @@
+{
+  "name": "lazada-competitor-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.mjs",
+    "scheduler": "node --disable-warning=ExperimentalWarning scheduler.mjs",
+    "start:all": "node scripts/start-all.mjs",
+    "migrate": "node --disable-warning=ExperimentalWarning scripts/migrate.mjs",
+    "build": "node scripts/check-build.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs"
+  }
+}
