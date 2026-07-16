@@ -1616,6 +1616,13 @@ tr:last-child td {
   align-items: center;
 }
 
+.ads-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .ads-frame {
   width: 100%;
   min-height: calc(100dvh - 270px);

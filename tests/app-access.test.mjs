@@ -134,6 +134,7 @@ test("only health and authentication endpoints bypass the API guard", () => {
     "/api/mabang/scheduled-tasks",
     "/api/notifications/dingtalk/configs",
     "/api/ad-analyzer/status",
+    "/api/ads/analyze",
   ]) {
     assert.equal(isPublicApiPath(pathname), false, pathname);
   }

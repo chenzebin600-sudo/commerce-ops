@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   appStartupMessages,
@@ -18,17 +18,56 @@ import { loadLocalEnv } from "./lib/env.mjs";
 import { createMabangWorkerRunner } from "./lib/mabang-worker-runner.mjs";
 import { openSchedulerDatabase } from "./lib/mabang-scheduler/db.mjs";
 import { createMabangSchedulerApi } from "./lib/mabang-scheduler/api.mjs";
+import {
+  AD_SERVICE_INTERNAL_HEADER,
+  createAdServiceProxy,
+  resolveAdServiceProxyConfig,
+} from "./lib/ad-service-proxy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 loadLocalEnv(__dirname);
 
+async function resolveAdServiceInternalToken() {
+  const configuredToken = String(process.env.AD_SERVICE_INTERNAL_TOKEN || "").trim();
+  if (configuredToken) return configuredToken;
+
+  const tokenFile = path.resolve(
+    __dirname,
+    process.env.AD_SERVICE_INTERNAL_TOKEN_FILE || "storage/.ad-service-internal-token",
+  );
+  try {
+    const existingToken = String(await fs.readFile(tokenFile, "utf8")).trim();
+    if (existingToken) return existingToken;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw new Error("无法读取广告服务内部Token文件");
+  }
+
+  const generatedToken = randomBytes(32).toString("base64url");
+  await fs.mkdir(path.dirname(tokenFile), { recursive: true });
+  try {
+    await fs.writeFile(tokenFile, `${generatedToken}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    return generatedToken;
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw new Error("无法创建广告服务内部Token文件");
+    const existingToken = String(await fs.readFile(tokenFile, "utf8")).trim();
+    if (!existingToken) throw new Error("广告服务内部Token文件为空");
+    return existingToken;
+  }
+}
+
 const appConfig = resolveAppConfig(process.env);
 const { port, host } = appConfig;
 const accessPolicy = createAccessPolicy(appConfig);
 const chromePort = Number(process.env.CHROME_DEBUG_PORT || 9222);
-const adAnalyzerPort = Number(process.env.AD_ANALYZER_PORT || 4173);
-const adAnalyzerDir = "D:\\codex\\Lazada-Sponsored Max analysis\\webapp";
+const adServiceConfig = resolveAdServiceProxyConfig(process.env);
+const adAnalyzerPort = adServiceConfig.port;
+const adAnalyzerDir = process.env.AD_ANALYZER_DIR || "D:\\codex\\Lazada-Sponsored Max analysis\\webapp";
+const adServiceInternalToken = await resolveAdServiceInternalToken();
+const proxyAdServiceRequest = createAdServiceProxy({
+  baseUrl: adServiceConfig.baseUrl,
+  internalToken: adServiceInternalToken,
+});
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -225,7 +264,10 @@ function openChromeWindow(openUrl) {
 
 async function isAdAnalyzerRunning() {
   try {
-    const response = await fetch(`http://127.0.0.1:${adAnalyzerPort}/`, { signal: AbortSignal.timeout(1500) });
+    const response = await fetch(`${adServiceConfig.baseUrl}/api/service/status`, {
+      headers: { [AD_SERVICE_INTERNAL_HEADER]: adServiceInternalToken },
+      signal: AbortSignal.timeout(1500),
+    });
     return response.ok;
   } catch {
     return false;
@@ -239,8 +281,11 @@ async function ensureAdAnalyzerServer() {
     cwd: adAnalyzerDir,
     env: {
       ...process.env,
+      AD_SERVICE_HOST: adServiceConfig.host,
+      AD_SERVICE_PORT: String(adAnalyzerPort),
+      AD_SERVICE_INTERNAL_TOKEN: adServiceInternalToken,
       PORT: String(adAnalyzerPort),
-      HOST: "127.0.0.1",
+      HOST: adServiceConfig.host,
     },
     detached: true,
     stdio: "ignore",
@@ -1857,6 +1902,10 @@ async function handleApi(req, res, url) {
   const accessResponse = protectedApiAccessResponse(req.headers, accessPolicy);
   if (accessResponse) return json(res, accessResponse.status, accessResponse.body);
 
+  if (url.pathname.startsWith("/api/ads/")) {
+    return proxyAdServiceRequest(req, res, url, "api");
+  }
+
   const schedulerHandled = await handleMabangSchedulerApi(req, res, url);
   if (schedulerHandled) return true;
 
@@ -1906,9 +1955,9 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/ad-analyzer/status") {
     const status = await ensureAdAnalyzerServer();
-    return json(res, status.ok ? 200 : 500, {
+    return json(res, status.ok ? 200 : 503, {
       ...status,
-      url: `http://${(req.headers.host || "").split(":")[0] || "127.0.0.1"}:${adAnalyzerPort}/`,
+      url: "/ads/",
     });
   }
 
@@ -2211,6 +2260,14 @@ const server = http.createServer(async (req, res) => {
       if (handled === false) json(res, 404, { ok: false, error: "API not found" });
       return;
     }
+    if (url.pathname === "/ads" || url.pathname.startsWith("/ads/")) {
+      if (url.pathname === "/ads" || url.pathname === "/ads/") {
+        const status = await ensureAdAnalyzerServer();
+        if (!status.ok) return json(res, 503, { ok: false, error: status.error || "广告服务未启动或不可用" });
+      }
+      await proxyAdServiceRequest(req, res, url, "static");
+      return;
+    }
     await serveStatic(req, res, url);
   } catch (error) {
     json(res, 500, { ok: false, error: error.message });
@@ -2233,7 +2290,7 @@ server.listen(port, host, () => {
     for (const lanUrl of getLanUrls()) console.log(`LAN: ${lanUrl}`);
   }
   ensureAdAnalyzerServer().then((status) => {
-    if (status.ok) console.log(`Ad analyzer: http://127.0.0.1:${adAnalyzerPort}`);
+    if (status.ok) console.log(`Ad analyzer internal service: ${adServiceConfig.baseUrl}`);
     else console.warn(`Ad analyzer unavailable: ${status.error}`);
   });
 });

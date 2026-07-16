@@ -4,6 +4,7 @@ import {
   readSessionToken,
   saveSessionToken,
 } from "./auth-client.mjs";
+import { createAdFrameBridge } from "./ad-frame-bridge.mjs";
 
 let currentReport = null;
 let currentMabangTask = null;
@@ -15,6 +16,7 @@ let currentRunNowTaskId = null;
 let scheduledPollTimer = null;
 let applicationInitialized = false;
 let authenticationEnabled = false;
+let adsFrameBridge = null;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
@@ -101,11 +103,21 @@ function showApplication() {
 
 function handleUnauthorized() {
   if (!authenticationEnabled) return;
+  adsFrameBridge?.clear();
   clearSessionToken();
   showAuthGate("访问已失效，请重新输入访问密钥。");
 }
 
 const authorizedFetch = createAuthorizedFetch({ onUnauthorized: handleUnauthorized });
+adsFrameBridge = createAdFrameBridge({
+  windowObject: window,
+  frame: $("adsFrame"),
+  getAuthContext: () => ({
+    token: readSessionToken(),
+    localCompatibilityMode: !authenticationEnabled,
+  }),
+  onSessionExpired: handleUnauthorized,
+});
 
 function authHeaders(token) {
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -249,21 +261,29 @@ function switchPage(page) {
   if (location.hash !== `#${page}`) history.replaceState(null, "", `#${page}`);
 }
 
-async function loadAdsAnalyzer() {
+async function loadAdsAnalyzer({ force = false } = {}) {
   const frame = $("adsFrame");
   const status = $("adsStatus");
   const openLink = $("adsOpenLink");
-  if (!frame || frame.dataset.loaded === "true") return;
+  const reconnectButton = $("adsReconnectBtn");
+  if (!frame || (!force && frame.dataset.loaded === "true")) return;
+  if (force) {
+    frame.dataset.loaded = "false";
+    frame.src = "about:blank";
+  }
+  reconnectButton.hidden = true;
   status.textContent = "正在启动 Lazada 广告分析子项目…";
   try {
     const data = await postJson("/api/ad-analyzer/status", {});
-    const url = data.url || `http://${location.hostname}:4173/`;
+    const url = new URL(data.url || "/ads/", window.location.origin).href;
     frame.src = url;
     frame.dataset.loaded = "true";
     openLink.href = url;
     status.textContent = "广告分析子项目已连接。";
   } catch (error) {
-    status.textContent = error.message;
+    frame.dataset.loaded = "false";
+    status.textContent = error.message || "广告服务未启动或连接超时。";
+    reconnectButton.hidden = false;
   }
 }
 
@@ -2356,8 +2376,13 @@ $("authForm").addEventListener("submit", async (event) => {
 });
 
 $("logoutBtn").addEventListener("click", () => {
+  adsFrameBridge?.clear();
   clearSessionToken();
   showAuthGate();
+});
+
+$("adsReconnectBtn").addEventListener("click", () => {
+  loadAdsAnalyzer({ force: true });
 });
 
 initializeAccess();
