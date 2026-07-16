@@ -42,7 +42,7 @@ const scheduledState = {
   activeView: "tasks",
 };
 const mabangExportFilesState = { files: [], total: 0 };
-const lifecycleState = { scan: null, items: [], page: 1, totalPages: 1, total: 0, pollTimer: null };
+const lifecycleState = { scan: null, items: [], quarantineRecords: [], page: 1, totalPages: 1, total: 0, pollTimer: null };
 const LIFECYCLE_LABELS = {
   healthy: "正常",
   metadata_missing: "缺少数据库记录",
@@ -56,6 +56,23 @@ const LIFECYCLE_LABELS = {
   duplicate_content: "重复内容",
   legacy_untracked_export: "旧版孤儿导出",
   active_or_recent: "活动或近期文件",
+};
+const MANAGED_FILE_TYPE_LABELS = {
+  advertising_source: "广告源文件",
+  advertising_output: "广告分析结果",
+  advertising_report: "广告分析报告",
+  advertising_temp: "广告临时文件",
+  advertising_unknown: "用途待确认",
+};
+const FILE_REVIEW_STATUS_LABELS = {
+  pending_review: "待复核",
+  approved_for_registration: "已批准登记",
+  registered: "已登记",
+  approved_for_quarantine: "已批准隔离",
+  quarantined: "已隔离",
+  restored: "已恢复",
+  rejected: "已拒绝",
+  protected: "已保护",
 };
 const EXPORT_SOURCE_LABELS = {
   mabang_manual_order: "手工订单",
@@ -1095,6 +1112,30 @@ function lifecycleStatusClass(classification) {
   return "failed";
 }
 
+function lifecycleReviewActions(item) {
+  const actions = [`<button type="button" data-lifecycle-action="detail" data-lifecycle-id="${esc(item.id)}">查看</button>`];
+  if (["pending_review", "approved_for_registration"].includes(item.reviewStatus)
+    && ["advertising_source", "advertising_output", "advertising_report"].includes(item.detectedFileType)) {
+    actions.push(`<button type="button" data-lifecycle-action="register" data-lifecycle-id="${esc(item.id)}">确认登记</button>`);
+  }
+  if (item.reviewStatus === "pending_review" && item.detectedFileType === "advertising_unknown") {
+    actions.push(`<button type="button" data-lifecycle-action="protect" data-lifecycle-id="${esc(item.id)}">标记保护</button>`);
+  }
+  const quarantineEligible = item.detectedFileType === "advertising_temp"
+    || item.categories.some((value) => ["temp_stale", "expired_candidate"].includes(value));
+  const historicalUnmanagedFile = Boolean(item.fileId && !item.managedFileId);
+  if (quarantineEligible && item.reviewStatus === "pending_review" && !historicalUnmanagedFile) {
+    actions.push(`<button type="button" data-lifecycle-action="approve-quarantine" data-lifecycle-id="${esc(item.id)}">确认候选</button>`);
+  }
+  if (quarantineEligible && item.reviewStatus === "approved_for_quarantine" && !historicalUnmanagedFile) {
+    actions.push(`<button type="button" data-lifecycle-action="quarantine" data-lifecycle-id="${esc(item.id)}">执行隔离</button>`);
+  }
+  if (item.reviewStatus === "quarantined") {
+    actions.push(`<button type="button" data-lifecycle-action="restore" data-lifecycle-id="${esc(item.id)}">恢复</button>`);
+  }
+  return actions.join("");
+}
+
 function renderLifecycleSummary() {
   const scan = lifecycleState.scan;
   const summary = scan?.summary || {};
@@ -1112,6 +1153,7 @@ function renderLifecycleSummary() {
       ? `扫描进行中，开始于 ${formatScheduledDate(scan.startedAt)}。`
       : `最近扫描：${formatScheduledDate(scan.finishedAt || scan.startedAt)}，共 ${scan.totalFiles} 条结果${scan.truncated ? "，已达到扫描保护上限" : ""}。`;
   $("startLifecycleScanBtn").disabled = scan?.status === "running";
+  $("classifyLifecycleBtn").disabled = scan?.status !== "completed";
   $("exportLifecycleBtn").disabled = scan?.status !== "completed";
 }
 
@@ -1120,20 +1162,42 @@ function renderLifecycleItems() {
     $("lifecycleItemsTable").innerHTML = '<p class="order-filter-empty">暂无符合条件的扫描条目。</p>';
   } else {
     $("lifecycleItemsTable").innerHTML = `<table class="mabang-data-table scheduled-table">
-      <thead><tr><th>文件</th><th>分类</th><th>范围</th><th>大小</th><th>修改时间</th><th>建议</th><th>操作</th></tr></thead>
+      <thead><tr><th>文件</th><th>扫描分类</th><th>识别用途</th><th>复核状态</th><th>范围</th><th>大小</th><th>操作</th></tr></thead>
       <tbody>${lifecycleState.items.map((item) => `<tr>
         <td><strong>${esc(item.maskedFilename)}</strong><small>${esc(item.fileId ? item.fileId.slice(0, 8) : item.shortHash || "未登记")}</small></td>
         <td><span class="run-status ${lifecycleStatusClass(item.classification)}">${esc(LIFECYCLE_LABELS[item.classification] || item.classification)}</span></td>
+        <td>${esc(MANAGED_FILE_TYPE_LABELS[item.detectedFileType] || "未复核")}</td>
+        <td>${esc(FILE_REVIEW_STATUS_LABELS[item.reviewStatus] || item.reviewStatus || "待复核")}</td>
         <td>${esc(item.scope)}</td><td>${esc(formatFileSize(item.fileSize))}</td>
-        <td>${esc(formatScheduledDate(item.fileModifiedAt))}</td>
-        <td>${item.suggestCleanup ? "后续评估清理" : item.suggestQuarantine ? "后续评估隔离" : "保留"}</td>
-        <td><button type="button" data-lifecycle-action="detail" data-lifecycle-id="${esc(item.id)}">查看</button></td>
+        <td class="table-actions">${lifecycleReviewActions(item)}</td>
       </tr>`).join("")}</tbody>
     </table>`;
   }
   $("lifecyclePageInfo").textContent = `第 ${lifecycleState.page} / ${lifecycleState.totalPages} 页，共 ${lifecycleState.total} 条`;
   $("lifecyclePrevPageBtn").disabled = lifecycleState.page <= 1;
   $("lifecycleNextPageBtn").disabled = lifecycleState.page >= lifecycleState.totalPages;
+}
+
+function renderQuarantineRecords() {
+  if (!lifecycleState.quarantineRecords.length) {
+    $("lifecycleQuarantineTable").innerHTML = '<p class="order-filter-empty">暂无隔离记录。</p>';
+    return;
+  }
+  $("lifecycleQuarantineTable").innerHTML = `<table class="mabang-data-table scheduled-table">
+    <thead><tr><th>记录</th><th>范围</th><th>大小</th><th>状态</th><th>隔离时间</th><th>操作</th></tr></thead>
+    <tbody>${lifecycleState.quarantineRecords.map((record) => `<tr>
+      <td><strong>${esc(record.id.slice(0, 8))}</strong></td><td>${esc(record.rootKey)}</td>
+      <td>${esc(formatFileSize(record.fileSize))}</td><td>${esc(FILE_REVIEW_STATUS_LABELS[record.status] || record.status)}</td>
+      <td>${esc(formatScheduledDate(record.quarantinedAt))}</td>
+      <td>${record.status === "quarantined" ? `<button type="button" data-quarantine-action="restore" data-lifecycle-id="${esc(record.lifecycleItemId)}">恢复</button>` : "-"}</td>
+    </tr>`).join("")}</tbody>
+  </table>`;
+}
+
+async function loadQuarantineRecords() {
+  const data = await apiJson("/api/files/lifecycle/quarantine-records?page=1&page_size=50");
+  lifecycleState.quarantineRecords = data.records || [];
+  renderQuarantineRecords();
 }
 
 async function loadLifecycleReport(page = 1) {
@@ -1171,6 +1235,7 @@ async function refreshLifecycleSummary() {
     clearTimeout(lifecycleState.pollTimer);
     lifecycleState.pollTimer = setTimeout(() => refreshLifecycleSummary().catch(() => {}), 1200);
   }
+  await loadQuarantineRecords();
 }
 
 async function startLifecycleScan() {
@@ -1191,6 +1256,28 @@ async function exportLifecycleReport() {
   refreshMabangExportFiles().catch(() => {});
 }
 
+async function classifyLifecycleReport() {
+  if (!lifecycleState.scan?.id) return;
+  const data = await apiJson(`/api/files/lifecycle/reports/${encodeURIComponent(lifecycleState.scan.id)}/classify`, { method: "POST", body: {} });
+  setStatus(`已复核 ${Number(data.matchedCount || 0)} 个受控广告文件。`, "success");
+  await loadLifecycleReport(lifecycleState.page);
+}
+
+async function performLifecycleReviewAction(action, itemId) {
+  const prompts = {
+    register: "确认将这个已识别的正式广告文件登记到统一元数据吗？",
+    protect: "确认将这个用途待定文件标记为保护吗？",
+    "approve-quarantine": "确认将这个临时测试文件批准为隔离候选吗？",
+    quarantine: "确认隔离这个已批准的测试候选吗？文件不会被删除。",
+    restore: "确认将隔离文件恢复到原位置吗？",
+  };
+  if (prompts[action] && !window.confirm(prompts[action])) return;
+  await apiJson(`/api/files/lifecycle/items/${encodeURIComponent(itemId)}/${action}`, { method: "POST", body: { reason: `manual_${action}` } });
+  await loadLifecycleReport(lifecycleState.page);
+  await loadQuarantineRecords();
+  setStatus("文件复核操作已完成。", "success");
+}
+
 function showLifecycleDetail(itemId) {
   const item = lifecycleState.items.find((entry) => entry.id === itemId);
   if (!item) return;
@@ -1201,6 +1288,9 @@ function showLifecycleDetail(itemId) {
     ["文件大小", formatFileSize(item.fileSize)], ["创建时间", formatScheduledDate(item.fileCreatedAt)],
     ["修改时间", formatScheduledDate(item.fileModifiedAt)], ["数据库状态", item.databaseStatus || "无记录"],
     ["物理状态", item.physicalStatus], ["短哈希", item.shortHash || "-"], ["原因代码", item.reasonCode],
+    ["识别用途", MANAGED_FILE_TYPE_LABELS[item.detectedFileType] || "未复核"],
+    ["复核状态", FILE_REVIEW_STATUS_LABELS[item.reviewStatus] || item.reviewStatus || "待复核"],
+    ["受管文件ID", item.managedFileId || "-"], ["复核时间", formatScheduledDate(item.reviewedAt)],
   ];
   $("lifecycleDetailBody").innerHTML = fields.map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
   openManagementDialog("lifecycleDetailDialog");
@@ -2388,13 +2478,21 @@ $("startLifecycleScanBtn").addEventListener("click", () => startLifecycleScan().
   setStatus(error.message, "error");
 }));
 $("refreshLifecycleBtn").addEventListener("click", () => refreshLifecycleSummary().catch((error) => setStatus(error.message, "error")));
+$("classifyLifecycleBtn").addEventListener("click", () => classifyLifecycleReport().catch((error) => setStatus(error.message, "error")));
 $("exportLifecycleBtn").addEventListener("click", () => exportLifecycleReport().catch((error) => setStatus(error.message, "error")));
+$("refreshQuarantineBtn").addEventListener("click", () => loadQuarantineRecords().catch((error) => setStatus(error.message, "error")));
 $("lifecycleCategoryFilter").addEventListener("change", () => loadLifecycleReport(1).catch((error) => setStatus(error.message, "error")));
 $("lifecyclePrevPageBtn").addEventListener("click", () => loadLifecycleReport(lifecycleState.page - 1).catch((error) => setStatus(error.message, "error")));
 $("lifecycleNextPageBtn").addEventListener("click", () => loadLifecycleReport(lifecycleState.page + 1).catch((error) => setStatus(error.message, "error")));
 $("lifecycleItemsTable").addEventListener("click", (event) => {
-  const button = event.target.closest("[data-lifecycle-action='detail']");
-  if (button) showLifecycleDetail(button.dataset.lifecycleId);
+  const button = event.target.closest("[data-lifecycle-action]");
+  if (!button) return;
+  if (button.dataset.lifecycleAction === "detail") showLifecycleDetail(button.dataset.lifecycleId);
+  else performLifecycleReviewAction(button.dataset.lifecycleAction, button.dataset.lifecycleId).catch((error) => setStatus(error.message, "error"));
+});
+$("lifecycleQuarantineTable").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-quarantine-action='restore']");
+  if (button) performLifecycleReviewAction("restore", button.dataset.lifecycleId).catch((error) => setStatus(error.message, "error"));
 });
 $("mabangFilesTable").addEventListener("click", (event) => {
   const button = event.target.closest("[data-file-action='download']");

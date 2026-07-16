@@ -393,6 +393,7 @@
                 </div>
                 <div class="table-actions">
                   <button id="refreshLifecycleBtn" class="button-tertiary" type="button">刷新</button>
+                  <button id="classifyLifecycleBtn" class="button-tertiary" type="button" disabled>复核分类</button>
                   <button id="exportLifecycleBtn" class="button-tertiary" type="button" disabled>导出报告</button>
                   <button id="startLifecycleScanBtn" class="button-secondary" type="button">开始扫描</button>
                 </div>
@@ -421,6 +422,14 @@
                 <span id="lifecyclePageInfo">第 1 / 1 页</span>
                 <button id="lifecycleNextPageBtn" class="button-tertiary" type="button" disabled>下一页</button>
               </div>
+              <div class="section-title-row compact lifecycle-quarantine-heading">
+                <div>
+                  <h3>隔离记录</h3>
+                  <p>隔离文件不可通过普通下载访问；恢复时不会覆盖现有文件。</p>
+                </div>
+                <button id="refreshQuarantineBtn" class="button-tertiary" type="button">刷新记录</button>
+              </div>
+              <div id="lifecycleQuarantineTable" class="table-wrap scheduled-table-wrap"></div>
             </div>
 
             <div id="mabangTaskState" class="mabang-task-state" aria-live="polite">

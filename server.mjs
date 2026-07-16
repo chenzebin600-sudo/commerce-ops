@@ -69,6 +69,9 @@ import { FileLifecycleScanner, buildLifecycleRoots } from "./lib/files/file-life
 import { FileLifecycleService } from "./lib/files/file-lifecycle-service.mjs";
 import { createFileLifecycleApi } from "./lib/files/file-lifecycle-api.mjs";
 import { resolveLifecyclePolicy } from "./lib/files/file-lifecycle-policy.mjs";
+import { FileReviewRepository } from "./lib/files/file-review-repository.mjs";
+import { FileReviewService, resolveFileReviewPolicy } from "./lib/files/file-review-service.mjs";
+import { createFileReviewApi } from "./lib/files/file-review-api.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -259,9 +262,12 @@ auditService.recordSafely({
 const runMabangWorker = createMabangWorkerRunner({ rootDir: __dirname, exportRoot: fileStorageConfig.tempRoot });
 const lifecyclePolicy = resolveLifecyclePolicy(process.env);
 const lifecycleRepository = new FileLifecycleRepository({ db: schedulerDatabase });
+const fileReviewRepository = new FileReviewRepository({ db: schedulerDatabase });
+const lifecycleRoots = buildLifecycleRoots({ fileStorageConfig, adAnalyzerDir, env: process.env });
 const lifecycleScanner = new FileLifecycleScanner({
   fileRepository: exportFileService.repository,
-  roots: buildLifecycleRoots({ fileStorageConfig, adAnalyzerDir, env: process.env }),
+  managedFileRepository: fileReviewRepository,
+  roots: lifecycleRoots,
   policy: lifecyclePolicy,
   protectedFileIds: lifecycleRepository.protectedFileIds(),
 });
@@ -275,6 +281,17 @@ const lifecycleService = new FileLifecycleService({
   policy: lifecyclePolicy,
 });
 const handleFileLifecycleApi = createFileLifecycleApi({ service: lifecycleService });
+const fileReviewService = new FileReviewService({
+  repository: fileReviewRepository,
+  lifecycleRepository,
+  roots: lifecycleRoots,
+  storageRoot: fileStorageConfig.storageRoot,
+  quarantineRoot: path.resolve(fileStorageConfig.storageRoot, process.env.FILE_QUARANTINE_ROOT || "quarantine"),
+  audit: auditService,
+  policy: resolveFileReviewPolicy(process.env),
+});
+await fileReviewService.ensureQuarantineRoot();
+const handleFileReviewApi = createFileReviewApi({ service: fileReviewService });
 const handleMabangSchedulerApi = createMabangSchedulerApi({
   db: schedulerDatabase,
   runWorker: runMabangWorker,
@@ -2158,6 +2175,9 @@ async function handleApi(req, res, url) {
 
   const auditHandled = await handleAuditApi(req, res, url);
   if (auditHandled) return true;
+
+  const reviewHandled = await handleFileReviewApi(req, res, url);
+  if (reviewHandled) return true;
 
   const lifecycleHandled = await handleFileLifecycleApi(req, res, url);
   if (lifecycleHandled) return true;
