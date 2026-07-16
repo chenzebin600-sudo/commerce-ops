@@ -16,6 +16,8 @@ __pycache__/
 
 # Runtime data and generated files
 data/
+!lib/data/
+!lib/data/**
 storage/
 exports/
 uploads/

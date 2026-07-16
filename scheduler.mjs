@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadLocalEnv } from "./lib/env.mjs";
 import { createMabangWorkerRunner } from "./lib/mabang-worker-runner.mjs";
-import { openSchedulerDatabase } from "./lib/mabang-scheduler/db.mjs";
+import { openCommerceDataAccess } from "./lib/data/data-access.mjs";
 import { createTaskExecutor } from "./lib/mabang-scheduler/executor.mjs";
 import { MabangSchedulerService } from "./lib/mabang-scheduler/service.mjs";
 import {
@@ -12,6 +12,7 @@ import {
 } from "./lib/security/file-policy.mjs";
 import { createOperationAuditService } from "./lib/security/audit-service.mjs";
 import { resolveRuntimeConfig, runtimeEnvironment } from "./lib/runtime-config.mjs";
+import { createExportFileService } from "./lib/files/export-file-service.mjs";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 loadLocalEnv(rootDir);
@@ -26,15 +27,22 @@ if (cleanup.removed || cleanup.errors) {
   console.log(`Temporary file cleanup: ${cleanup.removed} removed, ${cleanup.errors} errors`);
 }
 const exportRoot = fileStorage.exportRoot;
-const db = openSchedulerDatabase({ rootDir: runtimeConfig.appRoot, databasePath: runtimeConfig.databasePath });
-const audit = createOperationAuditService({ db, env: process.env });
+const dataAccess = openCommerceDataAccess({ rootDir: runtimeConfig.appRoot, databasePath: runtimeConfig.databasePath });
+const db = dataAccess.repositories.scheduler;
+const audit = createOperationAuditService({ repository: dataAccess.repositories.audit, env: process.env });
+const exportFileService = createExportFileService({
+  repository: dataAccess.repositories.exportFiles,
+  exportRoot,
+  tempRoot: fileStorage.tempRoot,
+  audit,
+});
 const runWorker = createMabangWorkerRunner({
   rootDir: runtimeConfig.appRoot,
   exportRoot: fileStorage.tempRoot,
   runtimeConfig,
   env: runtimeEnv,
 });
-const executor = createTaskExecutor({ db, runWorker, exportRoot, tempRoot: fileStorage.tempRoot, audit });
+const executor = createTaskExecutor({ db, runWorker, exportRoot, tempRoot: fileStorage.tempRoot, audit, fileService: exportFileService });
 const scheduler = new MabangSchedulerService({ db, executor, exportRoot, audit });
 
 scheduler.start();
@@ -42,7 +50,7 @@ console.log(`Mabang scheduler started. Poll interval: ${scheduler.pollIntervalMs
 
 function shutdown() {
   scheduler.stop();
-  db.close();
+  dataAccess.close();
   process.exit(0);
 }
 

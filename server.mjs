@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   appStartupMessages,
@@ -15,7 +14,7 @@ import {
 } from "./lib/app-access.mjs";
 import { loadLocalEnv } from "./lib/env.mjs";
 import { createMabangWorkerRunner } from "./lib/mabang-worker-runner.mjs";
-import { openSchedulerDatabase } from "./lib/mabang-scheduler/db.mjs";
+import { openCommerceDataAccess } from "./lib/data/data-access.mjs";
 import { createMabangSchedulerApi } from "./lib/mabang-scheduler/api.mjs";
 import { createAdServiceProxy, resolveAdServiceProxyConfig } from "./lib/ad-service-proxy.mjs";
 import {
@@ -59,18 +58,20 @@ import {
 import { createAuditApi } from "./lib/security/audit-api.mjs";
 import { createExportFileService } from "./lib/files/export-file-service.mjs";
 import { createFileApi } from "./lib/files/file-api.mjs";
-import { FileLifecycleRepository } from "./lib/files/file-lifecycle-repository.mjs";
 import { FileLifecycleScanner, buildLifecycleRoots } from "./lib/files/file-lifecycle-scanner.mjs";
 import { FileLifecycleService } from "./lib/files/file-lifecycle-service.mjs";
 import { createFileLifecycleApi } from "./lib/files/file-lifecycle-api.mjs";
 import { resolveLifecyclePolicy } from "./lib/files/file-lifecycle-policy.mjs";
-import { FileReviewRepository } from "./lib/files/file-review-repository.mjs";
 import { FileReviewService, resolveFileReviewPolicy } from "./lib/files/file-review-service.mjs";
 import { createFileReviewApi } from "./lib/files/file-review-api.mjs";
 import { createAdServiceManager } from "./lib/ad-service-manager.mjs";
 import { resolveChromeRuntime } from "./lib/chrome-runtime.mjs";
 import { resolveRuntimeConfig, runtimeEnvironment } from "./lib/runtime-config.mjs";
 import { resolveAdServiceInternalToken } from "./lib/ad-service-token.mjs";
+import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
+import { DeepSeekProvider } from "./lib/ai/providers/deepseek-provider.mjs";
+import { MODULE_IDS } from "./lib/contracts/module-ids.mjs";
+import { createIdentifier } from "./lib/contracts/identifiers.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -225,13 +226,14 @@ async function readBody(req) {
 }
 
 const scheduledExportRoot = fileStorageConfig.exportRoot;
-const schedulerDatabase = openSchedulerDatabase({ rootDir: runtimeConfig.appRoot, databasePath: runtimeConfig.databasePath });
-const auditService = createOperationAuditService({ db: schedulerDatabase, env: process.env });
+const dataAccess = openCommerceDataAccess({ rootDir: runtimeConfig.appRoot, databasePath: runtimeConfig.databasePath });
+const schedulerDatabase = dataAccess.repositories.scheduler;
+const auditService = createOperationAuditService({ repository: dataAccess.repositories.audit, env: process.env });
 const trustedAuditProxies = parseTrustedProxies(process.env.TRUST_PROXY);
 const auditRetentionDays = Number(process.env.AUDIT_RETENTION_DAYS || 180);
 const handleAuditApi = createAuditApi({ audit: auditService, retentionDays: auditRetentionDays });
 const exportFileService = createExportFileService({
-  db: schedulerDatabase,
+  repository: dataAccess.repositories.exportFiles,
   exportRoot: scheduledExportRoot,
   tempRoot: fileStorageConfig.tempRoot,
   audit: auditService,
@@ -252,8 +254,8 @@ const runMabangWorker = createMabangWorkerRunner({
   env: runtimeEnv,
 });
 const lifecyclePolicy = resolveLifecyclePolicy(process.env);
-const lifecycleRepository = new FileLifecycleRepository({ db: schedulerDatabase });
-const fileReviewRepository = new FileReviewRepository({ db: schedulerDatabase });
+const lifecycleRepository = dataAccess.repositories.fileLifecycle;
+const fileReviewRepository = dataAccess.repositories.fileReview;
 const lifecycleRoots = buildLifecycleRoots({ fileStorageConfig, adAnalyzerDir, env: runtimeEnv });
 const lifecycleScanner = new FileLifecycleScanner({
   fileRepository: exportFileService.repository,
@@ -1169,7 +1171,7 @@ function fallbackKeywordFromDescription(description) {
   return words.join(" ").slice(0, 90);
 }
 
-async function optimizeDiscoveryKeyword({ keyword, productDescription, productImage, country, site, model }) {
+async function optimizeDiscoveryKeyword({ keyword, productDescription, productImage, country, site, model, requestId }) {
   const originalKeyword = String(keyword || "").trim();
   const description = sanitizeProductDescription(productDescription);
   const fallback = (originalKeyword || fallbackKeywordFromDescription(description) || "product").slice(0, 90);
@@ -1179,16 +1181,13 @@ async function optimizeDiscoveryKeyword({ keyword, productDescription, productIm
   if (!key) return { keyword: fallback, reason: "未配置 DeepSeek，已使用关键词或产品描述生成搜索词。" };
 
   try {
-    const response = await fetch("https://api.deepseek.com/chat/completions", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
-        model: model || "deepseek-chat",
-        stream: false,
-        messages: [
+    const result = await completeDeepSeek({
+      moduleId: MODULE_IDS.COMPETITOR_KEYWORD,
+      operation: "optimize_discovery_keyword",
+      requestId,
+      apiKey: key,
+      model: model || "deepseek-chat",
+      messages: [
           {
             role: "system",
             content: [
@@ -1214,11 +1213,8 @@ async function optimizeDiscoveryKeyword({ keyword, productDescription, productIm
             }, null, 2),
           },
         ],
-      }),
     });
-    const data = await response.json().catch(() => null);
-    if (!response.ok) throw new Error(data?.error?.message || `DeepSeek API 请求失败：${response.status}`);
-    const parsed = parseDeepSeekJson(data?.choices?.[0]?.message?.content || "");
+    const parsed = parseDeepSeekJson(result.content || "");
     const optimized = String(parsed?.keyword || "").replace(/\s+/g, " ").trim().slice(0, 90);
     if (!optimized) return { keyword: fallback, reason: "DeepSeek 未返回有效关键词，已使用备用搜索词。" };
     return {
@@ -1707,7 +1703,7 @@ function buildSkuComparison(products) {
   return finalizeSkuComparisonRows(rows);
 }
 
-async function buildSmartSkuComparison(products, model) {
+async function buildSmartSkuComparison(products, model, requestId = null) {
   const mine = products[0];
   const competitor = products[1];
   const fallback = buildSkuComparison(products);
@@ -1729,16 +1725,13 @@ async function buildSmartSkuComparison(products, model) {
   }));
 
   try {
-    const response = await fetch("https://api.deepseek.com/chat/completions", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
-        model: model || "deepseek-chat",
-        stream: false,
-        messages: [
+    const result = await completeDeepSeek({
+      moduleId: MODULE_IDS.COMPETITOR_LINK,
+      operation: "match_product_skus",
+      requestId,
+      apiKey: key,
+      model: model || "deepseek-chat",
+      messages: [
           {
             role: "system",
             content: [
@@ -1770,11 +1763,8 @@ async function buildSmartSkuComparison(products, model) {
             }, null, 2),
           },
         ],
-      }),
     });
-    const data = await response.json().catch(() => null);
-    if (!response.ok) throw new Error(data?.error?.message || `DeepSeek API 请求失败：${response.status}`);
-    const parsed = parseDeepSeekJson(data?.choices?.[0]?.message?.content || "");
+    const parsed = parseDeepSeekJson(result.content || "");
     const matches = Array.isArray(parsed?.matches) ? parsed.matches : [];
     if (dimensionReady) {
       return fallback.map((row) => ({
@@ -2007,20 +1997,43 @@ function getDeepSeekApiKey() {
   }
 }
 
-async function callDeepSeek({ model, report }) {
+async function completeDeepSeek({ moduleId, operation, requestId, apiKey = getDeepSeekApiKey(), model, messages }) {
+  const gateway = new AiGateway({
+    provider: new DeepSeekProvider({ apiKey }),
+    logger: (entry) => auditService.recordSafely({
+      requestId: entry.requestId,
+      module: "ai",
+      action: "deepseek.call",
+      status: entry.success ? "success" : "failed",
+      durationMs: entry.durationMs,
+      errorStage: entry.success ? null : "deepseek",
+      errorCode: entry.errorCode,
+      metadata: {
+        provider: entry.provider,
+        moduleId: entry.moduleId,
+        operation: entry.operation,
+        model: entry.model,
+        durationMs: entry.durationMs,
+        success: entry.success,
+      },
+    }),
+  });
+  const result = await gateway.complete({ moduleId, operation, requestId, model, messages });
+  if (!result.success) throw aiGatewayError(result);
+  return result;
+}
+
+async function callDeepSeek({ model, report, requestId = null }) {
   const key = getDeepSeekApiKey();
   if (!key) throw new Error("缺少 DeepSeek API Key。请在后端环境变量 DEEPSEEK_API_KEY 中配置。");
 
-  const response = await fetch("https://api.deepseek.com/chat/completions", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      model: model || "deepseek-chat",
-      stream: false,
-      messages: [
+  const result = await completeDeepSeek({
+    moduleId: report?.discovery ? MODULE_IDS.COMPETITOR_KEYWORD : MODULE_IDS.COMPETITOR_LINK,
+    operation: "analyze_competitors",
+    requestId,
+    apiKey: key,
+    model: model || "deepseek-chat",
+    messages: [
         {
           role: "system",
           content: [
@@ -2045,16 +2058,12 @@ async function callDeepSeek({ model, report }) {
         },
         { role: "user", content: JSON.stringify(report, null, 2) },
       ],
-    }),
   });
-
-  const data = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(data?.error?.message || `DeepSeek API 请求失败：${response.status}`);
-  const content = data.choices?.[0]?.message?.content || "";
+  const content = result.content || "";
   return { raw: content, modules: parseDeepSeekJson(content) };
 }
 
-async function callDeepSeekMainImage({ model, report }) {
+async function callDeepSeekMainImage({ model, report, requestId = null }) {
   const key = getDeepSeekApiKey();
   if (!key) throw new Error("缺少 DeepSeek API Key。请在后端环境变量 DEEPSEEK_API_KEY 中配置。");
 
@@ -2075,16 +2084,13 @@ async function callDeepSeekMainImage({ model, report }) {
     productDetailsComparison: report.productDetailsComparison || [],
   };
 
-  const response = await fetch("https://api.deepseek.com/chat/completions", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      model: model || "deepseek-chat",
-      stream: false,
-      messages: [
+  const result = await completeDeepSeek({
+    moduleId: MODULE_IDS.COMPETITOR_LINK,
+    operation: "analyze_main_images",
+    requestId,
+    apiKey: key,
+    model: model || "deepseek-chat",
+    messages: [
         {
           role: "system",
           content: [
@@ -2109,12 +2115,8 @@ async function callDeepSeekMainImage({ model, report }) {
         },
         { role: "user", content: JSON.stringify(compactReport, null, 2) },
       ],
-    }),
   });
-
-  const data = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(data?.error?.message || `DeepSeek API 请求失败：${response.status}`);
-  const content = data.choices?.[0]?.message?.content || "";
+  const content = result.content || "";
   return { raw: content, modules: parseDeepSeekJson(content) };
 }
 
@@ -2251,7 +2253,7 @@ async function handleApi(req, res, url) {
         endDate: body.endDate,
         orderFilters: kind === "orders" ? body.orderFilters : undefined,
       });
-      const taskId = randomUUID();
+      const taskId = createIdentifier();
       const task = {
         id: taskId,
         kind,
@@ -2304,7 +2306,7 @@ async function handleApi(req, res, url) {
     let temporaryFile = null;
     try {
       const task = getMabangTask(body.taskId);
-      const requestId = validateFileId(body.requestId || randomUUID());
+      const requestId = validateFileId(body.requestId || createIdentifier());
       const requestKey = `mabang_manual:${task.kind}:${requestId}`;
       const existing = exportFileService.getByRequestKey(requestKey);
       if (existing) {
@@ -2323,7 +2325,7 @@ async function handleApi(req, res, url) {
       const records = filterMabangRecords(task.records, body.query, filterField);
       const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
       const filename = sanitizeFilename(`mabang-${task.kind}-${stamp}.xlsx`, { fallback: "mabang-data.xlsx" });
-      const fileId = randomUUID();
+      const fileId = createIdentifier();
       const monthFolder = stamp.slice(0, 7);
       const relativePath = `manual/${monthFolder}/${fileId}.xlsx`;
       temporaryFile = await createTemporaryFilePath(fileStorageConfig.tempRoot, {
@@ -2396,6 +2398,7 @@ async function handleApi(req, res, url) {
         country: body.country,
         site: body.site,
         model: body.model,
+        requestId: req.auditContext?.requestId,
       });
       const discovery = await discoverTopLinks({
         keyword: keywordPlan.keyword,
@@ -2454,7 +2457,7 @@ async function handleApi(req, res, url) {
         ...buildDeterministicReport(products),
         discovery,
       };
-      const analysis = await callDeepSeek({ model: body.model, report });
+      const analysis = await callDeepSeek({ model: body.model, report, requestId: req.auditContext?.requestId });
       return json(res, 200, { ok: true, ...report, analysis });
     } catch (error) {
       if (error instanceof NetworkPolicyError) return securityErrorResponse(res, error);
@@ -2478,10 +2481,10 @@ async function handleApi(req, res, url) {
           blockedProducts,
         });
       }
-      const smartSkuComparison = await buildSmartSkuComparison(products, body.model);
+      const smartSkuComparison = await buildSmartSkuComparison(products, body.model, req.auditContext?.requestId);
       const report = buildDeterministicReport(products, { skuComparison: smartSkuComparison });
       if (url.pathname === "/api/extract") return json(res, 200, { ok: true, ...report });
-      const analysis = await callDeepSeek({ model: body.model, report });
+      const analysis = await callDeepSeek({ model: body.model, report, requestId: req.auditContext?.requestId });
       return json(res, 200, { ok: true, ...report, analysis });
     } catch (error) {
       if (error instanceof NetworkPolicyError) return securityErrorResponse(res, error);
@@ -2492,7 +2495,7 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/analyze") {
     const body = await readBody(req);
     try {
-      const analysis = await callDeepSeek({ model: body.model, report: body.report });
+      const analysis = await callDeepSeek({ model: body.model, report: body.report, requestId: req.auditContext?.requestId });
       return json(res, 200, { ok: true, analysis });
     } catch (error) {
       return json(res, 500, { ok: false, error: error.message });
@@ -2502,7 +2505,7 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/analyze-main-images") {
     const body = await readBody(req);
     try {
-      const analysis = await callDeepSeekMainImage({ model: body.model, report: body.report });
+      const analysis = await callDeepSeekMainImage({ model: body.model, report: body.report, requestId: req.auditContext?.requestId });
       return json(res, 200, { ok: true, analysis });
     } catch (error) {
       return json(res, 500, { ok: false, error: error.message });
@@ -2625,7 +2628,7 @@ async function shutdown() {
   shuttingDown = true;
   await adServiceManager.stop();
   if (ownedChromeChild && ownedChromeChild.exitCode == null && !ownedChromeChild.killed) ownedChromeChild.kill();
-  schedulerDatabase.close();
+  dataAccess.close();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();
 }

@@ -93,6 +93,27 @@ test("proxy replaces the browser Authorization header with the internal service 
   assert.equal(res.status, 200);
 });
 
+test("proxy forwards the existing request id to the fixed advertising service", async () => {
+  let capturedHeaders;
+  const proxy = createAdServiceProxy({
+    baseUrl: "http://127.0.0.1:4173",
+    internalToken: INTERNAL_TOKEN,
+    fetchImpl: async (_url, init) => {
+      capturedHeaders = init.headers;
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  const req = request();
+  req.auditContext = { requestId: "request-proxy-1" };
+  const res = responseRecorder();
+  await proxy(req, res, new URL("http://office-host:3101/api/ads/service/status"), "api");
+  assert.equal(capturedHeaders.get("x-request-id"), "request-proxy-1");
+  assert.equal(res.status, 200);
+});
+
 test("proxy never treats a query parameter as an alternate target", async () => {
   let target;
   const proxy = createAdServiceProxy({
