@@ -97,6 +97,34 @@ test("only the main origin is needed for an authenticated advertising module", {
     mainService.stderr.on("data", (chunk) => mainLogs.push(chunk.toString()));
     await waitForHealth(`${mainUrl}/api/health`, mainService, mainLogs);
 
+    const deniedChrome = await fetch(`${mainUrl}/api/chrome/navigate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "http://127.0.0.1/" }),
+    });
+    const deniedImage = await fetch(`${mainUrl}/api/image?url=${encodeURIComponent("http://127.0.0.1/image.png")}`);
+    assert.equal(deniedChrome.status, 401);
+    assert.equal(deniedImage.status, 401);
+
+    const blockedChrome = await fetch(`${mainUrl}/api/chrome/navigate`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${APP_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ url: "http://127.0.0.1/" }),
+    });
+    const blockedImage = await fetch(`${mainUrl}/api/image?url=${encodeURIComponent("http://127.0.0.1/image.png")}`, {
+      headers: { Authorization: `Bearer ${APP_TOKEN}` },
+    });
+    const blockedChromeBody = await blockedChrome.json();
+    const blockedImageBody = await blockedImage.json();
+    assert.equal(blockedChrome.status, 400);
+    assert.equal(blockedImage.status, 400);
+    assert.equal(blockedChromeBody.code, "IP_ADDRESS_NOT_ALLOWED");
+    assert.equal(blockedImageBody.code, "IP_ADDRESS_NOT_ALLOWED");
+    assert.doesNotMatch(JSON.stringify([blockedChromeBody, blockedImageBody]), /[A-Z]:\\|node:internal|server\.mjs:\d+/i);
+
     const denied = await fetch(`${mainUrl}/api/ads/service/status`);
     assert.equal(denied.status, 401);
     const proxied = await fetch(`${mainUrl}/api/ads/service/status`, {

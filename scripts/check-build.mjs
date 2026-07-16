@@ -10,6 +10,9 @@ for (const file of [
   "public/ad-frame-bridge.mjs",
   "lib/app-access.mjs",
   "lib/ad-service-proxy.mjs",
+  "lib/security/network-policy.mjs",
+  "lib/security/chrome-navigation.mjs",
+  "lib/security/image-proxy.mjs",
   "server.mjs",
   "scheduler.mjs",
 ]) {

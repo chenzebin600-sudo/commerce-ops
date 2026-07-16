@@ -23,6 +23,23 @@ import {
   createAdServiceProxy,
   resolveAdServiceProxyConfig,
 } from "./lib/ad-service-proxy.mjs";
+import {
+  DEFAULT_CHROME_ALLOWED_HOSTS_BY_PLATFORM,
+  DEFAULT_IMAGE_PROXY_ALLOWED_HOSTS,
+  NetworkPolicyError,
+  createNetworkPolicy,
+  hostnameMatchesAllowedHost,
+  resolveAllowedHosts,
+} from "./lib/security/network-policy.mjs";
+import {
+  createChromeNavigationGuard,
+  resolveChromeNavigationConfig,
+} from "./lib/security/chrome-navigation.mjs";
+import {
+  ImageProxyError,
+  createSecureImageFetcher,
+  resolveImageProxyConfig,
+} from "./lib/security/image-proxy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -68,6 +85,30 @@ const proxyAdServiceRequest = createAdServiceProxy({
   baseUrl: adServiceConfig.baseUrl,
   internalToken: adServiceInternalToken,
 });
+const chromeAllowedHosts = resolveAllowedHosts(
+  Object.values(DEFAULT_CHROME_ALLOWED_HOSTS_BY_PLATFORM).flat(),
+  process.env.CHROME_ALLOWED_HOSTS,
+  "CHROME_ALLOWED_HOSTS",
+);
+const imageProxyAllowedHosts = resolveAllowedHosts(
+  DEFAULT_IMAGE_PROXY_ALLOWED_HOSTS,
+  process.env.IMAGE_PROXY_ALLOWED_HOSTS,
+  "IMAGE_PROXY_ALLOWED_HOSTS",
+);
+const chromeNetworkPolicy = createNetworkPolicy({
+  name: "Chrome navigation",
+  allowedHosts: chromeAllowedHosts,
+});
+const imageProxyNetworkPolicy = createNetworkPolicy({
+  name: "image proxy",
+  allowedHosts: imageProxyAllowedHosts,
+});
+const chromeNavigationConfig = resolveChromeNavigationConfig(process.env);
+const imageProxyConfig = resolveImageProxyConfig(process.env);
+const fetchSecureImage = createSecureImageFetcher({
+  policy: imageProxyNetworkPolicy,
+  ...imageProxyConfig,
+});
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -89,6 +130,21 @@ function json(res, status, data) {
     "cache-control": "no-store",
   });
   res.end(JSON.stringify(data));
+}
+
+function securityErrorResponse(res, error, fallback = {}) {
+  if (error instanceof NetworkPolicyError || error instanceof ImageProxyError) {
+    return json(res, error.status || 400, {
+      ok: false,
+      code: error.code,
+      error: error.message,
+    });
+  }
+  return json(res, fallback.status || 500, {
+    ok: false,
+    code: fallback.code || "SECURE_OPERATION_FAILED",
+    error: fallback.message || "安全操作失败。",
+  });
 }
 
 async function readBody(req) {
@@ -249,7 +305,7 @@ function findChromePath() {
   return candidates.find((candidate) => candidate && existsSync(candidate));
 }
 
-function openChromeWindow(openUrl) {
+function openChromeWindow() {
   const chromePath = findChromePath();
   if (!chromePath) throw new Error("未找到 Chrome 或 Edge，请设置 CHROME_PATH。");
   const profile = path.join(process.env.TEMP || __dirname, "marketplace-web-chrome-profile");
@@ -258,7 +314,7 @@ function openChromeWindow(openUrl) {
     `--user-data-dir=${profile}`,
     "--no-first-run",
     "--no-default-browser-check",
-    openUrl || "https://www.lazada.com.ph/",
+    "about:blank",
   ], { detached: true, stdio: "ignore" }).unref();
 }
 
@@ -304,7 +360,7 @@ async function getChromeTargets() {
     if (!response.ok) throw new Error(`Chrome debug port returned ${response.status}`);
     return response.json();
   } catch {
-    throw new Error(`Chrome 调试浏览器未连接。请先点击“打开验证浏览器”，或确认 ${chromePort} 端口的 Chrome 正在运行。`);
+    throw new Error("Chrome 调试浏览器未连接，请先点击“打开验证浏览器”。");
   }
 }
 
@@ -321,12 +377,16 @@ function connectCdp(wsUrl) {
   const ws = new WebSocket(wsUrl);
   let id = 0;
   const pending = new Map();
+  const eventListeners = new Map();
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
     if (msg.id && pending.has(msg.id)) {
       pending.get(msg.id)(msg);
       pending.delete(msg.id);
+    }
+    if (msg.method && eventListeners.has(msg.method)) {
+      for (const listener of eventListeners.get(msg.method)) listener(msg.params || {});
     }
   };
 
@@ -338,6 +398,11 @@ function connectCdp(wsUrl) {
           ws.send(JSON.stringify({ id: callId, method, params }));
           return new Promise((res) => pending.set(callId, res));
         },
+        on(method, listener) {
+          if (!eventListeners.has(method)) eventListeners.set(method, new Set());
+          eventListeners.get(method).add(listener);
+          return () => eventListeners.get(method)?.delete(listener);
+        },
         close() {
           ws.close();
         },
@@ -345,6 +410,68 @@ function connectCdp(wsUrl) {
     };
     ws.onerror = reject;
   });
+}
+
+function safeChromeTargetUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+    if (!chromeAllowedHosts.some((allowed) => hostnameMatchesAllowedHost(parsed.hostname, allowed))) return null;
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForPageTarget(timeoutMs = chromeNavigationConfig.timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const target = await getPageTarget();
+      if (target?.webSocketDebuggerUrl) return target;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new NetworkPolicyError("NAVIGATION_TIMEOUT", { status: 504 });
+}
+
+function configuredChromeNavigationGuard(cdp) {
+  return createChromeNavigationGuard({
+    cdp,
+    policy: chromeNetworkPolicy,
+    ...chromeNavigationConfig,
+  });
+}
+
+async function navigateChromeBrowser(inputUrl) {
+  const targetUrl = await chromeNetworkPolicy.validateUrl(inputUrl);
+  let target;
+  let mode = "navigate";
+  try {
+    target = await getPageTarget();
+  } catch {
+    openChromeWindow();
+    target = await waitForPageTarget();
+    mode = "open";
+  }
+  if (!target?.webSocketDebuggerUrl) {
+    openChromeWindow();
+    target = await waitForPageTarget();
+    mode = "open";
+  }
+
+  const cdp = await connectCdp(target.webSocketDebuggerUrl);
+  let guard;
+  try {
+    guard = await configuredChromeNavigationGuard(cdp);
+    await guard.navigate(targetUrl.url);
+    await guard.throwIfBlocked();
+    await cdp.send("Page.bringToFront");
+    return { mode };
+  } finally {
+    await guard?.dispose();
+    cdp.close();
+  }
 }
 
 async function extractLazadaProductInPage() {
@@ -883,12 +1010,14 @@ async function discoverTopLinks({ keyword, country, site, limit = 5 }) {
   if (!target?.webSocketDebuggerUrl) throw new Error("没有找到可用的 Chrome 调试页面。请先启动 Chrome 调试会话。");
 
   const cdp = await connectCdp(target.webSocketDebuggerUrl);
-  await cdp.send("Runtime.enable");
-  await cdp.send("Page.enable");
+  let guard;
   let searchData = null;
   try {
-    await cdp.send("Page.navigate", { url: search.url });
+    await cdp.send("Runtime.enable");
+    guard = await configuredChromeNavigationGuard(cdp);
+    await guard.navigate(search.url);
     await new Promise((resolve) => setTimeout(resolve, search.platform === "tiktok" ? 9500 : 7500));
+    await guard.throwIfBlocked();
     for (let i = 0; i < 5; i += 1) {
       await cdp.send("Runtime.evaluate", {
         expression: `window.scrollTo(0, document.body.scrollHeight * ${Math.min(0.25 + i * 0.18, 0.95)})`,
@@ -907,7 +1036,10 @@ async function discoverTopLinks({ keyword, country, site, limit = 5 }) {
       if (searchData?.moduleReady || searchData?.blocked) break;
       await new Promise((resolve) => setTimeout(resolve, 1500));
     }
+    await guard.throwIfBlocked();
+    if (searchData?.finalUrl) await chromeNetworkPolicy.validateUrl(searchData.finalUrl);
   } finally {
+    await guard?.dispose();
     cdp.close();
   }
 
@@ -1017,22 +1149,25 @@ async function extractProducts(urls) {
   if (!target?.webSocketDebuggerUrl) throw new Error("没有找到可用的 Chrome 调试页面。请先启动 Chrome 调试会话。");
 
   const cdp = await connectCdp(target.webSocketDebuggerUrl);
-  await cdp.send("Runtime.enable");
-  await cdp.send("Page.enable");
-
+  let guard;
   const products = [];
   try {
+    await cdp.send("Runtime.enable");
+    guard = await configuredChromeNavigationGuard(cdp);
     for (const [index, inputUrl] of urls.entries()) {
       const platform = detectPlatform(inputUrl);
       if (platform === "unknown") throw new Error(`暂不支持这个平台链接：${inputUrl}`);
-      await cdp.send("Page.navigate", { url: inputUrl });
+      await guard.navigate(inputUrl);
       await new Promise((resolve) => setTimeout(resolve, platform === "shopee" || platform === "tiktok" ? 8500 : 6000));
+      await guard.throwIfBlocked();
       await cdp.send("Runtime.evaluate", {
         expression: "window.scrollTo(0, document.body.scrollHeight * 0.72)",
         returnByValue: true,
       });
       await new Promise((resolve) => setTimeout(resolve, 2500));
       const product = await waitForProduct(cdp, platform);
+      await guard.throwIfBlocked();
+      if (product?.finalUrl) await chromeNetworkPolicy.validateUrl(product.finalUrl);
       products.push({
         ...product,
         platform,
@@ -1044,6 +1179,7 @@ async function extractProducts(urls) {
       });
     }
   } finally {
+    await guard?.dispose();
     cdp.close();
   }
   return products;
@@ -1085,13 +1221,15 @@ async function collectMabangOrders(filters) {
   if (!target?.webSocketDebuggerUrl) throw new Error("没有找到可用的 Chrome 调试页面。请先打开马帮订单页并登录。");
 
   const cdp = await connectCdp(target.webSocketDebuggerUrl);
-  await cdp.send("Runtime.enable");
-  await cdp.send("Page.enable");
+  let guard;
   try {
+    await cdp.send("Runtime.enable");
+    guard = await configuredChromeNavigationGuard(cdp);
     if (!/mabangerp\.com\/index\.php\?mod=order\.list/i.test(target.url || "")) {
-      await cdp.send("Page.navigate", { url: "https://900445.private.mabangerp.com/index.php?mod=order.list" });
+      await guard.navigate("https://900445.private.mabangerp.com/index.php?mod=order.list");
       await new Promise((resolve) => setTimeout(resolve, 12000));
-    }
+    } else await chromeNetworkPolicy.validateUrl(target.url);
+    await guard.throwIfBlocked();
     const clickOut = await cdp.send("Runtime.evaluate", {
       expression: `(() => {
         const wanted = ${JSON.stringify(status)};
@@ -1218,6 +1356,8 @@ async function collectMabangOrders(filters) {
     });
 
     const pageData = out.result?.result?.value || { orders: [] };
+    await guard.throwIfBlocked();
+    if (pageData.url) await chromeNetworkPolicy.validateUrl(pageData.url);
     const storeName = String(filters.storeName || "").trim().toLowerCase();
     const managerName = String(filters.managerName || "").trim().toLowerCase();
     const dateStart = String(filters.dateStart || "").trim();
@@ -1244,6 +1384,7 @@ async function collectMabangOrders(filters) {
       orders,
     };
   } finally {
+    await guard?.dispose();
     cdp.close();
   }
 }
@@ -1912,40 +2053,43 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/chrome/status") {
     try {
       const targets = await getChromeTargets();
-      return json(res, 200, { ok: true, targets: targets.filter((target) => target.type === "page").map((target) => ({ title: target.title, url: target.url })) });
-    } catch (error) {
-      return json(res, 200, { ok: false, needsChrome: true, error: error.message });
+      return json(res, 200, {
+        ok: true,
+        targets: targets
+          .filter((target) => target.type === "page")
+          .map((target) => ({ title: target.title, url: safeChromeTargetUrl(target.url) }))
+          .filter((target) => target.url),
+      });
+    } catch {
+      return json(res, 200, { ok: false, needsChrome: true, error: "Chrome 调试浏览器未连接。" });
     }
   }
 
   if (url.pathname === "/api/chrome/open") {
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "Method not allowed" });
     const body = await readBody(req);
     try {
-      openChromeWindow(body.url);
-      return json(res, 200, { ok: true });
+      const result = await navigateChromeBrowser(body.url || "https://www.lazada.com.ph/");
+      return json(res, 200, { ok: true, mode: result.mode });
     } catch (error) {
-      return json(res, 500, { ok: false, error: error.message });
+      return securityErrorResponse(res, error, {
+        code: "CHROME_NAVIGATION_FAILED",
+        message: "Chrome 导航失败。",
+      });
     }
   }
 
   if (url.pathname === "/api/chrome/navigate") {
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "Method not allowed" });
     const body = await readBody(req);
     try {
-      const target = await getPageTarget();
-      if (!target?.webSocketDebuggerUrl) throw new Error("没有可用 Chrome 调试页面。");
-      const cdp = await connectCdp(target.webSocketDebuggerUrl);
-      await cdp.send("Page.enable");
-      await cdp.send("Page.navigate", { url: body.url || "https://www.lazada.com.ph/" });
-      await cdp.send("Page.bringToFront");
-      cdp.close();
-      return json(res, 200, { ok: true, mode: "navigate" });
-    } catch {
-      try {
-        openChromeWindow(body.url);
-        return json(res, 200, { ok: true, mode: "open" });
-      } catch (error) {
-        return json(res, 500, { ok: false, error: error.message });
-      }
+      const result = await navigateChromeBrowser(body.url || "https://www.lazada.com.ph/");
+      return json(res, 200, { ok: true, mode: result.mode });
+    } catch (error) {
+      return securityErrorResponse(res, error, {
+        code: "CHROME_NAVIGATION_FAILED",
+        message: "Chrome 导航失败。",
+      });
     }
   }
 
@@ -2155,6 +2299,7 @@ async function handleApi(req, res, url) {
       const analysis = await callDeepSeek({ model: body.model, report });
       return json(res, 200, { ok: true, ...report, analysis });
     } catch (error) {
+      if (error instanceof NetworkPolicyError) return securityErrorResponse(res, error);
       return json(res, 500, { ok: false, error: error.message });
     }
   }
@@ -2181,6 +2326,7 @@ async function handleApi(req, res, url) {
       const analysis = await callDeepSeek({ model: body.model, report });
       return json(res, 200, { ok: true, ...report, analysis });
     } catch (error) {
+      if (error instanceof NetworkPolicyError) return securityErrorResponse(res, error);
       return json(res, 500, { ok: false, error: error.message });
     }
   }
@@ -2206,25 +2352,23 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/image") {
+    if (req.method !== "GET") return json(res, 405, { ok: false, error: "Method not allowed" });
     const imageUrl = url.searchParams.get("url");
-    if (!imageUrl) return json(res, 400, { ok: false, error: "Missing url" });
+    if (!imageUrl) return json(res, 400, { ok: false, code: "URL_INVALID", error: "URL 格式无效。" });
     try {
-      const imageHost = new URL(imageUrl).hostname.toLowerCase();
-      const allowed = /lazada|lazcdn|alicdn|slatic|shopee|susercontent|tiktok|ibyteimg|byteimg|ttwstatic/.test(imageHost);
-      if (!allowed) throw new Error("Image host is not allowed");
-      const referer = imageHost.includes("shopee") || imageHost.includes("susercontent")
-        ? "https://shopee.ph/"
-        : imageHost.includes("tiktok") || imageHost.includes("byteimg") || imageHost.includes("ibyteimg")
-          ? "https://shop.tiktok.com/"
-          : "https://www.lazada.com.ph/";
-      const response = await fetch(imageUrl, { headers: { "user-agent": "Mozilla/5.0", referer } });
-      if (!response.ok) throw new Error(`Image fetch failed: ${response.status}`);
-      const type = response.headers.get("content-type") || "image/jpeg";
-      res.writeHead(200, { "content-type": type, "cache-control": "public, max-age=3600" });
-      const bytes = Buffer.from(await response.arrayBuffer());
-      return res.end(bytes);
+      const image = await fetchSecureImage(imageUrl);
+      res.writeHead(200, {
+        "content-type": image.contentType,
+        "content-length": image.bytes.length,
+        "cache-control": "private, max-age=3600",
+        "x-content-type-options": "nosniff",
+      });
+      return res.end(image.bytes);
     } catch (error) {
-      return json(res, 500, { ok: false, error: error.message });
+      return securityErrorResponse(res, error, {
+        code: "IMAGE_PROXY_FAILED",
+        message: "图片代理请求失败。",
+      });
     }
   }
 
@@ -2286,6 +2430,7 @@ function getLanUrls() {
 
 server.listen(port, host, () => {
   for (const message of appStartupMessages(appConfig, accessPolicy)) console.log(message);
+  console.log(`Network policy: ${chromeAllowedHosts.length} Chrome hosts, ${imageProxyAllowedHosts.length} image hosts`);
   if (!isLoopbackBindHost(host)) {
     for (const lanUrl of getLanUrls()) console.log(`LAN: ${lanUrl}`);
   }

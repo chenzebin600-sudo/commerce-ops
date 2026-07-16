@@ -41,3 +41,20 @@ APP_ACCESS_TOKEN=<云端独立高强度随机值>
 云端仍应让 `AD_SERVICE_HOST=127.0.0.1`，并保持 `4173` 不对公网开放。若主服务与广告服务未来拆到不同机器，需要在后续部署阶段改用受控内网与服务间认证；当前固定代理有意拒绝非回环目标。
 
 Token 只保存在当前浏览器标签页的 `sessionStorage` 中。关闭标签页或点击“退出系统”后会失效；Token 不通过 URL、Cookie 或 `localStorage` 传递。
+
+## 外部网络目标限制
+
+Chrome 页面导航和商品图片代理使用同一套网络安全策略。系统只允许内置的 Lazada、Shopee、TikTok Shop、马帮及对应图片 CDN 域名，并在每次导航、图片请求和重定向前校验 DNS 返回的全部地址。直接 IP、回环地址、私网、链路本地、保留地址、云元数据地址、URL 内嵌凭证及非 HTTP(S) 协议均会被拒绝。
+
+如平台新增正式域名，可通过以下配置追加明确域名：
+
+```env
+CHROME_ALLOWED_HOSTS=
+IMAGE_PROXY_ALLOWED_HOSTS=
+NETWORK_REQUEST_TIMEOUT_MS=20000
+CHROME_MAX_REDIRECTS=5
+IMAGE_PROXY_MAX_BYTES=10485760
+IMAGE_PROXY_MAX_REDIRECTS=3
+```
+
+域名之间使用逗号分隔。配置不支持 `*`，也不允许填写完整 URL、IP 地址、`.com`、`.net`、`co.th` 等过宽公共后缀。非法配置会阻止服务启动。图片代理默认最多跟随 3 次经过重复校验的跳转，最大响应体为 10MB，并拒绝 SVG、HTML、JSON、脚本、缺失 Content-Type 和任意二进制响应。
