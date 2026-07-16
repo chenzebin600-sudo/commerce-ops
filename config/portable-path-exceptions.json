@@ -1,0 +1,6 @@
+[
+  {
+    "prefix": "tests/",
+    "reason": "Security tests intentionally include hostile absolute path samples."
+  }
+]

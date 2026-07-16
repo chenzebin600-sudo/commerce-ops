@@ -6,9 +6,11 @@ import os from "node:os";
 import { mkdtempSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { loadLocalEnv } from "../lib/env.mjs";
 
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const adServiceDir = "D:\\codex\\Lazada-Sponsored Max analysis\\webapp";
+loadLocalEnv(rootDir);
+const adServiceDir = path.resolve(rootDir, process.env.AD_SERVICE_DIR || path.join("..", "lazada-ads", "webapp"));
 const APP_TOKEN = "temporary-main-integration-token";
 const INTERNAL_TOKEN = "temporary-main-ad-internal-token";
 
@@ -139,7 +141,11 @@ test("only the main origin is needed for an authenticated advertising module", {
       headers: { Authorization: `Bearer ${APP_TOKEN}` },
     });
     assert.equal(proxied.status, 200);
-    assert.deepEqual(await proxied.json(), { ok: true });
+    assert.deepEqual(await proxied.json(), {
+      ok: true,
+      service: "lazada-sponsored-max-analyzer",
+      version: 1,
+    });
 
     const page = await fetch(`${mainUrl}/ads/`);
     const pageText = await page.text();

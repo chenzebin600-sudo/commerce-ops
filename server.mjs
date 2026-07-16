@@ -1,10 +1,9 @@
 import http from "node:http";
-import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync, spawn } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   appStartupMessages,
@@ -18,11 +17,7 @@ import { loadLocalEnv } from "./lib/env.mjs";
 import { createMabangWorkerRunner } from "./lib/mabang-worker-runner.mjs";
 import { openSchedulerDatabase } from "./lib/mabang-scheduler/db.mjs";
 import { createMabangSchedulerApi } from "./lib/mabang-scheduler/api.mjs";
-import {
-  AD_SERVICE_INTERNAL_HEADER,
-  createAdServiceProxy,
-  resolveAdServiceProxyConfig,
-} from "./lib/ad-service-proxy.mjs";
+import { createAdServiceProxy, resolveAdServiceProxyConfig } from "./lib/ad-service-proxy.mjs";
 import {
   DEFAULT_CHROME_ALLOWED_HOSTS_BY_PLATFORM,
   DEFAULT_IMAGE_PROXY_ALLOWED_HOSTS,
@@ -72,12 +67,18 @@ import { resolveLifecyclePolicy } from "./lib/files/file-lifecycle-policy.mjs";
 import { FileReviewRepository } from "./lib/files/file-review-repository.mjs";
 import { FileReviewService, resolveFileReviewPolicy } from "./lib/files/file-review-service.mjs";
 import { createFileReviewApi } from "./lib/files/file-review-api.mjs";
+import { createAdServiceManager } from "./lib/ad-service-manager.mjs";
+import { resolveChromeRuntime } from "./lib/chrome-runtime.mjs";
+import { resolveRuntimeConfig, runtimeEnvironment } from "./lib/runtime-config.mjs";
+import { resolveAdServiceInternalToken } from "./lib/ad-service-token.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 const excelCellPolicyModulePath = path.join(__dirname, "lib", "security", "excel-cell-policy.mjs");
 loadLocalEnv(__dirname);
-const fileStorageConfig = await ensureFileStorageRoots(resolveFileStorageConfig(__dirname, process.env));
+const runtimeConfig = resolveRuntimeConfig({ bootstrapRoot: __dirname, env: process.env });
+const runtimeEnv = { ...process.env, ...runtimeEnvironment(runtimeConfig) };
+const fileStorageConfig = await ensureFileStorageRoots(resolveFileStorageConfig(runtimeConfig.appRoot, runtimeEnv));
 const startupTempCleanup = await cleanupTemporaryFiles(fileStorageConfig.tempRoot, {
   retentionHours: fileStorageConfig.tempFileRetentionHours,
 });
@@ -85,42 +86,27 @@ if (startupTempCleanup.removed || startupTempCleanup.errors) {
   console.log(`Temporary file cleanup: ${startupTempCleanup.removed} removed, ${startupTempCleanup.errors} errors`);
 }
 
-async function resolveAdServiceInternalToken() {
-  const configuredToken = String(process.env.AD_SERVICE_INTERNAL_TOKEN || "").trim();
-  if (configuredToken) return configuredToken;
-
-  const tokenFile = path.resolve(
-    __dirname,
-    process.env.AD_SERVICE_INTERNAL_TOKEN_FILE || "storage/.ad-service-internal-token",
-  );
-  try {
-    const existingToken = String(await fs.readFile(tokenFile, "utf8")).trim();
-    if (existingToken) return existingToken;
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw new Error("无法读取广告服务内部Token文件");
-  }
-
-  const generatedToken = randomBytes(32).toString("base64url");
-  await fs.mkdir(path.dirname(tokenFile), { recursive: true });
-  try {
-    await fs.writeFile(tokenFile, `${generatedToken}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    return generatedToken;
-  } catch (error) {
-    if (error?.code !== "EEXIST") throw new Error("无法创建广告服务内部Token文件");
-    const existingToken = String(await fs.readFile(tokenFile, "utf8")).trim();
-    if (!existingToken) throw new Error("广告服务内部Token文件为空");
-    return existingToken;
-  }
-}
-
 const appConfig = resolveAppConfig(process.env);
 const { port, host } = appConfig;
 const accessPolicy = createAccessPolicy(appConfig);
-const chromePort = Number(process.env.CHROME_DEBUG_PORT || 9222);
-const adServiceConfig = resolveAdServiceProxyConfig(process.env);
+const chromePort = runtimeConfig.chromeDebugPort;
+const chromeRuntime = resolveChromeRuntime({ env: { ...process.env, CHROME_EXECUTABLE: runtimeConfig.chromeExecutable } });
+const adServiceConfig = resolveAdServiceProxyConfig(runtimeEnv);
 const adAnalyzerPort = adServiceConfig.port;
-const adAnalyzerDir = process.env.AD_ANALYZER_DIR || "D:\\codex\\Lazada-Sponsored Max analysis\\webapp";
-const adServiceInternalToken = await resolveAdServiceInternalToken();
+const adAnalyzerDir = runtimeConfig.adServiceDir;
+const adServiceInternalToken = await resolveAdServiceInternalToken({
+  configuredToken: process.env.AD_SERVICE_INTERNAL_TOKEN,
+  tokenFile: runtimeConfig.adServiceTokenFile,
+});
+const adServiceManager = createAdServiceManager({
+  mode: runtimeConfig.adServiceMode,
+  serviceDir: adAnalyzerDir,
+  baseUrl: adServiceConfig.baseUrl,
+  host: adServiceConfig.host,
+  port: adAnalyzerPort,
+  internalToken: adServiceInternalToken,
+  env: runtimeEnv,
+});
 const proxyAdServiceRequest = createAdServiceProxy({
   baseUrl: adServiceConfig.baseUrl,
   internalToken: adServiceInternalToken,
@@ -239,7 +225,7 @@ async function readBody(req) {
 }
 
 const scheduledExportRoot = fileStorageConfig.exportRoot;
-const schedulerDatabase = openSchedulerDatabase({ rootDir: __dirname });
+const schedulerDatabase = openSchedulerDatabase({ rootDir: runtimeConfig.appRoot, databasePath: runtimeConfig.databasePath });
 const auditService = createOperationAuditService({ db: schedulerDatabase, env: process.env });
 const trustedAuditProxies = parseTrustedProxies(process.env.TRUST_PROXY);
 const auditRetentionDays = Number(process.env.AUDIT_RETENTION_DAYS || 180);
@@ -259,11 +245,16 @@ auditService.recordSafely({
   errorSummary: startupTempCleanup.errors ? "Temporary file cleanup completed with errors" : null,
   metadata: { cleanupDeleted: startupTempCleanup.removed, result: startupTempCleanup.errors ? "partial" : "complete" },
 });
-const runMabangWorker = createMabangWorkerRunner({ rootDir: __dirname, exportRoot: fileStorageConfig.tempRoot });
+const runMabangWorker = createMabangWorkerRunner({
+  rootDir: runtimeConfig.appRoot,
+  exportRoot: fileStorageConfig.tempRoot,
+  runtimeConfig,
+  env: runtimeEnv,
+});
 const lifecyclePolicy = resolveLifecyclePolicy(process.env);
 const lifecycleRepository = new FileLifecycleRepository({ db: schedulerDatabase });
 const fileReviewRepository = new FileReviewRepository({ db: schedulerDatabase });
-const lifecycleRoots = buildLifecycleRoots({ fileStorageConfig, adAnalyzerDir, env: process.env });
+const lifecycleRoots = buildLifecycleRoots({ fileStorageConfig, adAnalyzerDir, env: runtimeEnv });
 const lifecycleScanner = new FileLifecycleScanner({
   fileRepository: exportFileService.repository,
   managedFileRepository: fileReviewRepository,
@@ -422,71 +413,36 @@ function buildSearchUrl({ site, country, keyword }) {
   throw new Error(`暂不支持这个站点：${site}`);
 }
 
-function findChromePath() {
-  const candidates = [
-    process.env.CHROME_PATH,
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    path.join(process.env.LOCALAPPDATA || "", "Google\\Chrome\\Application\\chrome.exe"),
-    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-  ].filter(Boolean);
+let ownedChromeChild = null;
 
-  return candidates.find((candidate) => candidate && existsSync(candidate));
-}
-
-function openChromeWindow() {
-  const chromePath = findChromePath();
-  if (!chromePath) throw new Error("未找到 Chrome 或 Edge，请设置 CHROME_PATH。");
-  const profile = path.join(process.env.TEMP || __dirname, "marketplace-web-chrome-profile");
-  spawn(chromePath, [
+async function openChromeWindow() {
+  if (!chromeRuntime.ok) throw new Error("Chrome is unavailable; check CHROME_EXECUTABLE");
+  await fs.mkdir(runtimeConfig.chromeProfileRoot, { recursive: true });
+  if (ownedChromeChild && ownedChromeChild.exitCode == null) return ownedChromeChild;
+  const child = spawn(chromeRuntime.executable, [
     `--remote-debugging-port=${chromePort}`,
-    `--user-data-dir=${profile}`,
+    `--user-data-dir=${runtimeConfig.chromeProfileRoot}`,
     "--no-first-run",
     "--no-default-browser-check",
     "about:blank",
-  ], { detached: true, stdio: "ignore" }).unref();
-}
-
-async function isAdAnalyzerRunning() {
-  try {
-    const response = await fetch(`${adServiceConfig.baseUrl}/api/service/status`, {
-      headers: { [AD_SERVICE_INTERNAL_HEADER]: adServiceInternalToken },
-      signal: AbortSignal.timeout(1500),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
+  ], { stdio: "ignore", windowsHide: true });
+  ownedChromeChild = child;
+  child.once("exit", () => {
+    if (ownedChromeChild === child) ownedChromeChild = null;
+  });
+  child.once("error", () => {
+    if (ownedChromeChild === child) ownedChromeChild = null;
+  });
+  return child;
 }
 
 async function ensureAdAnalyzerServer() {
-  if (!existsSync(path.join(adAnalyzerDir, "server.mjs"))) return { ok: false, error: "广告分析项目 server.mjs 不存在。" };
-  if (await isAdAnalyzerRunning()) return { ok: true, started: false, port: adAnalyzerPort };
-  spawn(process.execPath, ["server.mjs"], {
-    cwd: adAnalyzerDir,
-    env: {
-      ...process.env,
-      AD_SERVICE_HOST: adServiceConfig.host,
-      AD_SERVICE_PORT: String(adAnalyzerPort),
-      AD_SERVICE_INTERNAL_TOKEN: adServiceInternalToken,
-      PORT: String(adAnalyzerPort),
-      HOST: adServiceConfig.host,
-    },
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-  }).unref();
-  for (let i = 0; i < 10; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    if (await isAdAnalyzerRunning()) return { ok: true, started: true, port: adAnalyzerPort };
-  }
-  return { ok: false, error: "广告分析子服务启动超时。", port: adAnalyzerPort };
+  return adServiceManager.ensure();
 }
 
 async function getChromeTargets() {
   try {
-    const response = await fetch(`http://127.0.0.1:${chromePort}/json/list`);
+    const response = await fetch(`http://127.0.0.1:${chromePort}/json/list`, { signal: AbortSignal.timeout(3000) });
     if (!response.ok) throw new Error(`Chrome debug port returned ${response.status}`);
     return response.json();
   } catch {
@@ -580,12 +536,12 @@ async function navigateChromeBrowser(inputUrl) {
   try {
     target = await getPageTarget();
   } catch {
-    openChromeWindow();
+    await openChromeWindow();
     target = await waitForPageTarget();
     mode = "open";
   }
   if (!target?.webSocketDebuggerUrl) {
-    openChromeWindow();
+    await openChromeWindow();
     target = await waitForPageTarget();
     mode = "open";
   }
@@ -2662,3 +2618,17 @@ server.listen(port, host, () => {
     else console.warn(`Ad analyzer unavailable: ${status.error}`);
   });
 });
+
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  await adServiceManager.stop();
+  if (ownedChromeChild && ownedChromeChild.exitCode == null && !ownedChromeChild.killed) ownedChromeChild.kill();
+  schedulerDatabase.close();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000).unref();
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

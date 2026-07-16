@@ -4,12 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning server.mjs",
-    "scheduler": "node --disable-warning=ExperimentalWarning scheduler.mjs",
+    "start": "npm run start:all",
+    "start:main": "node --disable-warning=ExperimentalWarning server.mjs",
+    "start:scheduler": "node --disable-warning=ExperimentalWarning scheduler.mjs",
+    "start:ads": "node scripts/start-ads.mjs",
+    "scheduler": "npm run start:scheduler",
     "start:all": "node scripts/start-all.mjs",
+    "doctor": "node --disable-warning=ExperimentalWarning scripts/doctor.mjs",
+    "check:paths": "node scripts/check-portable-paths.mjs",
     "migrate": "node --disable-warning=ExperimentalWarning scripts/migrate.mjs",
     "audit:cleanup": "node --disable-warning=ExperimentalWarning scripts/cleanup-audit.mjs",
-    "build": "node scripts/check-build.mjs",
+    "build": "npm run check:paths && node scripts/check-build.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs"
   }
 }

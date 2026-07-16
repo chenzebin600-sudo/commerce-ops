@@ -1,5 +1,7 @@
 # Commerce Ops 访问配置
 
+运行目录、Python、Chrome、SQLite 与广告服务部署方式见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
+
 主服务优先读取 `APP_HOST`、`APP_PORT` 和 `APP_ACCESS_TOKEN`。旧的 `HOST`、`PORT` 仍兼容，但优先级更低。前端 API 使用当前页面的 origin，不依赖写死的本机 IP。
 
 ## 本机访问
