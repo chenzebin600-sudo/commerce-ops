@@ -154,6 +154,20 @@ test("valid xlsx passes extension, MIME, signature and workbook checks", () => {
   assert.match(result.storageFilename, /^[0-9a-f-]+\.xlsx$/);
 });
 
+test("workbook inspection counts formulas without evaluating them and rejects external links", () => {
+  const policy = config(os.tmpdir());
+  const formula = workbook({
+    worksheetXml: '<worksheet><dimension ref="A1"/><sheetData><row r="1"><c r="A1"><f>HYPERLINK("http://example.com")</f></c></row></sheetData></worksheet>',
+  });
+  const result = validateXlsxUpload({ filename: "formula.xlsx", mimeType: XLSX_MIME, buffer: formula, config: policy });
+  assert.equal(result.workbook.formulaCells, 1);
+  const external = workbook({ extraEntries: [{ name: "xl/externalLinks/externalLink1.xml", data: "<externalLink/>" }] });
+  assertFileError(
+    () => validateXlsxUpload({ filename: "external.xlsx", mimeType: XLSX_MIME, buffer: external, config: policy }),
+    FILE_ERROR_CODES.FILE_TYPE_NOT_ALLOWED,
+  );
+});
+
 test("fake, wrong-signature, macro and executable uploads are rejected", () => {
   const policy = config(os.tmpdir());
   assertFileError(() => validateXlsxUpload({ filename: "fake.xlsx", mimeType: XLSX_MIME, buffer: Buffer.from("plain text"), config: policy }), FILE_ERROR_CODES.FILE_SIGNATURE_INVALID);

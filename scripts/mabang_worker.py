@@ -10,6 +10,7 @@ from pathlib import Path
 
 import openpyxl
 
+from excel_cell_policy import sanitize_excel_text
 import mabang_inventory_source as inventory_source
 import mabang_order_source as order_source
 
@@ -282,9 +283,14 @@ def write_xlsx(payload):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook = openpyxl.Workbook(write_only=True)
     detail = workbook.create_sheet("订单明细" if kind == "orders" else "库存明细")
-    detail.append(columns)
+    detail_stats = {"sanitized": 0}
+    metadata_stats = {"sanitized": 0}
+    detail.append([sanitize_excel_text(column, stats=detail_stats) for column in columns])
     for record in records:
-        detail.append([json_safe(record.get(column, "")) for column in columns])
+        detail.append([
+            sanitize_excel_text(json_safe(record.get(column, "")), stats=detail_stats)
+            for column in columns
+        ])
 
     metadata_sheet_name = str(payload.get("metadataSheetName") or "采集信息")
     if not metadata_sheet_name or len(metadata_sheet_name) > 31 or re.search(r"[\\/*?:\[\]]", metadata_sheet_name):
@@ -317,10 +323,21 @@ def write_xlsx(payload):
         "accountUsername": "马帮账号",
     }
     for key, value in summary.items():
-        metadata.append([summary_labels.get(str(key), str(key)), json_safe(value)])
+        metadata.append([
+            sanitize_excel_text(summary_labels.get(str(key), str(key)), stats=metadata_stats),
+            sanitize_excel_text(json_safe(value), stats=metadata_stats),
+        ])
 
     workbook.save(output_path)
-    return {"ok": True, "outputPath": str(output_path), "rows": len(records)}
+    return {
+        "ok": True,
+        "outputPath": str(output_path),
+        "rows": len(records),
+        "sanitizedCells": [
+            {"sheet": detail.title, "count": detail_stats["sanitized"]},
+            {"sheet": metadata.title, "count": metadata_stats["sanitized"]},
+        ],
+    }
 
 
 def get_fields(payload):

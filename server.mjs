@@ -57,9 +57,11 @@ import {
   validateDownloadMetadata,
   validateFileId,
 } from "./lib/security/file-policy.mjs";
+import { normalizedSanitizationCounts } from "./lib/security/excel-cell-policy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
+const excelCellPolicyModulePath = path.join(__dirname, "lib", "security", "excel-cell-policy.mjs");
 loadLocalEnv(__dirname);
 const fileStorageConfig = await ensureFileStorageRoots(resolveFileStorageConfig(__dirname, process.env));
 const startupTempCleanup = await cleanupTemporaryFiles(fileStorageConfig.tempRoot, {
@@ -2286,7 +2288,7 @@ async function handleApi(req, res, url) {
         prefix: `mabang-manual-${fileId}`,
         extension: ".xlsx",
       });
-      await runMabangWorker({
+      const writeResult = await runMabangWorker({
         action: "write-xlsx",
         outputPath: temporaryFile.path,
         kind: task.kind,
@@ -2300,6 +2302,9 @@ async function handleApi(req, res, url) {
           filterQuery: String(body.query || "").trim() || "无",
         },
       }, 3 * 60 * 1000);
+      for (const item of normalizedSanitizationCounts(writeResult.sanitizedCells)) {
+        console.info(`Excel cell sanitization: fileId=${fileId} sheet=${item.sheet} count=${item.count}`);
+      }
       finalFile = await atomicMoveFile({
         sourceRoot: fileStorageConfig.tempRoot,
         sourcePath: temporaryFile.path,
@@ -2482,6 +2487,19 @@ async function handleApi(req, res, url) {
 }
 
 async function serveStatic(req, res, url) {
+  if (url.pathname === "/excel-cell-policy.mjs") {
+    try {
+      const data = await fs.readFile(excelCellPolicyModulePath);
+      res.writeHead(200, {
+        "content-type": mimeTypes[".mjs"],
+        "cache-control": "no-store",
+      });
+      return res.end(data);
+    } catch {
+      res.writeHead(404);
+      return res.end("Not found");
+    }
+  }
   const requested = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
   const filePath = path.normalize(path.join(publicDir, requested));
   if (!filePath.startsWith(publicDir)) {

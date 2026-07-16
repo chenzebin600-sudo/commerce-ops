@@ -5,6 +5,7 @@ import {
   saveSessionToken,
 } from "./auth-client.mjs";
 import { createAdFrameBridge } from "./ad-frame-bridge.mjs";
+import { createExcelHtmlRenderer } from "/excel-cell-policy.mjs";
 
 let currentReport = null;
 let currentMabangTask = null;
@@ -1798,25 +1799,6 @@ function plainTextFromHtml(html) {
   return div.textContent || div.innerText || "";
 }
 
-function excelCell(value) {
-  return esc(value ?? "");
-}
-
-function excelLink(url, label) {
-  if (!url) return "";
-  return `<a href="${esc(url)}">${esc(label || url)}</a>`;
-}
-
-function excelTable(title, headers, rows) {
-  return `
-    <h2>${esc(title)}</h2>
-    <table>
-      <tr>${headers.map((header) => `<th>${esc(header)}</th>`).join("")}</tr>
-      ${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell ?? ""}</td>`).join("")}</tr>`).join("")}
-    </table>
-  `;
-}
-
 function exportExcel() {
   if (!currentReport) {
     setStatus("请先获取信息，再导出 Excel。");
@@ -1827,6 +1809,10 @@ function exportExcel() {
   const modules = currentReport.analysis?.modules || {};
   const discovery = currentReport.discovery || null;
   const reference = discovery?.referenceProduct || {};
+  const excel = createExcelHtmlRenderer();
+  const excelCell = excel.text;
+  const excelLink = excel.link;
+  const excelTable = excel.table;
   const discoveryRows = discovery ? [
     ["站点", excelCell(platformName(discovery.platform))],
     ["国家", excelCell(String(discovery.country || "").toUpperCase())],
@@ -1910,6 +1896,9 @@ function exportExcel() {
   link.click();
   URL.revokeObjectURL(link.href);
   link.remove();
+  if (excel.sanitizedCount > 0) {
+    console.info(`Excel cell sanitization: fileId=browser-export sheet=all count=${excel.sanitizedCount}`);
+  }
   setWorkflowStep(4, 4);
   setStatus("Excel 已导出。", "success");
 }

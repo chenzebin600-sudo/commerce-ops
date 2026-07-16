@@ -14,6 +14,7 @@ for (const file of [
   "lib/security/chrome-navigation.mjs",
   "lib/security/image-proxy.mjs",
   "lib/security/file-policy.mjs",
+  "lib/security/excel-cell-policy.mjs",
   "lib/mabang-scheduler/api.mjs",
   "lib/mabang-scheduler/executor.mjs",
   "lib/mabang-scheduler/service.mjs",
