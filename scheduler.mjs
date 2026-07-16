@@ -27,7 +27,7 @@ const db = openSchedulerDatabase({ rootDir });
 const audit = createOperationAuditService({ db, env: process.env });
 const runWorker = createMabangWorkerRunner({ rootDir, exportRoot: fileStorage.tempRoot });
 const executor = createTaskExecutor({ db, runWorker, exportRoot, tempRoot: fileStorage.tempRoot, audit });
-const scheduler = new MabangSchedulerService({ db, executor, exportRoot });
+const scheduler = new MabangSchedulerService({ db, executor, exportRoot, audit });
 
 scheduler.start();
 console.log(`Mabang scheduler started. Poll interval: ${scheduler.pollIntervalMs}ms`);

@@ -1101,12 +1101,13 @@ function fullTaskFilterText(task) {
 }
 
 function renderScheduledSummary() {
-  const enabled = scheduledState.tasks.filter((task) => task.enabled).length;
+  const enabled = scheduledState.tasks.filter((task) => task.enabled && !task.deleted).length;
+  const deleted = scheduledState.tasks.filter((task) => task.deleted).length;
   const running = scheduledState.runs.filter((run) => ["pending", "running"].includes(run.status)).length;
   const failed = scheduledState.runs.filter((run) => ["failed", "partial_success"].includes(run.status)).length;
   const files = scheduledState.runs.filter((run) => run.fileStatus === "available").length;
   $("scheduledTaskSummary").innerHTML = [
-    ["全部任务", scheduledState.tasks.length], ["已启用", enabled], ["等待 / 执行中", running],
+    ["当前列表", scheduledState.tasks.length], ["已启用", enabled], ["已删除", deleted], ["等待 / 执行中", running],
     ["异常记录", failed], ["可下载文件", files],
   ].map(([label, value]) => `<div class="mabang-summary-item"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
 }
@@ -1122,26 +1123,29 @@ function renderScheduledTasks() {
     <table class="mabang-data-table scheduled-table">
       <thead><tr><th>任务名称</th><th>导出内容</th><th>马帮账号</th><th>执行周期</th><th>数据范围</th><th>店长</th><th>店铺</th><th>状态</th><th>上次执行</th><th>下次执行</th><th>通知</th><th>操作</th></tr></thead>
       <tbody>${tasks.map((task) => `
-        <tr>
-          <td><strong>${esc(task.name)}</strong><small>${esc(task.description || (task.taskType === "inventory_export" ? "库存快照导出" : "订单导出"))}</small></td>
+        <tr class="${task.deleted ? "task-deleted-row" : ""}">
+          <td><strong>${esc(task.name)}</strong><small>${esc(task.description || (task.taskType === "inventory_export" ? "库存快照导出" : "订单导出"))}</small>${task.deleted ? `<small>删除于 ${esc(formatScheduledDate(task.deletedAt))}${task.deleteReason ? ` · ${esc(task.deleteReason)}` : ""}</small>` : ""}</td>
           <td><span class="run-status ${task.taskType === "inventory_export" ? "inventory-type" : "order-type"}">${esc(SCHEDULE_TASK_TYPE_LABELS[task.taskType] || "订单信息")}</span></td>
           <td>${esc(task.accountName)}<small>${esc(task.accountUsernameMasked)}</small></td>
           <td>${esc(scheduledTimeText(task))}<small>${esc(task.timezone)}</small></td>
           <td>${esc(scheduledDateRangeText(task))}</td>
           <td>${task.taskType === "inventory_export" ? "-" : esc(taskFilterText(task, "uq172"))}</td>
           <td>${task.taskType === "inventory_export" ? "-" : esc(taskFilterText(task, "uq135"))}</td>
-          <td>${task.enabled ? '<span class="run-status enabled">启用</span>' : '<span class="run-status disabled">停用</span>'}<small>${task.lastRunStatus ? SCHEDULE_STATUS_LABELS[task.lastRunStatus] || task.lastRunStatus : "尚未执行"}</small></td>
+          <td>${task.deleted ? '<span class="run-status skipped">已删除</span>' : task.enabled ? '<span class="run-status enabled">启用</span>' : '<span class="run-status disabled">停用</span>'}<small>${task.lastRunStatus ? SCHEDULE_STATUS_LABELS[task.lastRunStatus] || task.lastRunStatus : "尚未执行"}</small></td>
           <td>${esc(formatScheduledDate(task.lastRunAt))}</td>
           <td>${esc(formatScheduledDate(task.nextRunAt))}</td>
           <td>${task.notifyEnabled && task.dingtalkConfigId ? '<span class="run-status enabled">已启用</span>' : '<span class="run-status disabled">未启用</span>'}<small>${esc(task.dingtalkName || "-")}</small></td>
-          <td><div class="table-actions">
+          <td><div class="table-actions">${task.deleted ? `
+            <button type="button" data-task-action="records" data-task-id="${esc(task.id)}">历史记录与文件</button>
+            <button type="button" data-task-action="restore" data-task-id="${esc(task.id)}">恢复</button>
+          ` : `
             <button type="button" data-task-action="edit" data-task-id="${esc(task.id)}">编辑</button>
             <button type="button" data-task-action="run" data-task-id="${esc(task.id)}">立即执行</button>
             <button type="button" data-task-action="toggle" data-task-id="${esc(task.id)}">${task.enabled ? "停用" : "启用"}</button>
             <button type="button" data-task-action="duplicate" data-task-id="${esc(task.id)}">复制</button>
             <button type="button" data-task-action="records" data-task-id="${esc(task.id)}">执行记录</button>
             <button class="danger-action" type="button" data-task-action="delete" data-task-id="${esc(task.id)}">删除</button>
-          </div></td>
+          `}</div></td>
         </tr>`).join("")}</tbody>
     </table>`;
 }
@@ -1172,7 +1176,7 @@ function renderScheduledRuns() {
           <td><div class="table-actions">
             <button type="button" data-run-action="detail" data-run-id="${esc(run.id)}">查看详情</button>
             ${run.exportFileId && run.fileStatus === "available" ? `<button type="button" data-run-action="download" data-run-id="${esc(run.id)}" data-file-id="${esc(run.exportFileId)}">下载</button>` : ""}
-            ${["failed", "partial_success", "skipped"].includes(run.status) ? `<button type="button" data-run-action="retry" data-run-id="${esc(run.id)}">重新执行</button>` : ""}
+            ${!run.taskDeleted && ["failed", "partial_success", "skipped"].includes(run.status) ? `<button type="button" data-run-action="retry" data-run-id="${esc(run.id)}">重新执行</button>` : ""}
           </div></td>
         </tr>`;
       }).join("")}</tbody>
@@ -1193,7 +1197,7 @@ async function refreshScheduledData({ quiet = false } = {}) {
       apiJson("/api/mabang/scheduler-meta"),
       apiJson("/api/mabang/account-profiles"),
       apiJson("/api/notifications/dingtalk/configs"),
-      apiJson("/api/mabang/scheduled-tasks"),
+      apiJson(`/api/mabang/scheduled-tasks${$("scheduledIncludeDeleted")?.checked ? "?include_deleted=true" : ""}`),
       apiJson(`/api/mabang/scheduled-runs?limit=200${status ? `&status=${encodeURIComponent(status)}` : ""}`),
     ]);
     scheduledState.meta = meta;
@@ -1627,11 +1631,20 @@ async function handleScheduledTaskAction(button) {
   if (action === "edit") return openScheduledTaskDialog(task);
   if (action === "run") return openRunNowConfirmation(task);
   if (action === "records") return showScheduledView("runs", task.id);
-  if (action === "delete" && !confirm(`确定删除定时任务“${task.name}”吗？执行记录和文件索引也会一并删除。`)) return;
-  if (action === "delete") {
-    await apiJson(`/api/mabang/scheduled-tasks/${encodeURIComponent(task.id)}`, { method: "DELETE" });
+  if (action === "restore") {
+    if (!confirm(`确定恢复定时任务“${task.name}”吗？恢复后任务保持停用，不会补执行删除期间错过的计划。`)) return;
+    const result = await apiJson(`/api/mabang/scheduled-tasks/${encodeURIComponent(task.id)}/restore`, { method: "POST", body: {} });
     await refreshScheduledData({ quiet: true });
-    setStatus("定时任务已删除。", "success");
+    setStatus(result.warning || "定时任务已恢复并保持停用。", result.warning ? "warning" : "success");
+    return;
+  }
+  if (action === "delete" && !confirm(`确定删除定时任务“${task.name}”吗？历史执行记录和已生成文件会继续保留。`)) return;
+  if (action === "delete") {
+    const reason = prompt("可选：填写删除原因（最多 240 个字符）", "");
+    if (reason === null) return;
+    await apiJson(`/api/mabang/scheduled-tasks/${encodeURIComponent(task.id)}`, { method: "DELETE", body: { reason } });
+    await refreshScheduledData({ quiet: true });
+    setStatus("定时任务已软删除，历史记录和文件仍然保留。", "success");
     return;
   }
   const endpoint = action === "toggle" ? (task.enabled ? "disable" : "enable") : action;
@@ -2221,6 +2234,7 @@ $("manageDingtalkBtn").addEventListener("click", async () => {
 $("refreshScheduledBtn").addEventListener("click", () => refreshScheduledData().catch(() => {}));
 $("toggleScheduledRunsBtn").addEventListener("click", () => showScheduledView(scheduledState.activeView === "runs" ? "tasks" : "runs"));
 $("scheduledRunStatusFilter").addEventListener("change", () => refreshScheduledData({ quiet: true }).catch((error) => setStatus(error.message, "error")));
+$("scheduledIncludeDeleted").addEventListener("change", () => refreshScheduledData({ quiet: true }).catch((error) => setStatus(error.message, "error")));
 $("scheduledTasksTable").addEventListener("click", (event) => {
   const button = event.target.closest("[data-task-action]");
   if (button) handleScheduledTaskAction(button).catch((error) => setStatus(error.message, "error"));

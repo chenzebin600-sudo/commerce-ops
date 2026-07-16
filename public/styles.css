@@ -1849,6 +1849,14 @@ tr:last-child td {
   color: var(--danger);
 }
 
+.scheduled-table .task-deleted-row {
+  opacity: 0.82;
+}
+
+.compact-check-field {
+  flex: 0 0 auto;
+}
+
 .run-status {
   display: inline-flex;
   min-height: 24px;
