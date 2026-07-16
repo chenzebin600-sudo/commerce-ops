@@ -282,7 +282,12 @@ def write_xlsx(payload):
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook = openpyxl.Workbook(write_only=True)
-    detail = workbook.create_sheet("订单明细" if kind == "orders" else "库存明细")
+    detail_names = {
+        "orders": "订单明细",
+        "inventory": "库存明细",
+        "lifecycle": "Lifecycle report",
+    }
+    detail = workbook.create_sheet(detail_names.get(kind, "Data"))
     detail_stats = {"sanitized": 0}
     metadata_stats = {"sanitized": 0}
     detail.append([sanitize_excel_text(column, stats=detail_stats) for column in columns])
@@ -297,7 +302,8 @@ def write_xlsx(payload):
         raise ValueError("Excel 信息工作表名称无效。")
     metadata = workbook.create_sheet(metadata_sheet_name)
     metadata.append(["项目", "内容"])
-    metadata.append(["数据类型", "订单信息" if kind == "orders" else "库存信息"])
+    kind_labels = {"orders": "订单信息", "inventory": "库存信息", "lifecycle": "File lifecycle scan"}
+    metadata.append(["数据类型", kind_labels.get(kind, "Data")])
     metadata.append(["导出时间", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
     summary_labels = {
         "orders": "订单数",

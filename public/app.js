@@ -42,11 +42,27 @@ const scheduledState = {
   activeView: "tasks",
 };
 const mabangExportFilesState = { files: [], total: 0 };
+const lifecycleState = { scan: null, items: [], page: 1, totalPages: 1, total: 0, pollTimer: null };
+const LIFECYCLE_LABELS = {
+  healthy: "正常",
+  metadata_missing: "缺少数据库记录",
+  physical_missing: "物理文件缺失",
+  size_mismatch: "大小异常",
+  hash_mismatch: "哈希异常",
+  path_invalid: "路径异常",
+  temp_stale: "临时残留",
+  expired_candidate: "过期候选",
+  unknown_file: "未知文件",
+  duplicate_content: "重复内容",
+  legacy_untracked_export: "旧版孤儿导出",
+  active_or_recent: "活动或近期文件",
+};
 const EXPORT_SOURCE_LABELS = {
   mabang_manual_order: "手工订单",
   mabang_manual_inventory: "手工库存",
   mabang_scheduled_order: "定时订单",
   mabang_scheduled_inventory: "定时库存",
+  system_file_lifecycle_report: "生命周期报告",
 };
 const MABANG_ORDER_FILTER_OPERATORS = [
   { value: "contains", label: "包含", needsValue: true },
@@ -993,6 +1009,7 @@ function switchMabangView(view) {
     currentMabangTask = null;
     $("mabangResultPanel").hidden = true;
     refreshMabangExportFiles().catch((error) => setStatus(error.message, "error"));
+    refreshLifecycleSummary().catch((error) => setStatus(error.message, "error"));
     return;
   }
   currentMabangTask = mabangTasksByKind[currentMabangView];
@@ -1069,6 +1086,124 @@ async function downloadMabangExportFile(fileId) {
   link.click();
   link.remove();
   URL.revokeObjectURL(objectUrl);
+}
+
+function lifecycleStatusClass(classification) {
+  if (classification === "healthy") return "success";
+  if (classification === "active_or_recent") return "running";
+  if (["expired_candidate", "temp_stale"].includes(classification)) return "skipped";
+  return "failed";
+}
+
+function renderLifecycleSummary() {
+  const scan = lifecycleState.scan;
+  const summary = scan?.summary || {};
+  const cards = [
+    ["healthy", "正常"], ["metadata_missing", "数据库缺失文件"], ["physical_missing", "物理文件缺失"],
+    ["hash_mismatch", "哈希异常"], ["temp_stale", "临时残留"], ["expired_candidate", "过期候选"],
+    ["legacy_untracked_export", "旧版孤儿导出"],
+  ];
+  $("lifecycleSummary").innerHTML = cards.map(([key, label]) => `<article class="summary-card">
+    <span>${esc(label)}</span><strong>${Number(summary[key] || 0)}</strong>
+  </article>`).join("");
+  $("lifecycleScanHint").textContent = !scan
+    ? "尚未执行文件生命周期扫描。"
+    : scan.status === "running"
+      ? `扫描进行中，开始于 ${formatScheduledDate(scan.startedAt)}。`
+      : `最近扫描：${formatScheduledDate(scan.finishedAt || scan.startedAt)}，共 ${scan.totalFiles} 条结果${scan.truncated ? "，已达到扫描保护上限" : ""}。`;
+  $("startLifecycleScanBtn").disabled = scan?.status === "running";
+  $("exportLifecycleBtn").disabled = scan?.status !== "completed";
+}
+
+function renderLifecycleItems() {
+  if (!lifecycleState.items.length) {
+    $("lifecycleItemsTable").innerHTML = '<p class="order-filter-empty">暂无符合条件的扫描条目。</p>';
+  } else {
+    $("lifecycleItemsTable").innerHTML = `<table class="mabang-data-table scheduled-table">
+      <thead><tr><th>文件</th><th>分类</th><th>范围</th><th>大小</th><th>修改时间</th><th>建议</th><th>操作</th></tr></thead>
+      <tbody>${lifecycleState.items.map((item) => `<tr>
+        <td><strong>${esc(item.maskedFilename)}</strong><small>${esc(item.fileId ? item.fileId.slice(0, 8) : item.shortHash || "未登记")}</small></td>
+        <td><span class="run-status ${lifecycleStatusClass(item.classification)}">${esc(LIFECYCLE_LABELS[item.classification] || item.classification)}</span></td>
+        <td>${esc(item.scope)}</td><td>${esc(formatFileSize(item.fileSize))}</td>
+        <td>${esc(formatScheduledDate(item.fileModifiedAt))}</td>
+        <td>${item.suggestCleanup ? "后续评估清理" : item.suggestQuarantine ? "后续评估隔离" : "保留"}</td>
+        <td><button type="button" data-lifecycle-action="detail" data-lifecycle-id="${esc(item.id)}">查看</button></td>
+      </tr>`).join("")}</tbody>
+    </table>`;
+  }
+  $("lifecyclePageInfo").textContent = `第 ${lifecycleState.page} / ${lifecycleState.totalPages} 页，共 ${lifecycleState.total} 条`;
+  $("lifecyclePrevPageBtn").disabled = lifecycleState.page <= 1;
+  $("lifecycleNextPageBtn").disabled = lifecycleState.page >= lifecycleState.totalPages;
+}
+
+async function loadLifecycleReport(page = 1) {
+  if (!lifecycleState.scan?.id || lifecycleState.scan.status !== "completed") {
+    lifecycleState.items = [];
+    renderLifecycleItems();
+    return;
+  }
+  const params = new URLSearchParams({ page: String(page), page_size: "50" });
+  const category = $("lifecycleCategoryFilter").value;
+  if (category) params.set("classification", category);
+  const data = await apiJson(`/api/files/lifecycle/reports/${encodeURIComponent(lifecycleState.scan.id)}?${params}`);
+  lifecycleState.scan = data.scan;
+  lifecycleState.items = data.items || [];
+  lifecycleState.page = Number(data.page || 1);
+  lifecycleState.totalPages = Number(data.totalPages || 1);
+  lifecycleState.total = Number(data.total || 0);
+  renderLifecycleSummary();
+  renderLifecycleItems();
+}
+
+async function refreshLifecycleSummary() {
+  const data = await apiJson("/api/files/lifecycle/summary");
+  lifecycleState.scan = data.scan || null;
+  renderLifecycleSummary();
+  if (lifecycleState.scan?.status === "completed") await loadLifecycleReport(1);
+  else {
+    lifecycleState.items = [];
+    lifecycleState.total = 0;
+    lifecycleState.page = 1;
+    lifecycleState.totalPages = 1;
+    renderLifecycleItems();
+  }
+  if (lifecycleState.scan?.status === "running") {
+    clearTimeout(lifecycleState.pollTimer);
+    lifecycleState.pollTimer = setTimeout(() => refreshLifecycleSummary().catch(() => {}), 1200);
+  }
+}
+
+async function startLifecycleScan() {
+  $("startLifecycleScanBtn").disabled = true;
+  const data = await apiJson("/api/files/lifecycle/scan", { method: "POST", body: { scopes: "all" } });
+  lifecycleState.scan = data.scan;
+  lifecycleState.items = [];
+  renderLifecycleSummary();
+  renderLifecycleItems();
+  clearTimeout(lifecycleState.pollTimer);
+  lifecycleState.pollTimer = setTimeout(() => refreshLifecycleSummary().catch(() => {}), 600);
+}
+
+async function exportLifecycleReport() {
+  if (!lifecycleState.scan?.id) return;
+  const data = await apiJson(`/api/files/lifecycle/reports/${encodeURIComponent(lifecycleState.scan.id)}/export`, { method: "POST", body: {} });
+  await downloadMabangExportFile(data.fileId);
+  refreshMabangExportFiles().catch(() => {});
+}
+
+function showLifecycleDetail(itemId) {
+  const item = lifecycleState.items.find((entry) => entry.id === itemId);
+  if (!item) return;
+  const fields = [
+    ["分类", LIFECYCLE_LABELS[item.classification] || item.classification], ["附加分类", item.categories.join(", ")],
+    ["文件", item.maskedFilename], ["扫描范围", item.scope], ["来源", item.sourceType || "未识别"],
+    ["文件ID", item.fileId || "未登记"], ["任务ID", item.taskId || "-"], ["执行记录ID", item.runId || "-"],
+    ["文件大小", formatFileSize(item.fileSize)], ["创建时间", formatScheduledDate(item.fileCreatedAt)],
+    ["修改时间", formatScheduledDate(item.fileModifiedAt)], ["数据库状态", item.databaseStatus || "无记录"],
+    ["物理状态", item.physicalStatus], ["短哈希", item.shortHash || "-"], ["原因代码", item.reasonCode],
+  ];
+  $("lifecycleDetailBody").innerHTML = fields.map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
+  openManagementDialog("lifecycleDetailDialog");
 }
 
 async function fetchMabangResult(page = 1, { useDraft = false } = {}) {
@@ -2248,6 +2383,19 @@ $("mabangInventoryFetchBtn").addEventListener("click", () => collectMabangData("
 $("mabangAddOrderFilterBtn").addEventListener("click", () => addMabangOrderFilter());
 $("mabangExportBtn").addEventListener("click", exportMabangData);
 $("refreshMabangFilesBtn").addEventListener("click", () => refreshMabangExportFiles().catch((error) => setStatus(error.message, "error")));
+$("startLifecycleScanBtn").addEventListener("click", () => startLifecycleScan().catch((error) => {
+  $("startLifecycleScanBtn").disabled = false;
+  setStatus(error.message, "error");
+}));
+$("refreshLifecycleBtn").addEventListener("click", () => refreshLifecycleSummary().catch((error) => setStatus(error.message, "error")));
+$("exportLifecycleBtn").addEventListener("click", () => exportLifecycleReport().catch((error) => setStatus(error.message, "error")));
+$("lifecycleCategoryFilter").addEventListener("change", () => loadLifecycleReport(1).catch((error) => setStatus(error.message, "error")));
+$("lifecyclePrevPageBtn").addEventListener("click", () => loadLifecycleReport(lifecycleState.page - 1).catch((error) => setStatus(error.message, "error")));
+$("lifecycleNextPageBtn").addEventListener("click", () => loadLifecycleReport(lifecycleState.page + 1).catch((error) => setStatus(error.message, "error")));
+$("lifecycleItemsTable").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-lifecycle-action='detail']");
+  if (button) showLifecycleDetail(button.dataset.lifecycleId);
+});
 $("mabangFilesTable").addEventListener("click", (event) => {
   const button = event.target.closest("[data-file-action='download']");
   if (!button) return;

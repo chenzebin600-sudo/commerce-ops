@@ -64,6 +64,11 @@ import {
 import { createAuditApi } from "./lib/security/audit-api.mjs";
 import { createExportFileService } from "./lib/files/export-file-service.mjs";
 import { createFileApi } from "./lib/files/file-api.mjs";
+import { FileLifecycleRepository } from "./lib/files/file-lifecycle-repository.mjs";
+import { FileLifecycleScanner, buildLifecycleRoots } from "./lib/files/file-lifecycle-scanner.mjs";
+import { FileLifecycleService } from "./lib/files/file-lifecycle-service.mjs";
+import { createFileLifecycleApi } from "./lib/files/file-lifecycle-api.mjs";
+import { resolveLifecyclePolicy } from "./lib/files/file-lifecycle-policy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -252,6 +257,24 @@ auditService.recordSafely({
   metadata: { cleanupDeleted: startupTempCleanup.removed, result: startupTempCleanup.errors ? "partial" : "complete" },
 });
 const runMabangWorker = createMabangWorkerRunner({ rootDir: __dirname, exportRoot: fileStorageConfig.tempRoot });
+const lifecyclePolicy = resolveLifecyclePolicy(process.env);
+const lifecycleRepository = new FileLifecycleRepository({ db: schedulerDatabase });
+const lifecycleScanner = new FileLifecycleScanner({
+  fileRepository: exportFileService.repository,
+  roots: buildLifecycleRoots({ fileStorageConfig, adAnalyzerDir, env: process.env }),
+  policy: lifecyclePolicy,
+  protectedFileIds: lifecycleRepository.protectedFileIds(),
+});
+const lifecycleService = new FileLifecycleService({
+  repository: lifecycleRepository,
+  scanner: lifecycleScanner,
+  audit: auditService,
+  fileService: exportFileService,
+  tempRoot: fileStorageConfig.tempRoot,
+  runWorker: runMabangWorker,
+  policy: lifecyclePolicy,
+});
+const handleFileLifecycleApi = createFileLifecycleApi({ service: lifecycleService });
 const handleMabangSchedulerApi = createMabangSchedulerApi({
   db: schedulerDatabase,
   runWorker: runMabangWorker,
@@ -2135,6 +2158,9 @@ async function handleApi(req, res, url) {
 
   const auditHandled = await handleAuditApi(req, res, url);
   if (auditHandled) return true;
+
+  const lifecycleHandled = await handleFileLifecycleApi(req, res, url);
+  if (lifecycleHandled) return true;
 
   const fileHandled = await handleFileApi(req, res, url);
   if (fileHandled) return true;

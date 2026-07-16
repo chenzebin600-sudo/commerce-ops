@@ -60,7 +60,17 @@ test("sensitive endpoint mappings cover security, advertising, Mabang and files"
   assert.equal(describeAuditRequest("POST", "/api/mabang/scheduled-tasks/task_1/run-now").action, "mabang.task.run_now");
   assert.equal(describeAuditRequest("GET", "/api/mabang/export-files/file_1/download").action, "file.download");
   assert.equal(describeAuditRequest("GET", "/api/files/file_1/download").action, "file.download");
+  assert.equal(describeAuditRequest("POST", "/api/files/lifecycle/scan").action, "file.lifecycle.scan.requested");
+  assert.equal(describeAuditRequest("POST", "/api/files/lifecycle/reports/scan_1/export").action, "file.lifecycle.report.exported");
   assert.equal(describeAuditRequest("GET", "/api/files"), null);
+});
+
+test("lifecycle report downloads receive a dedicated audit action", () => {
+  const context = createHttpAuditContext(request({ method: "GET" }), new URL("http://localhost/api/files/00000000-0000-0000-0000-000000000000/download"));
+  context.annotate({ metadata: { sourceType: "system_file_lifecycle_report" } });
+  const { events, audit } = collector();
+  completeHttpAudit(audit, context, { httpStatus: 200 });
+  assert.equal(events[0].action, "file.lifecycle.report.downloaded");
 });
 
 test("rejected Chrome, image and file operations receive rejection actions", () => {

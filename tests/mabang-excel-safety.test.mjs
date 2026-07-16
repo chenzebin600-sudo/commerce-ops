@@ -88,3 +88,42 @@ test("Mabang workbook keeps columns and scalar values while emitting no untruste
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("lifecycle report workbook uses the same formula-injection protection", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "lifecycle-excel-safety-"));
+  const outputPath = path.join(tempDir, "lifecycle.xlsx");
+  const payload = {
+    action: "write-xlsx",
+    outputPath,
+    kind: "lifecycle",
+    columns: ["filename", "reason_code"],
+    records: [{ filename: "=HYPERLINK(\"http://example.com\")", reason_code: "+SUM(1,1)" }],
+    metadataSheetName: "Scan information",
+    summary: { scanId: "@scan", exportedRows: 1 },
+  };
+  try {
+    const generated = spawnSync(python, [worker], {
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      env: { ...process.env, PYTHONIOENCODING: "utf-8", MABANG_EXPORT_DIR: tempDir },
+      timeout: 30_000,
+    });
+    assert.equal(generated.status, 0, generated.stderr);
+    const inspect = [
+      "import json,sys,openpyxl",
+      "wb=openpyxl.load_workbook(sys.argv[1],read_only=True,data_only=False,keep_links=False)",
+      "rows=list(wb.worksheets[0].iter_rows(values_only=False))",
+      "meta=list(wb.worksheets[1].iter_rows(values_only=False))",
+      "print(json.dumps({'values':[c.value for c in rows[1]],'types':[c.data_type for c in rows[1]],'meta_values':[c.value for row in meta for c in row],'meta_types':[c.data_type for row in meta for c in row]}))",
+      "wb.close()",
+    ].join(";");
+    const inspected = spawnSync(python, ["-c", inspect, outputPath], { encoding: "utf8" });
+    assert.equal(inspected.status, 0, inspected.stderr);
+    const workbook = JSON.parse(inspected.stdout);
+    assert.deepEqual(workbook.values, ["'=HYPERLINK(\"http://example.com\")", "'+SUM(1,1)"]);
+    assert.equal([...workbook.types, ...workbook.meta_types].includes("f"), false);
+    assert.equal(workbook.meta_values.includes("'@scan"), true);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

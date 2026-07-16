@@ -385,6 +385,42 @@
                 <button id="refreshMabangFilesBtn" class="button-tertiary" type="button">刷新记录</button>
               </div>
               <div id="mabangFilesTable" class="table-wrap scheduled-table-wrap"></div>
+
+              <div class="section-title-row compact">
+                <div>
+                  <h3>文件生命周期</h3>
+                  <p id="lifecycleScanHint">手动核验文件记录与物理文件，仅生成只读报告。</p>
+                </div>
+                <div class="table-actions">
+                  <button id="refreshLifecycleBtn" class="button-tertiary" type="button">刷新</button>
+                  <button id="exportLifecycleBtn" class="button-tertiary" type="button" disabled>导出报告</button>
+                  <button id="startLifecycleScanBtn" class="button-secondary" type="button">开始扫描</button>
+                </div>
+              </div>
+              <div id="lifecycleSummary" class="mabang-summary-grid"></div>
+              <div class="data-toolbar">
+                <label class="field-block compact-field">
+                  <span>分类</span>
+                  <select id="lifecycleCategoryFilter" autocomplete="off">
+                    <option value="">全部分类</option>
+                    <option value="healthy">正常</option>
+                    <option value="metadata_missing">缺少数据库记录</option>
+                    <option value="physical_missing">物理文件缺失</option>
+                    <option value="hash_mismatch">哈希异常</option>
+                    <option value="size_mismatch">大小异常</option>
+                    <option value="temp_stale">临时残留</option>
+                    <option value="expired_candidate">过期候选</option>
+                    <option value="legacy_untracked_export">旧版孤儿导出</option>
+                    <option value="active_or_recent">活动或近期文件</option>
+                  </select>
+                </label>
+              </div>
+              <div id="lifecycleItemsTable" class="table-wrap scheduled-table-wrap"></div>
+              <div class="pagination-row">
+                <button id="lifecyclePrevPageBtn" class="button-tertiary" type="button" disabled>上一页</button>
+                <span id="lifecyclePageInfo">第 1 / 1 页</span>
+                <button id="lifecycleNextPageBtn" class="button-tertiary" type="button" disabled>下一页</button>
+              </div>
             </div>
 
             <div id="mabangTaskState" class="mabang-task-state" aria-live="polite">
@@ -764,6 +800,14 @@
           <button id="auditDetailClose" class="dialog-close" type="button" aria-label="关闭">×</button>
         </div>
         <div id="auditDetailContent"></div>
+      </dialog>
+
+      <dialog id="lifecycleDetailDialog" class="management-dialog management-dialog-wide" aria-labelledby="lifecycleDetailTitle">
+        <div class="dialog-title-row">
+          <div><p class="page-context">FILE LIFECYCLE</p><h2 id="lifecycleDetailTitle">扫描条目详情</h2></div>
+          <button class="dialog-close" type="button" data-close-dialog="lifecycleDetailDialog" aria-label="关闭">×</button>
+        </div>
+        <div id="lifecycleDetailBody" class="run-detail-grid"></div>
       </dialog>
 
       <dialog id="runNowConfirmDialog" class="management-dialog confirmation-dialog" aria-labelledby="runNowConfirmTitle">
