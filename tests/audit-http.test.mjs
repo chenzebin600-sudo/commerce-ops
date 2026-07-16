@@ -59,6 +59,8 @@ test("sensitive endpoint mappings cover security, advertising, Mabang and files"
   assert.equal(describeAuditRequest("POST", "/api/ads/analyze").action, "ads.analysis.run");
   assert.equal(describeAuditRequest("POST", "/api/mabang/scheduled-tasks/task_1/run-now").action, "mabang.task.run_now");
   assert.equal(describeAuditRequest("GET", "/api/mabang/export-files/file_1/download").action, "file.download");
+  assert.equal(describeAuditRequest("GET", "/api/files/file_1/download").action, "file.download");
+  assert.equal(describeAuditRequest("GET", "/api/files"), null);
 });
 
 test("rejected Chrome, image and file operations receive rejection actions", () => {

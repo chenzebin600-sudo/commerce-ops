@@ -41,6 +41,13 @@ const scheduledState = {
   filterOptions: {},
   activeView: "tasks",
 };
+const mabangExportFilesState = { files: [], total: 0 };
+const EXPORT_SOURCE_LABELS = {
+  mabang_manual_order: "手工订单",
+  mabang_manual_inventory: "手工库存",
+  mabang_scheduled_order: "定时订单",
+  mabang_scheduled_inventory: "定时库存",
+};
 const MABANG_ORDER_FILTER_OPERATORS = [
   { value: "contains", label: "包含", needsValue: true },
   { value: "equals", label: "等于", needsValue: true },
@@ -959,7 +966,7 @@ async function applyMabangFilters() {
 }
 
 function switchMabangView(view) {
-  currentMabangView = ["orders", "inventory", "scheduled"].includes(view) ? view : "orders";
+  currentMabangView = ["orders", "inventory", "scheduled", "files"].includes(view) ? view : "orders";
   document.querySelectorAll(".mabang-view-tab").forEach((button) => {
     const active = button.dataset.mabangView === currentMabangView;
     button.classList.toggle("active", active);
@@ -968,8 +975,9 @@ function switchMabangView(view) {
   $("mabangOrdersPanel").hidden = currentMabangView !== "orders";
   $("mabangInventoryPanel").hidden = currentMabangView !== "inventory";
   $("mabangScheduledPanel").hidden = currentMabangView !== "scheduled";
-  $("mabangCredentialSection").hidden = currentMabangView === "scheduled";
-  $("mabangTaskState").hidden = currentMabangView === "scheduled";
+  $("mabangFilesPanel").hidden = currentMabangView !== "files";
+  $("mabangCredentialSection").hidden = ["scheduled", "files"].includes(currentMabangView);
+  $("mabangTaskState").hidden = ["scheduled", "files"].includes(currentMabangView);
   if (currentMabangView === "scheduled") {
     currentMabangTask = null;
     $("mabangResultPanel").hidden = true;
@@ -979,6 +987,12 @@ function switchMabangView(view) {
         if (currentMabangView === "scheduled" && !document.hidden) refreshScheduledData({ quiet: true }).catch(() => {});
       }, 10000);
     }
+    return;
+  }
+  if (currentMabangView === "files") {
+    currentMabangTask = null;
+    $("mabangResultPanel").hidden = true;
+    refreshMabangExportFiles().catch((error) => setStatus(error.message, "error"));
     return;
   }
   currentMabangTask = mabangTasksByKind[currentMabangView];
@@ -991,6 +1005,70 @@ function switchMabangView(view) {
     $("mabangSearchBtn").disabled = true;
   }
   loadMabangFieldCatalog(currentMabangView).catch((error) => setStatus(error.message, "error"));
+}
+
+function formatFileSize(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function exportFileStatus(file) {
+  if (file.status === "available") return '<span class="run-status success">可下载</span>';
+  if (file.status === "missing") return '<span class="run-status failed">文件缺失</span>';
+  if (file.status === "integrity_failed") return '<span class="run-status failed">校验失败</span>';
+  if (file.status === "expired") return '<span class="run-status skipped">已过期</span>';
+  return `<span class="run-status disabled">${esc(file.status || "不可用")}</span>`;
+}
+
+function renderMabangExportFiles() {
+  const files = mabangExportFilesState.files;
+  $("mabangFilesHint").textContent = files.length
+    ? `共 ${mabangExportFilesState.total} 条记录，当前显示最近 ${files.length} 条。`
+    : "暂无持久化导出记录。";
+  if (!files.length) {
+    $("mabangFilesTable").innerHTML = '<p class="order-filter-empty">暂无导出文件。</p>';
+    return;
+  }
+  $("mabangFilesTable").innerHTML = `<table class="mabang-data-table scheduled-table">
+    <thead><tr><th>文件名称</th><th>来源</th><th>创建时间</th><th>文件大小</th><th>状态</th><th>操作</th></tr></thead>
+    <tbody>${files.map((file) => `<tr>
+      <td><strong>${esc(file.originalFilename)}</strong><small>${esc(file.id.slice(0, 8))}</small></td>
+      <td>${esc(EXPORT_SOURCE_LABELS[file.sourceType] || file.sourceType)}</td>
+      <td>${esc(formatScheduledDate(file.createdAt))}</td>
+      <td>${esc(formatFileSize(file.fileSize))}</td>
+      <td>${exportFileStatus(file)}</td>
+      <td><div class="table-actions">${file.status === "available" ? `<button type="button" data-file-action="download" data-file-id="${esc(file.id)}">下载</button>` : "-"}</div></td>
+    </tr>`).join("")}</tbody>
+  </table>`;
+}
+
+async function refreshMabangExportFiles() {
+  const data = await apiJson("/api/files?page=1&page_size=50");
+  mabangExportFilesState.files = data.files || [];
+  mabangExportFilesState.total = Number(data.total || 0);
+  renderMabangExportFiles();
+}
+
+async function downloadMabangExportFile(fileId) {
+  const response = await authorizedFetch(`/api/files/${encodeURIComponent(fileId)}/download`);
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || "文件下载失败。");
+  }
+  const disposition = response.headers.get("content-disposition") || "";
+  const filename = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+    ? decodeURIComponent(disposition.match(/filename\*=UTF-8''([^;]+)/i)[1])
+    : disposition.match(/filename="([^"]+)"/)?.[1] || "mabang-export.xlsx";
+  const objectUrl = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
 }
 
 async function fetchMabangResult(page = 1, { useDraft = false } = {}) {
@@ -1679,22 +1757,7 @@ async function handleScheduledRunAction(button) {
   if (button.dataset.runAction === "detail") return showRunDetails(id);
   if (button.dataset.runAction === "download") {
     const fileId = button.dataset.fileId;
-    const response = await authorizedFetch(`/api/mabang/export-files/${encodeURIComponent(fileId)}/download`);
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || "文件下载失败。");
-    }
-    const disposition = response.headers.get("content-disposition") || "";
-    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "mabang-export.xlsx";
-    const objectUrl = URL.createObjectURL(await response.blob());
-    const link = document.createElement("a");
-    link.href = objectUrl;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(objectUrl);
-    return;
+    return downloadMabangExportFile(fileId);
   }
   if (button.dataset.runAction === "retry") {
     const result = await apiJson(`/api/mabang/scheduled-runs/${encodeURIComponent(id)}/retry`, { method: "POST", body: {} });
@@ -2139,6 +2202,7 @@ async function exportMabangData() {
         taskId: currentMabangTask.taskId,
         query: String(currentMabangTask.query || ""),
         field: String(currentMabangTask.filterField || "__all__"),
+        requestId: crypto.randomUUID(),
       }),
     });
     if (!response.ok) {
@@ -2163,6 +2227,7 @@ async function exportMabangData() {
     link.remove();
     setMabangTaskState("Excel 已导出", `已导出 ${exportedRows} 条，内容与当前筛选结果一致。`, "success");
     setStatus(`马帮 Excel 已导出，共 ${exportedRows} 条。`, "success");
+    refreshMabangExportFiles().catch(() => {});
   } catch (error) {
     setMabangTaskState("导出失败", error.message, "error");
     setStatus(error.message, "error");
@@ -2182,6 +2247,12 @@ $("mabangOrderFetchBtn").addEventListener("click", () => collectMabangData("orde
 $("mabangInventoryFetchBtn").addEventListener("click", () => collectMabangData("inventory"));
 $("mabangAddOrderFilterBtn").addEventListener("click", () => addMabangOrderFilter());
 $("mabangExportBtn").addEventListener("click", exportMabangData);
+$("refreshMabangFilesBtn").addEventListener("click", () => refreshMabangExportFiles().catch((error) => setStatus(error.message, "error")));
+$("mabangFilesTable").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-file-action='download']");
+  if (!button) return;
+  downloadMabangExportFile(button.dataset.fileId).catch((error) => setStatus(error.message, "error"));
+});
 $("mabangSearchBtn").addEventListener("click", applyMabangFilters);
 $("mabangClearFilterBtn").addEventListener("click", () => clearMabangFilters().catch((error) => setStatus(error.message, "error")));
 $("mabangForgetCredentialsBtn").addEventListener("click", forgetMabangCredentials);

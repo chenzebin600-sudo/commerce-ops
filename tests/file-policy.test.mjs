@@ -21,6 +21,7 @@ import {
   validateXlsxUpload,
 } from "../lib/security/file-policy.mjs";
 import { createMabangSchedulerApi } from "../lib/mabang-scheduler/api.mjs";
+import { ExportFileService } from "../lib/files/export-file-service.mjs";
 
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -281,15 +282,26 @@ test("scheduled download uses file ID metadata and returns bounded 404/path erro
     await fs.writeFile(target.path, bytes);
     let record = {
       id: fileId,
+      fileType: "excel",
+      sourceType: "mabang_scheduled_order",
       status: "available",
       originalFilename: "history.xlsx",
       storageFilename: `${fileId}.xlsx`,
       relativePath,
       fileSize: bytes.length,
       fileHash: hashFileBuffer(bytes),
+      mimeType: XLSX_MIME,
     };
     const db = { getExportFile: (id) => id === fileId ? record : null };
-    const handler = createMabangSchedulerApi({ db, runWorker: async () => ({}), exportRoot: root });
+    const repository = {
+      get: (id) => id === fileId ? record : null,
+      updateStatus: (id, status) => {
+        if (id === fileId) record = { ...record, status };
+        return record;
+      },
+    };
+    const fileService = new ExportFileService({ db, exportRoot: root, tempRoot: root, repository });
+    const handler = createMabangSchedulerApi({ db, runWorker: async () => ({}), exportRoot: root, fileService });
 
     const success = responseRecorder();
     await handler({ method: "GET" }, success, new URL(`http://local/api/mabang/export-files/${fileId}/download`));

@@ -227,6 +227,7 @@
                 <button class="mabang-view-tab active" type="button" role="tab" data-mabang-view="orders" aria-selected="true" aria-controls="mabangOrdersPanel">订单信息</button>
                 <button class="mabang-view-tab" type="button" role="tab" data-mabang-view="inventory" aria-selected="false" aria-controls="mabangInventoryPanel">库存信息</button>
                 <button class="mabang-view-tab" type="button" role="tab" data-mabang-view="scheduled" aria-selected="false" aria-controls="mabangScheduledPanel">定时任务</button>
+                <button class="mabang-view-tab" type="button" role="tab" data-mabang-view="files" aria-selected="false" aria-controls="mabangFilesPanel">导出记录</button>
               </div>
             </div>
 
@@ -373,6 +374,17 @@
                 </div>
                 <div id="scheduledRunsTable" class="table-wrap scheduled-table-wrap"></div>
               </section>
+            </div>
+
+            <div id="mabangFilesPanel" class="mabang-view-panel" role="tabpanel" hidden>
+              <div class="section-title-row compact">
+                <div>
+                  <h3>马帮导出记录</h3>
+                  <p id="mabangFilesHint">查看手工和定时导出的持久化文件记录。</p>
+                </div>
+                <button id="refreshMabangFilesBtn" class="button-tertiary" type="button">刷新记录</button>
+              </div>
+              <div id="mabangFilesTable" class="table-wrap scheduled-table-wrap"></div>
             </div>
 
             <div id="mabangTaskState" class="mabang-task-state" aria-live="polite">

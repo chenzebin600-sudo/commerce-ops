@@ -43,18 +43,13 @@ import {
 import {
   FILE_ERROR_CODES,
   FilePolicyError,
-  atomicMoveFile,
   cleanupTemporaryFiles,
   createTemporaryFilePath,
   ensureFileStorageRoots,
-  hashFileBuffer,
   publicFileError,
   removeFileInsideRoot,
-  resolveExistingFile,
   resolveFileStorageConfig,
-  safeContentDisposition,
   sanitizeFilename,
-  validateDownloadMetadata,
   validateFileId,
 } from "./lib/security/file-policy.mjs";
 import { normalizedSanitizationCounts } from "./lib/security/excel-cell-policy.mjs";
@@ -67,6 +62,8 @@ import {
   createHttpAuditContext,
 } from "./lib/security/audit-http.mjs";
 import { createAuditApi } from "./lib/security/audit-api.mjs";
+import { createExportFileService } from "./lib/files/export-file-service.mjs";
+import { createFileApi } from "./lib/files/file-api.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -239,6 +236,13 @@ const auditService = createOperationAuditService({ db: schedulerDatabase, env: p
 const trustedAuditProxies = parseTrustedProxies(process.env.TRUST_PROXY);
 const auditRetentionDays = Number(process.env.AUDIT_RETENTION_DAYS || 180);
 const handleAuditApi = createAuditApi({ audit: auditService, retentionDays: auditRetentionDays });
+const exportFileService = createExportFileService({
+  db: schedulerDatabase,
+  exportRoot: scheduledExportRoot,
+  tempRoot: fileStorageConfig.tempRoot,
+  audit: auditService,
+});
+const handleFileApi = createFileApi({ fileService: exportFileService });
 auditService.recordSafely({
   module: "file",
   action: "file.temp.cleanup",
@@ -252,62 +256,11 @@ const handleMabangSchedulerApi = createMabangSchedulerApi({
   db: schedulerDatabase,
   runWorker: runMabangWorker,
   exportRoot: scheduledExportRoot,
+  fileService: exportFileService,
 });
-const manualExportFiles = new Map();
-const MANUAL_EXPORT_TTL_MS = 60 * 60 * 1000;
 const mabangTasks = new Map();
 const MABANG_TASK_TTL_MS = 30 * 60 * 1000;
 const MABANG_MAX_TASKS = 8;
-
-async function pruneManualExportFiles() {
-  const cutoff = Date.now() - MANUAL_EXPORT_TTL_MS;
-  let removed = 0;
-  for (const [fileId, file] of manualExportFiles) {
-    if (file.createdAt >= cutoff) continue;
-    try {
-      const target = await resolveExistingFile(scheduledExportRoot, file.relativePath, { allowedExtensions: [".xlsx"] });
-      await removeFileInsideRoot(scheduledExportRoot, target.path);
-    } catch {
-      // Expired transient exports are removed only when their trusted path still resolves inside EXPORT_ROOT.
-    }
-    manualExportFiles.delete(fileId);
-    removed += 1;
-  }
-  if (removed) auditService.recordSafely({
-    module: "file",
-    action: "file.temp.cleanup",
-    status: "success",
-    actorType: "application",
-    metadata: { cleanupDeleted: removed, kind: "manual_export" },
-  });
-  return removed;
-}
-
-async function sendXlsxDownload(res, metadata, { deleteAfter = false } = {}) {
-  const file = validateDownloadMetadata(metadata);
-  const resolved = await resolveExistingFile(scheduledExportRoot, file.relativePath, {
-    allowedExtensions: [".xlsx"],
-  });
-  if (resolved.stat.size <= 0 || resolved.stat.size !== Number(file.fileSize || 0)) {
-    throw new FilePolicyError(FILE_ERROR_CODES.FILE_ACCESS_DENIED);
-  }
-  const content = await fs.readFile(resolved.path);
-  if (file.fileHash && hashFileBuffer(content) !== file.fileHash) {
-    throw new FilePolicyError(FILE_ERROR_CODES.FILE_ACCESS_DENIED);
-  }
-  res.writeHead(200, {
-    "content-type": mimeTypes[".xlsx"],
-    "content-disposition": safeContentDisposition(file.originalFilename),
-    "content-length": content.length,
-    "cache-control": "private, no-store",
-    "x-content-type-options": "nosniff",
-  });
-  res.end(content);
-  const deleted = deleteAfter
-    ? await removeFileInsideRoot(scheduledExportRoot, resolved.path)
-    : false;
-  return { deleted };
-}
 
 function pruneMabangTasks() {
   const cutoff = Date.now() - MABANG_TASK_TTL_MS;
@@ -2183,6 +2136,9 @@ async function handleApi(req, res, url) {
   const auditHandled = await handleAuditApi(req, res, url);
   if (auditHandled) return true;
 
+  const fileHandled = await handleFileApi(req, res, url);
+  if (fileHandled) return true;
+
   if (url.pathname.startsWith("/api/ads/")) {
     return proxyAdServiceRequest(req, res, url, "api");
   }
@@ -2335,18 +2291,8 @@ async function handleApi(req, res, url) {
   const manualExportDownloadMatch = url.pathname.match(/^\/api\/mabang-data\/export-files\/([^/]+)\/download$/);
   if (manualExportDownloadMatch) {
     if (req.method !== "GET") return json(res, 405, { ok: false, error: "Method not allowed" });
-    try {
-      await pruneManualExportFiles();
-      const fileId = validateFileId(decodeURIComponent(manualExportDownloadMatch[1]));
-      const file = manualExportFiles.get(fileId);
-      if (!file) throw new FilePolicyError(FILE_ERROR_CODES.FILE_NOT_FOUND);
-      const result = await sendXlsxDownload(res, file, { deleteAfter: true });
-      if (result.deleted) manualExportFiles.delete(fileId);
-      return true;
-    } catch (error) {
-      req.auditContext?.annotate({ errorCode: error.code || FILE_ERROR_CODES.FILE_ACCESS_DENIED, errorSummary: error });
-      return securityErrorResponse(res, publicFileError(error));
-    }
+    const fileId = encodeURIComponent(decodeURIComponent(manualExportDownloadMatch[1]));
+    return handleFileApi(req, res, new URL(`/api/files/${fileId}/download`, url.origin));
   }
 
   if (url.pathname === "/api/mabang-data/export") {
@@ -2354,10 +2300,23 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     req.auditContext?.annotate({ taskId: body.taskId, metadata: { kind: "manual_export" } });
     let temporaryFile = null;
-    let finalFile = null;
     try {
-      await pruneManualExportFiles();
       const task = getMabangTask(body.taskId);
+      const requestId = validateFileId(body.requestId || randomUUID());
+      const requestKey = `mabang_manual:${task.kind}:${requestId}`;
+      const existing = exportFileService.getByRequestKey(requestKey);
+      if (existing) {
+        if (existing.status !== "available") throw new FilePolicyError(FILE_ERROR_CODES.FILE_NOT_AVAILABLE);
+        req.auditContext?.annotate({ fileId: existing.id });
+        return json(res, 200, {
+          ok: true,
+          reused: true,
+          fileId: existing.id,
+          filename: existing.originalFilename,
+          exportedRows: Number(existing.metadata?.exportedRows || 0),
+          downloadUrl: `/api/files/${existing.id}/download`,
+        });
+      }
       const filterField = task.columns.includes(body.field) ? body.field : "__all__";
       const records = filterMabangRecords(task.records, body.query, filterField);
       const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
@@ -2383,39 +2342,42 @@ async function handleApi(req, res, url) {
           filterQuery: String(body.query || "").trim() || "无",
         },
       }, 3 * 60 * 1000);
-      for (const item of normalizedSanitizationCounts(writeResult.sanitizedCells)) {
+      const sanitizationCounts = normalizedSanitizationCounts(writeResult.sanitizedCells);
+      for (const item of sanitizationCounts) {
         console.info(`Excel cell sanitization: fileId=${fileId} sheet=${item.sheet} count=${item.count}`);
       }
-      finalFile = await atomicMoveFile({
-        sourceRoot: fileStorageConfig.tempRoot,
-        sourcePath: temporaryFile.path,
-        destinationRoot: scheduledExportRoot,
-        destinationRelativePath: relativePath,
-      });
-      const content = await fs.readFile(finalFile.path);
-      const metadata = {
+      const persisted = await exportFileService.persistTemporaryExport({
         id: fileId,
-        status: "available",
+        requestKey,
+        temporaryPath: temporaryFile.path,
+        sourceType: task.kind === "inventory" ? "mabang_manual_inventory" : "mabang_manual_order",
         originalFilename: filename,
         storageFilename: path.basename(relativePath),
         relativePath,
-        fileSize: content.length,
-        fileHash: hashFileBuffer(content),
-        createdAt: Date.now(),
-      };
-      manualExportFiles.set(fileId, metadata);
-      req.auditContext?.annotate({ fileId });
+        metadata: {
+          exportedRows: records.length,
+          sourceRows: task.records.length,
+          generatedBy: "manual",
+          sanitizedCellCount: sanitizationCounts.reduce((total, item) => total + item.count, 0),
+        },
+      });
+      temporaryFile = null;
+      req.auditContext?.annotate({ fileId: persisted.file.id });
       return json(res, 201, {
         ok: true,
-        fileId,
-        filename,
+        reused: persisted.reused,
+        fileId: persisted.file.id,
+        filename: persisted.file.originalFilename,
         exportedRows: records.length,
-        downloadUrl: `/api/mabang-data/export-files/${fileId}/download`,
+        downloadUrl: `/api/files/${persisted.file.id}/download`,
       });
     } catch (error) {
       req.auditContext?.annotate({ errorStage: "generate_excel", errorCode: error.code || FILE_ERROR_CODES.TEMP_FILE_ERROR, errorSummary: error });
+      req.auditContext?.addRelated("file", "file.export.failed", {
+        status: "failed",
+        errorCode: error.code || FILE_ERROR_CODES.TEMP_FILE_ERROR,
+      });
       if (temporaryFile?.path) await removeFileInsideRoot(fileStorageConfig.tempRoot, temporaryFile.path);
-      if (finalFile?.path) await removeFileInsideRoot(scheduledExportRoot, finalFile.path);
       return securityErrorResponse(res, publicFileError(error, FILE_ERROR_CODES.TEMP_FILE_ERROR));
     }
   }
