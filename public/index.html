@@ -56,6 +56,13 @@
               <span>Lazada 广告分析</span>
             </button>
           </div>
+          <div class="nav-group">
+            <span class="nav-group-label">系统</span>
+            <button class="tab-button" type="button" data-page="audit" aria-controls="page-audit">
+              <span class="nav-monogram" aria-hidden="true">O</span>
+              <span>操作记录</span>
+            </button>
+          </div>
         </nav>
 
         <div class="sidebar-footer">
@@ -437,6 +444,83 @@
           </section>
         </section>
 
+        <section id="page-audit" class="page-section" hidden>
+          <section class="panel audit-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>操作记录</h2>
+                <p>查看敏感操作、外部服务调用和任务执行结果。记录内容已脱敏。</p>
+              </div>
+              <button id="auditRefreshBtn" class="button-secondary" type="button">刷新记录</button>
+            </div>
+
+            <form id="auditFilterForm" class="audit-filter-grid">
+              <label class="field-block">
+                <span>开始时间</span>
+                <input id="auditStart" type="datetime-local" />
+              </label>
+              <label class="field-block">
+                <span>结束时间</span>
+                <input id="auditEnd" type="datetime-local" />
+              </label>
+              <label class="field-block">
+                <span>模块</span>
+                <select id="auditModule">
+                  <option value="">全部模块</option>
+                  <option value="auth">访问认证</option>
+                  <option value="competitor">竞品分析</option>
+                  <option value="ai">AI 调用</option>
+                  <option value="ads">广告分析</option>
+                  <option value="mabang">马帮数据</option>
+                  <option value="file">文件操作</option>
+                  <option value="security">安全边界</option>
+                  <option value="audit">审计维护</option>
+                </select>
+              </label>
+              <label class="field-block">
+                <span>结果</span>
+                <select id="auditStatus">
+                  <option value="">全部结果</option>
+                  <option value="success">成功</option>
+                  <option value="failed">失败</option>
+                </select>
+              </label>
+              <label class="field-block audit-action-filter">
+                <span>操作标识</span>
+                <input id="auditAction" autocomplete="off" placeholder="例如 mabang.task.run_now" />
+              </label>
+              <button type="submit">查询</button>
+            </form>
+
+            <div id="auditSummary" class="audit-summary" aria-live="polite"></div>
+            <div class="table-wrap audit-table-wrap">
+              <table class="audit-table">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>模块</th>
+                    <th>操作</th>
+                    <th>结果</th>
+                    <th>耗时</th>
+                    <th>来源</th>
+                    <th>关联对象</th>
+                    <th>错误摘要</th>
+                    <th>查看</th>
+                  </tr>
+                </thead>
+                <tbody id="auditTableBody"></tbody>
+              </table>
+            </div>
+            <div class="pagination-bar">
+              <span id="auditPageInfo">第 1 / 1 页</span>
+              <div>
+                <button id="auditPrevPage" class="button-secondary" type="button" disabled>上一页</button>
+                <button id="auditNextPage" class="button-secondary" type="button" disabled>下一页</button>
+              </div>
+            </div>
+          </section>
+        </section>
+
         <section id="results" class="results" aria-live="polite"></section>
       </div>
 
@@ -658,6 +742,14 @@
         <div id="scheduledRunDetailContent"></div>
       </dialog>
 
+      <dialog id="auditDetailDialog" class="management-dialog management-dialog-wide" aria-labelledby="auditDetailTitle">
+        <div class="dialog-heading">
+          <div><span class="page-context">AUDIT EVENT</span><h2 id="auditDetailTitle">操作记录详情</h2><p>仅展示经过脱敏和字段白名单处理的内容。</p></div>
+          <button id="auditDetailClose" class="dialog-close" type="button" aria-label="关闭">×</button>
+        </div>
+        <div id="auditDetailContent"></div>
+      </dialog>
+
       <dialog id="runNowConfirmDialog" class="management-dialog confirmation-dialog" aria-labelledby="runNowConfirmTitle">
         <div class="dialog-heading">
           <div><span class="page-context">RUN NOW</span><h2 id="runNowConfirmTitle">立即执行任务</h2><p>确认后任务将在后台异步执行。</p></div>
@@ -667,6 +759,6 @@
         <div class="dialog-actions"><button class="button-secondary" type="button" data-close-dialog="runNowConfirmDialog">取消</button><button id="confirmRunNowBtn" type="button">确认执行</button></div>
       </dialog>
     </main>
-    <script type="module" src="/app.js?v=20260715-access-auth-1"></script>
+    <script type="module" src="/app.js?v=20260716-operation-audit-1"></script>
   </body>
 </html>

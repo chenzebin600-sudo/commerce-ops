@@ -58,6 +58,15 @@ import {
   validateFileId,
 } from "./lib/security/file-policy.mjs";
 import { normalizedSanitizationCounts } from "./lib/security/excel-cell-policy.mjs";
+import {
+  createOperationAuditService,
+  parseTrustedProxies,
+} from "./lib/security/audit-service.mjs";
+import {
+  completeHttpAudit,
+  createHttpAuditContext,
+} from "./lib/security/audit-http.mjs";
+import { createAuditApi } from "./lib/security/audit-api.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -110,6 +119,42 @@ const adServiceInternalToken = await resolveAdServiceInternalToken();
 const proxyAdServiceRequest = createAdServiceProxy({
   baseUrl: adServiceConfig.baseUrl,
   internalToken: adServiceInternalToken,
+  onResponse({ req, target, status, upstreamStatus, responseBody, error }) {
+    const context = req.auditContext;
+    if (!context) return;
+    if (upstreamStatus === 401 || upstreamStatus === 403) {
+      context.addRelated("ads", "ads.internal_auth.failed", {
+        status: "failed",
+        errorStage: "ads_internal_auth",
+        errorCode: "ADS_INTERNAL_AUTH_FAILED",
+      });
+    }
+    if (target?.pathname !== "/api/analyze" && context.pathname !== "/api/ads/analyze") return;
+    context.addRelated("ads", status < 400 ? "ads.file.validation.success" : "ads.file.validation.failed", {
+      status: status < 400 ? "success" : "failed",
+      errorStage: status < 400 ? null : "file_validation",
+      errorCode: status < 400 ? null : error?.code || "AD_UPLOAD_REJECTED",
+    });
+    if (status >= 400) {
+      context.addRelated("file", "file.upload.rejected", { status: "failed", errorCode: error?.code || "AD_UPLOAD_REJECTED" });
+      return;
+    }
+    if (!responseBody?.length) return;
+    try {
+      const payload = JSON.parse(responseBody.toString("utf8"));
+      if (payload.jobId) context.annotate({ fileId: payload.jobId });
+      if (payload.ai?.enabled) context.addRelated("ai", "deepseek.call", { metadata: { provider: "ads" } });
+      else if (payload.ai?.error) context.addRelated("ai", "deepseek.call", {
+        status: "failed",
+        errorStage: "deepseek",
+        errorCode: "DEEPSEEK_FAILED",
+        errorSummary: "Advertising DeepSeek request failed; rule-based result was retained",
+        metadata: { provider: "ads", result: "fallback" },
+      });
+    } catch {
+      // Successful non-JSON advertising responses do not add inferred audit details.
+    }
+  },
 });
 const chromeAllowedHosts = resolveAllowedHosts(
   Object.values(DEFAULT_CHROME_ALLOWED_HOSTS_BY_PLATFORM).flat(),
@@ -190,6 +235,18 @@ async function readBody(req) {
 
 const scheduledExportRoot = fileStorageConfig.exportRoot;
 const schedulerDatabase = openSchedulerDatabase({ rootDir: __dirname });
+const auditService = createOperationAuditService({ db: schedulerDatabase, env: process.env });
+const trustedAuditProxies = parseTrustedProxies(process.env.TRUST_PROXY);
+const auditRetentionDays = Number(process.env.AUDIT_RETENTION_DAYS || 180);
+const handleAuditApi = createAuditApi({ audit: auditService, retentionDays: auditRetentionDays });
+auditService.recordSafely({
+  module: "file",
+  action: "file.temp.cleanup",
+  status: startupTempCleanup.errors ? "failed" : "success",
+  errorCode: startupTempCleanup.errors ? "TEMP_CLEANUP_PARTIAL" : null,
+  errorSummary: startupTempCleanup.errors ? "Temporary file cleanup completed with errors" : null,
+  metadata: { cleanupDeleted: startupTempCleanup.removed, result: startupTempCleanup.errors ? "partial" : "complete" },
+});
 const runMabangWorker = createMabangWorkerRunner({ rootDir: __dirname, exportRoot: fileStorageConfig.tempRoot });
 const handleMabangSchedulerApi = createMabangSchedulerApi({
   db: schedulerDatabase,
@@ -204,6 +261,7 @@ const MABANG_MAX_TASKS = 8;
 
 async function pruneManualExportFiles() {
   const cutoff = Date.now() - MANUAL_EXPORT_TTL_MS;
+  let removed = 0;
   for (const [fileId, file] of manualExportFiles) {
     if (file.createdAt >= cutoff) continue;
     try {
@@ -213,7 +271,16 @@ async function pruneManualExportFiles() {
       // Expired transient exports are removed only when their trusted path still resolves inside EXPORT_ROOT.
     }
     manualExportFiles.delete(fileId);
+    removed += 1;
   }
+  if (removed) auditService.recordSafely({
+    module: "file",
+    action: "file.temp.cleanup",
+    status: "success",
+    actorType: "application",
+    metadata: { cleanupDeleted: removed, kind: "manual_export" },
+  });
+  return removed;
 }
 
 async function sendXlsxDownload(res, metadata, { deleteAfter = false } = {}) {
@@ -2113,6 +2180,9 @@ async function handleApi(req, res, url) {
   const accessResponse = protectedApiAccessResponse(req.headers, accessPolicy);
   if (accessResponse) return json(res, accessResponse.status, accessResponse.body);
 
+  const auditHandled = await handleAuditApi(req, res, url);
+  if (auditHandled) return true;
+
   if (url.pathname.startsWith("/api/ads/")) {
     return proxyAdServiceRequest(req, res, url, "api");
   }
@@ -2142,6 +2212,7 @@ async function handleApi(req, res, url) {
       const result = await navigateChromeBrowser(body.url || "https://www.lazada.com.ph/");
       return json(res, 200, { ok: true, mode: result.mode });
     } catch (error) {
+      req.auditContext?.annotate({ errorStage: "chrome_navigation", errorCode: error.code || "CHROME_NAVIGATION_FAILED", errorSummary: error });
       return securityErrorResponse(res, error, {
         code: "CHROME_NAVIGATION_FAILED",
         message: "Chrome 导航失败。",
@@ -2156,6 +2227,7 @@ async function handleApi(req, res, url) {
       const result = await navigateChromeBrowser(body.url || "https://www.lazada.com.ph/");
       return json(res, 200, { ok: true, mode: result.mode });
     } catch (error) {
+      req.auditContext?.annotate({ errorStage: "chrome_navigation", errorCode: error.code || "CHROME_NAVIGATION_FAILED", errorSummary: error });
       return securityErrorResponse(res, error, {
         code: "CHROME_NAVIGATION_FAILED",
         message: "Chrome 导航失败。",
@@ -2178,6 +2250,7 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/mabang-data/login-test") {
     if (req.method !== "POST") return json(res, 405, { ok: false, error: "Method not allowed" });
     const body = await readBody(req);
+    req.auditContext?.annotate({ actorIdentifier: body.username });
     try {
       const result = await runMabangWorker({
         action: "test-login",
@@ -2186,6 +2259,7 @@ async function handleApi(req, res, url) {
       }, 90 * 1000);
       return json(res, 200, result);
     } catch (error) {
+      req.auditContext?.annotate({ errorStage: "mabang_login", errorCode: error.code || "AUTH_FAILED", errorSummary: error });
       return json(res, 400, { ok: false, error: error.message });
     }
   }
@@ -2205,6 +2279,10 @@ async function handleApi(req, res, url) {
     if (req.method !== "POST") return json(res, 405, { ok: false, error: "Method not allowed" });
     const body = await readBody(req);
     const kind = body.kind === "inventory" ? "inventory" : body.kind === "orders" ? "orders" : "";
+    if (kind) {
+      req.auditContext?.setOperation("mabang", kind === "inventory" ? "mabang.inventory.fetch" : "mabang.orders.fetch");
+      req.auditContext?.annotate({ actorIdentifier: body.username, metadata: { kind } });
+    }
     if (!kind) return json(res, 400, { ok: false, error: "请选择订单信息或库存信息。" });
     try {
       const result = await runMabangWorker({
@@ -2233,6 +2311,7 @@ async function handleApi(req, res, url) {
         ...paginateMabangTask(task),
       });
     } catch (error) {
+      req.auditContext?.annotate({ errorStage: kind === "inventory" ? "fetch_inventory" : "fetch_orders", errorCode: error.code || "MABANG_FETCH_FAILED", errorSummary: error });
       return json(res, 400, { ok: false, error: error.message });
     }
   }
@@ -2265,6 +2344,7 @@ async function handleApi(req, res, url) {
       if (result.deleted) manualExportFiles.delete(fileId);
       return true;
     } catch (error) {
+      req.auditContext?.annotate({ errorCode: error.code || FILE_ERROR_CODES.FILE_ACCESS_DENIED, errorSummary: error });
       return securityErrorResponse(res, publicFileError(error));
     }
   }
@@ -2272,6 +2352,7 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/mabang-data/export") {
     if (req.method !== "POST") return json(res, 405, { ok: false, error: "Method not allowed" });
     const body = await readBody(req);
+    req.auditContext?.annotate({ taskId: body.taskId, metadata: { kind: "manual_export" } });
     let temporaryFile = null;
     let finalFile = null;
     try {
@@ -2323,6 +2404,7 @@ async function handleApi(req, res, url) {
         createdAt: Date.now(),
       };
       manualExportFiles.set(fileId, metadata);
+      req.auditContext?.annotate({ fileId });
       return json(res, 201, {
         ok: true,
         fileId,
@@ -2331,6 +2413,7 @@ async function handleApi(req, res, url) {
         downloadUrl: `/api/mabang-data/export-files/${fileId}/download`,
       });
     } catch (error) {
+      req.auditContext?.annotate({ errorStage: "generate_excel", errorCode: error.code || FILE_ERROR_CODES.TEMP_FILE_ERROR, errorSummary: error });
       if (temporaryFile?.path) await removeFileInsideRoot(fileStorageConfig.tempRoot, temporaryFile.path);
       if (finalFile?.path) await removeFileInsideRoot(scheduledExportRoot, finalFile.path);
       return securityErrorResponse(res, publicFileError(error, FILE_ERROR_CODES.TEMP_FILE_ERROR));
@@ -2476,6 +2559,7 @@ async function handleApi(req, res, url) {
       });
       return res.end(image.bytes);
     } catch (error) {
+      req.auditContext?.annotate({ errorStage: "image_proxy", errorCode: error.code || "IMAGE_PROXY_FAILED", errorSummary: error });
       return securityErrorResponse(res, error, {
         code: "IMAGE_PROXY_FAILED",
         message: "图片代理请求失败。",
@@ -2522,6 +2606,9 @@ async function serveStatic(req, res, url) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  const auditContext = createHttpAuditContext(req, url, { trustedProxies: trustedAuditProxies });
+  res.setHeader("x-request-id", auditContext.requestId);
+  let requestError = null;
   try {
     if (url.pathname.startsWith("/api/")) {
       const handled = await handleApi(req, res, url);
@@ -2538,7 +2625,11 @@ const server = http.createServer(async (req, res) => {
     }
     await serveStatic(req, res, url);
   } catch (error) {
+    requestError = error;
+    auditContext.annotate({ errorStage: "request", errorCode: error.code || "REQUEST_FAILED", errorSummary: error });
     json(res, 500, { ok: false, error: error.message });
+  } finally {
+    completeHttpAudit(auditService, auditContext, { httpStatus: res.statusCode || 500, error: requestError });
   }
 });
 

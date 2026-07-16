@@ -160,3 +160,21 @@ test("advertising proxy enforces request limits and method restrictions", async 
   await proxy(request("POST"), invalidMethod, new URL("http://host/ads/"), "static");
   assert.equal(invalidMethod.status, 405);
 });
+
+test("advertising proxy reports one completion callback per user request", async () => {
+  const completions = [];
+  const proxy = createAdServiceProxy({
+    baseUrl: "http://127.0.0.1:4173",
+    internalToken: INTERNAL_TOKEN,
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true, jobId: "job_1" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+    onResponse(event) { completions.push(event); },
+  });
+  const res = responseRecorder();
+  await proxy(request("POST", { "content-type": "application/json" }, [Buffer.from("{}")]), res, new URL("http://host/api/ads/analyze"), "api");
+  assert.equal(completions.length, 1);
+  assert.equal(completions[0].target.pathname, "/api/analyze");
+  assert.equal(completions[0].status, 200);
+});

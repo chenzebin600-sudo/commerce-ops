@@ -8,6 +8,7 @@
     "scheduler": "node --disable-warning=ExperimentalWarning scheduler.mjs",
     "start:all": "node scripts/start-all.mjs",
     "migrate": "node --disable-warning=ExperimentalWarning scripts/migrate.mjs",
+    "audit:cleanup": "node --disable-warning=ExperimentalWarning scripts/cleanup-audit.mjs",
     "build": "node scripts/check-build.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs"
   }

@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
 import path from "node:path";
+import os from "node:os";
+import { mkdtempSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -52,6 +54,7 @@ async function stop(child) {
 }
 
 test("only the main origin is needed for an authenticated advertising module", { timeout: 30_000 }, async () => {
+  const runtimeRoot = mkdtempSync(path.join(os.tmpdir(), "commerce-ops-main-integration-"));
   const mainPort = await freePort();
   const adPort = await freePort();
   const mainUrl = `http://127.0.0.1:${mainPort}`;
@@ -89,6 +92,11 @@ test("only the main origin is needed for an authenticated advertising module", {
         AD_SERVICE_BASE_URL: adUrl,
         AD_SERVICE_INTERNAL_TOKEN: INTERNAL_TOKEN,
         AD_ANALYZER_DIR: adServiceDir,
+        SCHEDULER_DB_PATH: path.join(runtimeRoot, "commerce-ops.sqlite"),
+        STORAGE_ROOT: path.join(runtimeRoot, "storage"),
+        UPLOAD_ROOT: path.join(runtimeRoot, "storage", "uploads"),
+        EXPORT_ROOT: path.join(runtimeRoot, "storage", "exports"),
+        TEMP_ROOT: path.join(runtimeRoot, "storage", "temp"),
       },
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],

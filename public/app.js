@@ -5,6 +5,7 @@ import {
   saveSessionToken,
 } from "./auth-client.mjs";
 import { createAdFrameBridge } from "./ad-frame-bridge.mjs";
+import { createAuditPage } from "./audit-page.mjs";
 import { createExcelHtmlRenderer } from "/excel-cell-policy.mjs";
 
 let currentReport = null;
@@ -18,6 +19,7 @@ let scheduledPollTimer = null;
 let applicationInitialized = false;
 let authenticationEnabled = false;
 let adsFrameBridge = null;
+let auditPage = null;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
@@ -110,6 +112,11 @@ function handleUnauthorized() {
 }
 
 const authorizedFetch = createAuthorizedFetch({ onUnauthorized: handleUnauthorized });
+auditPage = createAuditPage({
+  authorizedFetch,
+  onError: (error) => setStatus(error.message || "操作记录加载失败", "error"),
+});
+auditPage.initialize();
 adsFrameBridge = createAdFrameBridge({
   windowObject: window,
   frame: $("adsFrame"),
@@ -162,6 +169,10 @@ const PAGE_META = {
   ads: {
     title: "Lazada 广告分析",
     subtitle: "读取 Sponsored Max 报表，诊断计划、产品系列和推广链接表现。",
+  },
+  audit: {
+    title: "操作记录",
+    subtitle: "查看关键操作、失败原因和任务关联；敏感凭证与业务明细不会进入审计记录。",
   },
 };
 
@@ -259,6 +270,7 @@ function switchPage(page) {
   if (page === "mabang" && currentMabangView !== "scheduled" && currentMabangTask) renderMabangResult(currentMabangTask);
   if (page === "mabang" && currentMabangView === "scheduled") refreshScheduledData({ quiet: true }).catch(() => {});
   if (page === "ads") loadAdsAnalyzer();
+  if (page === "audit") auditPage.load();
   if (location.hash !== `#${page}`) history.replaceState(null, "", `#${page}`);
 }
 
@@ -1896,6 +1908,7 @@ function exportExcel() {
   link.click();
   URL.revokeObjectURL(link.href);
   link.remove();
+  auditPage.recordClientAction(currentReport.discovery ? "competitor.keyword_export.download" : "competitor.export.download", currentReport.discovery ? "keyword" : "link");
   if (excel.sanitizedCount > 0) {
     console.info(`Excel cell sanitization: fileId=browser-export sheet=all count=${excel.sanitizedCount}`);
   }
@@ -2369,7 +2382,8 @@ $("authForm").addEventListener("submit", async (event) => {
   }
 });
 
-$("logoutBtn").addEventListener("click", () => {
+$("logoutBtn").addEventListener("click", async () => {
+  await authorizedFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
   adsFrameBridge?.clear();
   clearSessionToken();
   showAuthGate();

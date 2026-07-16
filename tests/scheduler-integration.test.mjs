@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +10,7 @@ import { SchedulerDatabase } from "../lib/mabang-scheduler/db.mjs";
 import { encryptSecret } from "../lib/mabang-scheduler/crypto.mjs";
 import { createTaskExecutor } from "../lib/mabang-scheduler/executor.mjs";
 import { MabangSchedulerService } from "../lib/mabang-scheduler/service.mjs";
+import { createOperationAuditService } from "../lib/security/audit-service.mjs";
 
 process.env.APP_ENCRYPTION_KEY = "integration-test-key-not-for-production";
 
@@ -74,6 +75,7 @@ function initializeDatabaseInChild(databasePath) {
 
 test("mock login, orders, filter, Excel and DingTalk produce success", async () => {
   const context = setup();
+  const audit = createOperationAuditService({ db: context.db, env: {} });
   let notified = false;
   const executor = createTaskExecutor({
     db: context.db,
@@ -81,6 +83,7 @@ test("mock login, orders, filter, Excel and DingTalk produce success", async () 
     exportRoot: context.exportRoot,
     retryDelays: [0, 0, 0],
     notify: async () => { notified = true; return { ok: true, status: 200, code: 0 }; },
+    audit,
   });
   const run = context.db.createRun({ taskId: context.task.id, triggerType: "manual", scheduledRunAt: new Date("2026-07-14T00:30:00Z") });
   const result = await executor.executeRun(run.id);
@@ -90,6 +93,8 @@ test("mock login, orders, filter, Excel and DingTalk produce success", async () 
   assert.equal(result.detailRowCount, 1);
   assert.equal(result.fileStatus, "available");
   assert.equal(notified, true);
+  assert.equal(audit.queryEvents({ action: "mabang.task.execution.success" }).total, 1);
+  assert.equal(audit.queryEvents({ action: "mabang.dingtalk.notify.success" }).total, 1);
   assert.ok((await fs.stat(path.join(context.exportRoot, context.db.getExportFile(result.exportFileId).relativePath))).size > 0);
   context.db.close();
 });
@@ -143,23 +148,27 @@ test("inventory task collects a snapshot, writes inventory Excel and sends inven
 
 test("DingTalk failure produces partial_success and keeps Excel", async () => {
   const context = setup();
-  const executor = createTaskExecutor({ db: context.db, runWorker: successfulWorker(), exportRoot: context.exportRoot, retryDelays: [0], notify: async () => { throw new Error("钉钉通知失败：HTTP 400，错误码 310000"); } });
+  const audit = createOperationAuditService({ db: context.db, env: {} });
+  const executor = createTaskExecutor({ db: context.db, runWorker: successfulWorker(), exportRoot: context.exportRoot, retryDelays: [0], notify: async () => { throw new Error("钉钉通知失败：HTTP 400，错误码 310000"); }, audit });
   const run = context.db.createRun({ taskId: context.task.id, triggerType: "manual", scheduledRunAt: new Date("2026-07-14T00:31:00Z") });
   const result = await executor.executeRun(run.id);
   assert.equal(result.status, "partial_success");
   assert.equal(result.notificationStatus, "failed");
   assert.equal(result.fileStatus, "available");
+  assert.equal(audit.queryEvents({ action: "mabang.dingtalk.notify.failed" }).total, 1);
   context.db.close();
 });
 
 test("login failure is recorded without infinite retry", async () => {
   const context = setup({ withRobot: false });
-  const executor = createTaskExecutor({ db: context.db, runWorker: async () => { throw new Error("马帮登录失败：账号或密码验证不通过"); }, exportRoot: context.exportRoot, retryDelays: [0, 0, 0] });
+  const audit = createOperationAuditService({ db: context.db, env: {} });
+  const executor = createTaskExecutor({ db: context.db, runWorker: async () => { throw new Error("马帮登录失败：账号或密码验证不通过"); }, exportRoot: context.exportRoot, retryDelays: [0, 0, 0], audit });
   const run = context.db.createRun({ taskId: context.task.id, triggerType: "manual", scheduledRunAt: new Date("2026-07-14T00:32:00Z") });
   const result = await executor.executeRun(run.id);
   assert.equal(result.status, "failed");
   assert.equal(result.errorStage, "mabang_login");
   assert.equal(result.retryCount, 0);
+  assert.equal(audit.queryEvents({ action: "mabang.task.execution.failed" }).total, 1);
   context.db.close();
 });
 
@@ -226,7 +235,8 @@ test("concurrent web and scheduler startup share migration safely", async () => 
   await Promise.all(Array.from({ length: 4 }, () => initializeDatabaseInChild(databasePath)));
   const db = new SchedulerDatabase({ databasePath, migrationsDir: path.resolve("migrations") });
   db.migrate();
-  assert.equal(db.db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 1);
+  const expectedMigrations = readdirSync(path.resolve("migrations")).filter((name) => name.endsWith(".sql")).length;
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, expectedMigrations);
   db.close();
 });
 
