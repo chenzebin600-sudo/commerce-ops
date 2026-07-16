@@ -58,3 +58,9 @@ IMAGE_PROXY_MAX_REDIRECTS=3
 ```
 
 域名之间使用逗号分隔。配置不支持 `*`，也不允许填写完整 URL、IP 地址、`.com`、`.net`、`co.th` 等过宽公共后缀。非法配置会阻止服务启动。图片代理默认最多跟随 3 次经过重复校验的跳转，最大响应体为 10MB，并拒绝 SVG、HTML、JSON、脚本、缺失 Content-Type 和任意二进制响应。
+
+## 文件存储
+
+文件根目录通过 `STORAGE_ROOT`、`UPLOAD_ROOT`、`EXPORT_ROOT` 和 `TEMP_ROOT` 配置。默认均位于项目内的 `storage/`，不会使用桌面或下载目录。临时目录与正式目录应位于同一文件系统，以保证成功文件使用原子移动落盘。
+
+广告上传仅接受经过扩展名、MIME、ZIP 容器、宏内容和工作簿规模校验的 `.xlsx`。马帮新导出先写入 `TEMP_ROOT`，非零校验后移入 `EXPORT_ROOT`；下载只接受文件 ID，并根据受信元数据验证相对路径、文件大小和 SHA-256。服务启动时只清理 `TEMP_ROOT` 内超过 `TEMP_FILE_RETENTION_HOURS` 的遗留项，不清理正式导出和历史文件。

@@ -13,6 +13,10 @@ for (const file of [
   "lib/security/network-policy.mjs",
   "lib/security/chrome-navigation.mjs",
   "lib/security/image-proxy.mjs",
+  "lib/security/file-policy.mjs",
+  "lib/mabang-scheduler/api.mjs",
+  "lib/mabang-scheduler/executor.mjs",
+  "lib/mabang-scheduler/service.mjs",
   "server.mjs",
   "scheduler.mjs",
 ]) {

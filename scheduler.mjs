@@ -5,14 +5,26 @@ import { createMabangWorkerRunner } from "./lib/mabang-worker-runner.mjs";
 import { openSchedulerDatabase } from "./lib/mabang-scheduler/db.mjs";
 import { createTaskExecutor } from "./lib/mabang-scheduler/executor.mjs";
 import { MabangSchedulerService } from "./lib/mabang-scheduler/service.mjs";
+import {
+  cleanupTemporaryFiles,
+  ensureFileStorageRoots,
+  resolveFileStorageConfig,
+} from "./lib/security/file-policy.mjs";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 loadLocalEnv(rootDir);
 
-const exportRoot = path.resolve(rootDir, process.env.EXPORT_STORAGE_PATH || "storage/exports/mabang");
+const fileStorage = await ensureFileStorageRoots(resolveFileStorageConfig(rootDir, process.env));
+const cleanup = await cleanupTemporaryFiles(fileStorage.tempRoot, {
+  retentionHours: fileStorage.tempFileRetentionHours,
+});
+if (cleanup.removed || cleanup.errors) {
+  console.log(`Temporary file cleanup: ${cleanup.removed} removed, ${cleanup.errors} errors`);
+}
+const exportRoot = fileStorage.exportRoot;
 const db = openSchedulerDatabase({ rootDir });
-const runWorker = createMabangWorkerRunner({ rootDir, exportRoot });
-const executor = createTaskExecutor({ db, runWorker, exportRoot });
+const runWorker = createMabangWorkerRunner({ rootDir, exportRoot: fileStorage.tempRoot });
+const executor = createTaskExecutor({ db, runWorker, exportRoot, tempRoot: fileStorage.tempRoot });
 const scheduler = new MabangSchedulerService({ db, executor, exportRoot });
 
 scheduler.start();

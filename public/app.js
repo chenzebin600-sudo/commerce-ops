@@ -2130,10 +2130,15 @@ async function exportMabangData() {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.error || "Excel 导出失败。");
     }
-    const blob = await response.blob();
-    const exportedRows = Number(response.headers.get("x-exported-rows") || currentMabangTask.total || 0);
-    const disposition = response.headers.get("content-disposition") || "";
-    const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "mabang-data.xlsx";
+    const exportInfo = await response.json();
+    const downloadResponse = await authorizedFetch(exportInfo.downloadUrl);
+    if (!downloadResponse.ok) {
+      const data = await downloadResponse.json().catch(() => ({}));
+      throw new Error(data.error || "Excel 下载失败。");
+    }
+    const blob = await downloadResponse.blob();
+    const exportedRows = Number(exportInfo.exportedRows || currentMabangTask.total || 0);
+    const filename = exportInfo.filename || "mabang-data.xlsx";
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
     link.download = filename;
