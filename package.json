@@ -14,6 +14,7 @@
     "check:paths": "node scripts/check-portable-paths.mjs",
     "migrate": "node --disable-warning=ExperimentalWarning scripts/migrate.mjs",
     "audit:cleanup": "node --disable-warning=ExperimentalWarning scripts/cleanup-audit.mjs",
+    "postgres:readiness": "node --disable-warning=ExperimentalWarning scripts/postgresql-readiness.mjs",
     "build": "npm run check:paths && node scripts/check-build.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs"
   }
