@@ -48,6 +48,28 @@ test("external listener with a token is allowed", () => {
   assert.equal(config.localCompatibilityMode, false);
 });
 
+test("external listener explicitly allows unauthenticated LAN access", () => {
+  const config = resolveAppConfig({
+    APP_HOST: "0.0.0.0",
+    APP_PORT: "3101",
+    APP_ALLOW_UNAUTHENTICATED_LAN: "true",
+  });
+  const policy = createAccessPolicy(config);
+  assert.equal(config.authenticationEnabled, false);
+  assert.equal(config.allowUnauthenticatedLan, true);
+  assert.equal(policy.localCompatibilityMode, true);
+  assert.equal(policy.isAuthenticated({}), true);
+});
+
+test("external listener rejects false or invalid unauthenticated LAN flags", () => {
+  for (const value of ["", "false", "0", "disabled"]) {
+    assert.throws(() => resolveAppConfig({
+      APP_HOST: "0.0.0.0",
+      APP_ALLOW_UNAUTHENTICATED_LAN: value,
+    }));
+  }
+});
+
 test("loopback listener without a token uses compatibility mode", () => {
   const config = resolveAppConfig({ APP_HOST: "127.0.0.1" });
   const policy = createAccessPolicy(config);

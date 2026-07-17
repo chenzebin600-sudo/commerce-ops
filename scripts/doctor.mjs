@@ -60,7 +60,11 @@ if (config) {
   const chrome = resolveChromeRuntime({ env: { ...process.env, CHROME_EXECUTABLE: config.chromeExecutable } });
   add(chrome.ok ? "OK" : "WARNING", "Chrome", chrome.ok ? chrome.source : chrome.errorCode);
   const externalHost = !["127.0.0.1", "localhost", "::1"].includes(String(process.env.APP_HOST || "127.0.0.1").toLowerCase());
-  add(!externalHost || Boolean(process.env.APP_ACCESS_TOKEN) ? "OK" : "ERROR", "main access token", externalHost ? "required for external listening" : "loopback mode");
+  const unauthenticatedLan = /^(1|true|yes|on)$/i.test(String(process.env.APP_ALLOW_UNAUTHENTICATED_LAN || "").trim());
+  const accessConfigured = Boolean(process.env.APP_ACCESS_TOKEN) || unauthenticatedLan;
+  add(!externalHost || accessConfigured ? "OK" : "ERROR", "main access policy", externalHost
+    ? (unauthenticatedLan ? "unauthenticated LAN access explicitly enabled" : "access token configured")
+    : "loopback mode");
   const tokenReady = Boolean(process.env.AD_SERVICE_INTERNAL_TOKEN) || existsSync(config.adServiceTokenFile);
   add(tokenReady ? "OK" : "WARNING", "advertising internal token", tokenReady ? "configured" : "will be generated on first managed start");
   for (const [name, host, port] of [["main port", process.env.APP_HOST || "127.0.0.1", Number(process.env.APP_PORT || 3101)], ["advertising port", config.adServiceHost, config.adServicePort]]) {
