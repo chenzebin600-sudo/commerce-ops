@@ -135,6 +135,23 @@ test("Chrome guard blocks a redirect to a non-allowlisted domain", async () => {
   }
 });
 
+test("Chrome guard contains an early committed-frame rejection until Page.navigate returns", async () => {
+  const startUrl = "https://lazada.com.ph/products/item.html";
+  const cdp = new MockCdp(async (method) => {
+    if (method !== "Page.navigate") return;
+    cdp.emit("Page.frameNavigated", {
+      frame: { id: "main", url: "chrome-error://chromewebdata/" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  const guard = await createChromeNavigationGuard({ cdp, policy: navigationPolicy(), timeoutMs: 200 });
+  try {
+    await assert.rejects(() => guard.navigate(startUrl), { code: NETWORK_ERROR_CODES.REDIRECT_BLOCKED });
+  } finally {
+    await guard.dispose();
+  }
+});
+
 test("Chrome guard resolves again before the document request and blocks DNS rebinding", async () => {
   let lookups = 0;
   const policy = navigationPolicy(async () => {
