@@ -26,6 +26,9 @@ class MockCdp {
   async send(method, params = {}) {
     this.calls.push({ method, params });
     await this.onSend(method, params, this);
+    if (method === "Page.getFrameTree") {
+      return { result: { frameTree: { frame: { id: "main", url: "about:blank" } } } };
+    }
     return method === "Page.navigate" ? { result: { frameId: "main" } } : { result: {} };
   }
 }
@@ -179,7 +182,7 @@ test("Chrome guard resolves again before the document request and blocks DNS reb
   }
 });
 
-test("Chrome guard validates iframe document navigation without intercepting static resources", async () => {
+test("Chrome guard ignores third-party iframe navigation without weakening top-level checks", async () => {
   const url = "https://shopee.co.th/product/1";
   const cdp = new MockCdp(async (method) => {
     if (method !== "Page.navigate") return;
@@ -191,16 +194,23 @@ test("Chrome guard validates iframe document navigation without intercepting sta
       });
       cdp.emit("Fetch.requestPaused", {
         requestId: "frame-1",
+        frameId: "child-frame",
         resourceType: "Document",
         request: { url: "http://127.0.0.1/frame" },
+      });
+      cdp.emit("Page.frameNavigated", {
+        frame: { id: "child-frame", parentId: "main", url: "https://fls.doubleclick.net/activity" },
+      });
+      cdp.emit("Page.frameNavigated", {
+        frame: { id: "main", url },
       });
     });
   });
   const guard = await createChromeNavigationGuard({ cdp, policy: navigationPolicy(), timeoutMs: 200 });
   try {
-    await assert.rejects(() => guard.navigate(url));
+    await assert.doesNotReject(() => guard.navigate(url));
     assert.equal(cdp.calls.some(({ method, params }) => method === "Fetch.continueRequest" && params.requestId === "script-1"), true);
-    assert.equal(cdp.calls.some(({ method, params }) => method === "Fetch.failRequest" && params.requestId === "frame-1"), true);
+    assert.equal(cdp.calls.some(({ method, params }) => method === "Fetch.continueRequest" && params.requestId === "frame-1"), true);
   } finally {
     await guard.dispose();
   }

@@ -68,6 +68,7 @@ import { createAdServiceManager } from "./lib/ad-service-manager.mjs";
 import { resolveChromeRuntime } from "./lib/chrome-runtime.mjs";
 import { resolveRuntimeConfig, runtimeEnvironment } from "./lib/runtime-config.mjs";
 import { resolveAdServiceInternalToken } from "./lib/ad-service-token.mjs";
+import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
 import { DeepSeekProvider } from "./lib/ai/providers/deepseek-provider.mjs";
 import { MODULE_IDS } from "./lib/contracts/module-ids.mjs";
@@ -348,11 +349,11 @@ function paginateMabangTask(task, { page = 1, pageSize = 50, query = "", field =
 }
 
 function detectPlatform(inputUrl) {
-  const hostName = new URL(inputUrl).hostname.toLowerCase();
-  if (hostName.includes("shop.tiktok.com") || hostName.includes("tiktok.com")) return "tiktok";
-  if (hostName.includes("shopee.")) return "shopee";
-  if (hostName.includes("lazada.")) return "lazada";
-  return "unknown";
+  try {
+    return normalizeMarketplaceLink(inputUrl).platform;
+  } catch {
+    return "unknown";
+  }
 }
 
 function normalizeSite(value) {
@@ -1237,9 +1238,10 @@ async function extractProducts(urls) {
     await cdp.send("Runtime.enable");
     guard = await configuredChromeNavigationGuard(cdp);
     for (const [index, inputUrl] of urls.entries()) {
-      const platform = detectPlatform(inputUrl);
+      const normalizedLink = normalizeMarketplaceLink(inputUrl);
+      const platform = normalizedLink.platform;
       if (platform === "unknown") throw new Error(`暂不支持这个平台链接：${inputUrl}`);
-      await guard.navigate(inputUrl);
+      await guard.navigate(normalizedLink.url);
       await new Promise((resolve) => setTimeout(resolve, platform === "shopee" || platform === "tiktok" ? 8500 : 6000));
       await guard.throwIfBlocked();
       await cdp.send("Runtime.evaluate", {
@@ -1253,11 +1255,11 @@ async function extractProducts(urls) {
       products.push({
         ...product,
         platform,
-        inputUrl,
+        inputUrl: normalizedLink.url,
         index,
         role: index === 0 ? "mine" : "competitor",
         needsVerification: Boolean(product?.blocked || !product?.moduleReady),
-        verificationUrl: product?.blocked ? product.finalUrl : inputUrl,
+        verificationUrl: product?.blocked ? product.finalUrl : normalizedLink.url,
       });
     }
   } finally {
