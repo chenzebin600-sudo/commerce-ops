@@ -18,7 +18,11 @@
     "postgres:f1:protect": "node --disable-warning=ExperimentalWarning scripts/postgresql-f1-protect.mjs",
     "postgres:f1:init": "node --disable-warning=ExperimentalWarning scripts/postgresql-f1-init.mjs",
     "postgres:f1:check": "node --disable-warning=ExperimentalWarning scripts/postgresql-f1-check.mjs",
+    "postgres:f2:check": "node --disable-warning=ExperimentalWarning scripts/postgresql-f2-provider-check.mjs",
     "build": "npm run check:paths && node scripts/check-build.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "pg": "8.22.0"
   }
 }

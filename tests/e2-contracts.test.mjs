@@ -31,7 +31,7 @@ test("module contract documentation contains required caveats and HTTP correlati
   ]) assert.match(document, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
 });
 
-test("PostgreSQL readiness covers every formal SQLite table without connecting PostgreSQL", async () => {
+test("PostgreSQL readiness covers every formal SQLite table and isolates the driver in the provider", async () => {
   const document = await fs.readFile(path.resolve("docs/postgresql-readiness.md"), "utf8");
   const migrationSql = (await fs.readdir(path.resolve("migrations")))
     .filter((name) => name.endsWith(".sql"))
@@ -45,10 +45,18 @@ test("PostgreSQL readiness covers every formal SQLite table without connecting P
     assert.match(document, new RegExp(missing, "i"));
   }
   const packageJson = JSON.parse(await fs.readFile(path.resolve("package.json"), "utf8"));
-  assert.equal(Object.keys(packageJson.dependencies || {}).some((name) => /^(pg|postgres|postgresql)$/i.test(name)), false);
+  assert.equal(packageJson.dependencies?.pg, "8.22.0");
   const productionFiles = ["server.mjs", "scheduler.mjs", "lib/data/data-access.mjs"];
   for (const file of productionFiles) {
     const source = await fs.readFile(path.resolve(file), "utf8");
     assert.doesNotMatch(source, /from\s+["'](?:pg|postgres|postgresql)["']/i);
   }
+  const libraryFiles = (await fs.readdir(path.resolve("lib"), { recursive: true }))
+    .filter((name) => name.endsWith(".mjs"));
+  const driverImports = [];
+  for (const file of libraryFiles) {
+    const source = await fs.readFile(path.resolve("lib", file), "utf8");
+    if (/from\s+["'](?:pg|postgres|postgresql)["']/i.test(source)) driverImports.push(file.replaceAll("\\", "/"));
+  }
+  assert.deepEqual(driverImports, ["data/postgresql/postgresql-provider.mjs"]);
 });
