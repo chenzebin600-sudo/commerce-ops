@@ -71,6 +71,7 @@ import { resolveAdServiceInternalToken } from "./lib/ad-service-token.mjs";
 import { resolvePythonRuntime } from "./lib/python-runtime.mjs";
 import { ProductImportService } from "./lib/product-center/product-import-service.mjs";
 import { ProductCatalogService } from "./lib/product-center/product-catalog-service.mjs";
+import { ProductImageService } from "./lib/product-center/product-image-service.mjs";
 import { createProductCenterApi } from "./lib/product-center/product-center-api.mjs";
 import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
@@ -256,12 +257,20 @@ const productImportService = new ProductImportService({
   fileStorageConfig,
   pythonExecutable: productPackagePython.executable || runtimeConfig.pythonExecutable || "python",
   parserScript: productPackageParserPath,
-  maxRows: Number(process.env.PRODUCT_IMPORT_MAX_ROWS || 20000),
+  maxRows: Number(process.env.PRODUCT_IMPORT_MAX_ROWS || 200000),
+  parseTimeoutMs: Number(process.env.PRODUCT_IMPORT_PARSE_TIMEOUT_MS || 600000),
 });
 const productCatalogService = new ProductCatalogService({ repository: dataAccess.repositories.productCatalog });
+const productImageService = new ProductImageService({
+  repository: dataAccess.repositories.productCatalog,
+  tempRoot: fileStorageConfig.tempRoot,
+  imageRoot: path.join(fileStorageConfig.storageRoot, "product-images"),
+  maxBytes: Number(process.env.PRODUCT_IMAGE_MAX_BYTES || 10 * 1024 * 1024),
+});
 const handleProductCenterApi = createProductCenterApi({
   service: productImportService,
   catalogService: productCatalogService,
+  imageService: productImageService,
   maxUploadBytes: fileStorageConfig.maxUploadBytes,
 });
 auditService.recordSafely({

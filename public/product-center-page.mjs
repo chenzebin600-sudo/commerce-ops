@@ -46,6 +46,10 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     catalogPageSize: 30,
     catalogTotalPages: 1,
     catalogFiltersLoaded: false,
+    productFields: [],
+    visibleProductFields: [],
+    currentProduct: null,
+    imageObjectUrls: new Set(),
   };
 
   function setView(view) {
@@ -184,7 +188,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     [...byId("productCatalogLifecycle").options].forEach((option) => {
       if (option.value) option.textContent = LIFECYCLE_LABELS[option.value] || option.value;
     });
-    setSelectOptions(byId("productCatalogWarehouse"), filters.warehouses || [], "全部仓库");
+    setSelectOptions(byId("productCatalogCountry"), filters.countries || [], "全部国家");
     state.catalogFiltersLoaded = true;
   }
 
@@ -199,13 +203,15 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       ["keyword", byId("productCatalogKeyword").value.trim()],
       ["category_l1", byId("productCatalogCategoryL1").value],
       ["lifecycle_status", byId("productCatalogLifecycle").value],
-      ["warehouse", byId("productCatalogWarehouse").value],
+      ["country", byId("productCatalogCountry").value],
     ];
     fields.forEach(([key, value]) => { if (value) params.set(key, value); });
     return params;
   }
 
   function renderCatalog(data) {
+    for (const url of state.imageObjectUrls) URL.revokeObjectURL(url);
+    state.imageObjectUrls.clear();
     const products = data.products || [];
     state.catalogPage = Number(data.page || 1);
     state.catalogPageSize = Number(data.pageSize || 30);
@@ -218,18 +224,34 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     byId("productCatalogPrevBtn").disabled = state.catalogPage <= 1;
     byId("productCatalogNextBtn").disabled = state.catalogPage >= state.catalogTotalPages;
     byId("productCatalogTable").innerHTML = products.length ? `<table class="product-center-table product-catalog-table">
-      <thead><tr><th>素材</th><th>SKU / 商品</th><th>主 SKU / 款型</th><th>类目 / 规格</th><th>仓库 / 库存</th><th>来源成本</th><th>状态</th><th>更新</th><th></th></tr></thead>
+      <thead><tr><th>素材</th><th>SKU / 商品</th><th>国家 / 主 SKU</th><th>类目 / 规格</th><th>状态</th><th>更新</th><th>操作</th></tr></thead>
       <tbody>${products.map((product) => `<tr>
-        <td><div class="product-thumbnail-placeholder"><span>无图</span><small>G1B</small></div></td>
+        <td>${product.image?.primaryImageId
+          ? `<img class="product-thumbnail-image" alt="${esc(product.productName)}" data-product-image-product="${esc(product.id)}" data-product-image-id="${esc(product.image.primaryImageId)}" />`
+          : '<div class="product-thumbnail-placeholder"><span>无图</span><small>可上传</small></div>'}</td>
         <td><strong>${esc(product.sku)}</strong><small class="product-name-cell">${esc(product.productName)}</small></td>
-        <td><strong>${esc(product.mainSku)}</strong><small>${esc(product.styleCode || product.styleName)}</small></td>
+        <td><strong>${esc(product.country)}</strong><small>${esc(product.mainSku || "无主 SKU")}</small></td>
         <td><strong>${esc([product.categoryL1, product.categoryL2].filter(Boolean).join(" / "))}</strong><small>${esc(product.salesSpec)}</small></td>
-        <td><strong>${esc(product.warehouse)}</strong><small>库存 ${esc(formatNumber(product.stock))}</small></td>
-        <td><strong>¥${esc(formatNumber(product.costCny))}</strong><small>${esc(product.country)} ${esc(formatNumber(product.costLocal))}</small></td>
         <td><span class="product-status lifecycle-${esc(String(product.lifecycleStatus || "unknown").toLowerCase())}">${esc(LIFECYCLE_LABELS[product.lifecycleStatus] || product.sourceStatus)}</span><small>${product.operationalEligible ? "运营池" : "仅历史查询"}</small></td>
         <td>${esc(formatDate(product.updatedAt))}<small>${esc(product.sourcePeriod || "-")}</small></td>
-        <td><button class="button-tertiary" type="button" data-product-id="${esc(product.id)}">详情</button></td>
+        <td><div class="table-actions"><button class="button-tertiary" type="button" data-product-id="${esc(product.id)}">详情</button><button class="button-tertiary" type="button" data-product-edit-id="${esc(product.id)}">编辑</button></div></td>
       </tr>`).join("")}</tbody></table>` : '<p class="product-empty">没有符合条件的产品。导入并入库产品包后会显示在这里。</p>';
+    hydrateImages(byId("productCatalogTable"));
+  }
+
+  async function hydrateImages(root) {
+    const images = [...root.querySelectorAll("[data-product-image-id]")];
+    await Promise.all(images.map(async (image) => {
+      try {
+        const response = await authorizedFetch(`/api/product-center/products/${encodeURIComponent(image.dataset.productImageProduct)}/images/${encodeURIComponent(image.dataset.productImageId)}/content`);
+        if (!response.ok) return;
+        const objectUrl = URL.createObjectURL(await response.blob());
+        state.imageObjectUrls.add(objectUrl);
+        image.src = objectUrl;
+      } catch {
+        image.removeAttribute("src");
+      }
+    }));
   }
 
   async function loadCatalog({ resetPage = false } = {}) {
@@ -239,36 +261,151 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     renderCatalog(data);
   }
 
-  function fact(label, value) {
-    return `<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+  function displayFieldValue(value) {
+    if (Array.isArray(value)) return value.length ? value.map((item) => formatNumber(item)).join("；") : "-";
+    if (value === null || value === undefined || value === "") return "-";
+    return typeof value === "number" ? formatNumber(value) : String(value);
+  }
+
+  function groupedFields(fields) {
+    const groups = new Map();
+    for (const field of fields) {
+      if (!groups.has(field.groupLabel)) groups.set(field.groupLabel, []);
+      groups.get(field.groupLabel).push(field);
+    }
+    return groups;
+  }
+
+  function renderProductImages(product, { editable = false } = {}) {
+    if (!product.images?.length) return '<p class="product-empty">暂无图片，可在编辑中上传。</p>';
+    return `<div class="product-image-list">${product.images.map((image) => `<div class="product-image-item">
+      <img alt="${esc(image.originalFilename)}" data-product-image-product="${esc(product.id)}" data-product-image-id="${esc(image.id)}" />
+      ${editable ? `<button class="icon-text-button" type="button" data-delete-product-image="${esc(image.id)}" title="移除图片" aria-label="移除图片">×</button>` : ""}
+    </div>`).join("")}</div>`;
+  }
+
+  function renderProductDetail(product) {
+    state.currentProduct = product;
+    state.productFields = product.fields || state.productFields;
+    state.visibleProductFields = product.visibleFields || state.visibleProductFields;
+    byId("productDrawerTitle").textContent = product.productName || product.sku;
+    byId("productDrawerMeta").textContent = `${product.country || "-"} · ${product.sku} · ${LIFECYCLE_LABELS[product.lifecycleStatus] || product.sourceStatus}`;
+    const visible = new Set(state.visibleProductFields);
+    const sections = [...groupedFields(state.productFields.filter((field) => visible.has(field.code))).entries()].map(([label, fields]) => `
+      <section><h3>${esc(label)}</h3><div class="product-drawer-grid">${fields.map((field) => `<div>
+        <span>${esc(field.label)} · ${product.manualOverrides && Object.hasOwn(product.manualOverrides, field.code) ? "人工维护" : "中台来源"}</span>
+        <strong>${esc(displayFieldValue(product.fieldValues?.[field.code]))}</strong>
+      </div>`).join("")}</div></section>`).join("");
+    byId("productDrawerContent").innerHTML = `${sections}
+      <section><h3>产品图片</h3>${renderProductImages(product)}</section>
+      <section><h3>来源与记录</h3><div class="product-drawer-grid">
+        <div><span>来源文件</span><strong>${esc(product.sourceFilename)}</strong></div>
+        <div><span>来源行</span><strong>${esc(product.sourceRowNumber)}</strong></div>
+        <div><span>最近导入批次</span><strong>${esc(product.lastBatchId?.slice(0, 8))}</strong></div>
+        <div><span>更新时间</span><strong>${esc(formatDate(product.updatedAt))}</strong></div>
+        <div><span>运营池</span><strong>${product.operationalEligible ? "可进入" : "仅历史查询"}</strong></div>
+        <div><span>人工变更</span><strong>${esc(product.overrideEvents?.length || 0)} 条</strong></div>
+      </div></section>`;
+    hydrateImages(byId("productDrawerContent"));
+  }
+
+  async function fetchProduct(id) {
+    const data = await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(id)}`));
+    return data.product;
   }
 
   async function openProductDetail(id) {
-    const data = await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(id)}`));
-    const product = data.product;
-    byId("productDrawerTitle").textContent = product.productName || product.sku;
-    byId("productDrawerMeta").textContent = `${product.sku} · ${LIFECYCLE_LABELS[product.lifecycleStatus] || product.sourceStatus}`;
-    const latestCost = product.costHistory?.[0];
-    byId("productDrawerContent").innerHTML = `
-      <section><h3>基础资料</h3><div class="product-drawer-grid">
-        ${fact("SKU", product.sku)}${fact("主 SKU", product.mainSku)}${fact("款号", product.styleCode)}${fact("款名", product.styleName)}
-        ${fact("一级类目", product.categoryL1)}${fact("二级类目", product.categoryL2)}${fact("销售规格", product.salesSpec)}${fact("中台状态", product.sourceStatus)}
-      </div></section>
-      <section><h3>规格与包装</h3><div class="product-drawer-grid">
-        ${fact("单品尺寸", product.packaging?.itemDimensions)}${fact("净重", product.packaging?.itemNetWeightG == null ? "-" : `${formatNumber(product.packaging.itemNetWeightG)} g`)}
-        ${fact("毛重", product.packaging?.itemGrossWeightG == null ? "-" : `${formatNumber(product.packaging.itemGrossWeightG)} g`)}
-        ${fact("外箱", [product.packaging?.cartonLengthCm, product.packaging?.cartonWidthCm, product.packaging?.cartonHeightCm].every((value) => value != null) ? `${formatNumber(product.packaging.cartonLengthCm)} × ${formatNumber(product.packaging.cartonWidthCm)} × ${formatNumber(product.packaging.cartonHeightCm)} cm` : "-")}
-      </div></section>
-      <section><h3>成本与库存</h3><div class="product-drawer-grid">
-        ${fact("人民币成本", latestCost?.costCny == null ? "-" : `¥${formatNumber(latestCost.costCny)}`)}${fact("国家币成本", latestCost?.costLocal)}
-        ${fact("汇率", latestCost?.exchangeRate)}${fact("当前仓库库存", product.inventories?.length ? product.inventories.map((item) => `${item.warehouse} ${formatNumber(item.stock)}`).join("；") : "-")}
-      </div></section>
-      <section><h3>来源与能力状态</h3><div class="product-drawer-grid">
-        ${fact("来源文件", product.sourceFilename)}${fact("来源行", product.sourceRowNumber)}${fact("最近批次", product.lastBatchId?.slice(0, 8))}${fact("更新时间", formatDate(product.updatedAt))}
-        ${fact("图片素材", "尚未接入 G1B")}${fact("AI 内容", "尚未接入 G1B")}${fact("刊登状态", "尚未评估")}${fact("运营池", product.operationalEligible ? "可进入" : "不进入")}
-      </div></section>`;
+    renderProductDetail(await fetchProduct(id));
     const drawer = byId("productCatalogDrawer");
     if (!drawer.open) drawer.showModal();
+  }
+
+  function openFieldSettings() {
+    const selected = new Set(state.visibleProductFields);
+    byId("productDetailFieldsList").innerHTML = [...groupedFields(state.productFields).entries()].map(([label, fields]) => `
+      <section class="product-field-group"><h3>${esc(label)}</h3><div class="product-field-options">${fields.map((field) => `<label>
+        <input type="checkbox" name="product-detail-field" value="${esc(field.code)}" ${selected.has(field.code) ? "checked" : ""} />
+        <span>${esc(field.label)}</span>
+      </label>`).join("")}</div></section>`).join("");
+    byId("productDetailFieldsDialog").showModal();
+  }
+
+  async function saveFieldSettings(event) {
+    event.preventDefault();
+    const visibleFields = [...byId("productDetailFieldsForm").querySelectorAll('input[name="product-detail-field"]:checked')].map((input) => input.value);
+    const data = await responseJson(await authorizedFetch("/api/product-center/products/detail-preferences", {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ visibleFields }),
+    }));
+    state.visibleProductFields = data.preference.visibleFields;
+    byId("productDetailFieldsDialog").close();
+    if (state.currentProduct) renderProductDetail({ ...state.currentProduct, visibleFields: state.visibleProductFields });
+    onStatus("产品详情显示字段已应用到全部产品。", "success");
+  }
+
+  function renderEditDialog(product) {
+    state.currentProduct = product;
+    byId("productEditTitle").textContent = `编辑 ${product.sku}`;
+    const editableFields = (product.fields || []).filter((field) => field.editable);
+    byId("productEditFields").innerHTML = editableFields.map((field) => `<label class="field-block">
+      <span>${esc(field.label)} <small class="product-field-source">人工维护</small></span>
+      <input name="${esc(field.code)}" data-field-type="${esc(field.type)}" value="${esc(product.fieldValues?.[field.code] ?? "")}" ${field.type === "number" || field.type === "integer" ? 'inputmode="decimal"' : ""} />
+    </label>`).join("");
+    byId("productImageList").innerHTML = renderProductImages(product, { editable: true });
+    hydrateImages(byId("productImageList"));
+  }
+
+  async function openProductEditor(id = state.currentProduct?.id) {
+    if (!id) return;
+    renderEditDialog(await fetchProduct(id));
+    const dialog = byId("productEditDialog");
+    if (!dialog.open) dialog.showModal();
+  }
+
+  async function saveProductEdit(event) {
+    event.preventDefault();
+    const product = state.currentProduct;
+    if (!product) return;
+    const fields = {};
+    for (const input of byId("productEditFields").querySelectorAll("[name]")) fields[input.name] = input.value.trim() || null;
+    await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(product.id)}`, {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ fields }),
+    }));
+    byId("productEditDialog").close();
+    await openProductDetail(product.id);
+    await loadCatalog();
+    onStatus("产品信息已更新，人工修改已留痕。", "success");
+  }
+
+  async function uploadProductImages() {
+    const product = state.currentProduct;
+    const files = [...(byId("productImageFiles").files || [])];
+    if (!product || !files.length) return onStatus("请选择需要上传的产品图片。", "error");
+    const button = byId("uploadProductImagesBtn");
+    button.disabled = true;
+    try {
+      for (const file of files) {
+        await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(product.id)}/images`, {
+          method: "POST",
+          headers: { "content-type": file.type, "x-file-name": encodeURIComponent(file.name) },
+          body: file,
+        }));
+      }
+      renderEditDialog(await fetchProduct(product.id));
+      byId("productImageFiles").value = "";
+      await loadCatalog();
+      onStatus("产品图片已上传。", "success");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function deleteProductImage(imageId) {
+    const product = state.currentProduct;
+    if (!product) return;
+    await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(product.id)}/images/${encodeURIComponent(imageId)}`, { method: "DELETE" }));
+    renderEditDialog(await fetchProduct(product.id));
+    await loadCatalog();
+    onStatus("图片已从产品展示中移除。", "success");
   }
 
   async function apply({ automatic = false } = {}) {
@@ -394,8 +531,22 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       loadCatalog().catch((error) => onStatus(error.message, "error"));
     });
     byId("productCatalogTable").addEventListener("click", (event) => {
+      const editButton = event.target.closest("[data-product-edit-id]");
+      if (editButton) {
+        openProductEditor(editButton.dataset.productEditId).catch((error) => onStatus(error.message, "error"));
+        return;
+      }
       const button = event.target.closest("[data-product-id]");
       if (button) openProductDetail(button.dataset.productId).catch((error) => onStatus(error.message, "error"));
+    });
+    byId("configureProductFieldsBtn").addEventListener("click", openFieldSettings);
+    byId("editProductBtn").addEventListener("click", () => openProductEditor().catch((error) => onStatus(error.message, "error")));
+    byId("productDetailFieldsForm").addEventListener("submit", (event) => saveFieldSettings(event).catch((error) => onStatus(error.message, "error")));
+    byId("productEditForm").addEventListener("submit", (event) => saveProductEdit(event).catch((error) => onStatus(error.message, "error")));
+    byId("uploadProductImagesBtn").addEventListener("click", () => uploadProductImages().catch((error) => onStatus(error.message, "error")));
+    byId("productImageList").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-delete-product-image]");
+      if (button) deleteProductImage(button.dataset.deleteProductImage).catch((error) => onStatus(error.message, "error"));
     });
     byId("closeProductDrawerBtn").addEventListener("click", () => byId("productCatalogDrawer").close());
   }

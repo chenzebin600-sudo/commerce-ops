@@ -12,6 +12,8 @@ import { ensureFileStorageRoots, resolveFileStorageConfig, XLSX_MIME } from "../
 import { PRODUCT_PACKAGE_HEADERS, PRODUCT_PACKAGE_FIELD_COUNT } from "../lib/product-center/product-package-contract.mjs";
 import { validateParsedProductPackage } from "../lib/product-center/product-package-validation.mjs";
 import { ProductImportService } from "../lib/product-center/product-import-service.mjs";
+import { ProductCatalogService } from "../lib/product-center/product-catalog-service.mjs";
+import { ProductImageService } from "../lib/product-center/product-image-service.mjs";
 import { parseProductPackageXlsx } from "../lib/product-center/xlsx-parser.mjs";
 
 const projectRoot = path.resolve(".");
@@ -88,7 +90,7 @@ async function fixture() {
   };
 }
 
-test("the frozen product package contract contains exactly 34 required fields", () => {
+test("the frozen product package contract recognizes exactly 34 central fields", () => {
   assert.equal(PRODUCT_PACKAGE_FIELD_COUNT, 34);
   assert.equal(new Set(PRODUCT_PACKAGE_HEADERS).size, 34);
 });
@@ -119,6 +121,92 @@ test("a normal Excel product package validates and applies through the standard 
     const file = context.dataAccess.repositories.exportFiles.list({ sourceType: "product_package_import" }).files[0];
     assert.equal(file.sourceType, "product_package_import");
     assert.equal(file.fileHash.length, 64);
+  } finally {
+    await context.close();
+  }
+});
+
+test("country plus SKU is the product identity and later imports update only that country", async () => {
+  const context = await fixture();
+  try {
+    const firstFile = await createWorkbook(context.root, [
+      completeRow({ SKU: "SHARED-001", 国家: "马来", 商品名称: "马来版本", 仓库: "MY-A", 销售成本人民币: 10, 国家汇率: 5, 销售成本国家币: 50 }),
+      completeRow({ SKU: "SHARED-001", 国家: "泰国", 商品名称: "泰国版本", 仓库: "TH-A", 销售成本人民币: 12, 国家汇率: 5, 销售成本国家币: 60 }),
+    ]);
+    const first = await context.service.uploadAndValidate({ filename: "countries.xlsx", mimeType: XLSX_MIME, buffer: await fs.readFile(firstFile), operatorLabel: "test" });
+    assert.equal(first.batch.rowCount, 2);
+    await context.service.apply(first.batch.id, { operatorLabel: "test", acknowledgeWarnings: true });
+    const db = context.dataAccess.provider.connection;
+    assert.equal(db.prepare("SELECT count(*) n FROM product_skus WHERE source_sku='SHARED-001'").get().n, 2);
+
+    const secondFile = await createWorkbook(context.root, [
+      completeRow({ SKU: "SHARED-001", 国家: "马来", 商品名称: "马来版本更新", 仓库: "MY-A", 销售成本人民币: 11, 国家汇率: 5, 销售成本国家币: 55 }),
+    ]);
+    const second = await context.service.uploadAndValidate({ filename: "country-update.xlsx", mimeType: XLSX_MIME, buffer: await fs.readFile(secondFile), operatorLabel: "test" });
+    assert.equal(second.batch.updatedCount, 1);
+    await context.service.apply(second.batch.id, { operatorLabel: "test", acknowledgeWarnings: true });
+    const names = db.prepare("SELECT country_raw,source_product_name FROM product_skus WHERE source_sku='SHARED-001' ORDER BY country_raw").all();
+    assert.deepEqual(names.map((row) => ({ ...row })), [
+      { country_raw: "泰国", source_product_name: "泰国版本" },
+      { country_raw: "马来", source_product_name: "马来版本更新" },
+    ]);
+  } finally {
+    await context.close();
+  }
+});
+
+test("a central template without cost fields imports without invented cost data", async () => {
+  const context = await fixture();
+  try {
+    const headers = PRODUCT_PACKAGE_HEADERS.filter((header) => !["出货方式", "规划仓", "销售成本人民币", "国家汇率", "销售成本国家币", "1档价(20%)", "2档价(25%)", "3档价(35%)", "4档价(45%)", "连带率"].includes(header));
+    const filename = await createWorkbook(context.root, [completeRow({ SKU: "NO-COST-001" })], headers);
+    const result = await context.service.uploadAndValidate({ filename: "no-cost.xlsx", mimeType: XLSX_MIME, buffer: await fs.readFile(filename), operatorLabel: "test" });
+    assert.equal(result.batch.blockerCount, 0);
+    await context.service.apply(result.batch.id, { operatorLabel: "test", acknowledgeWarnings: true });
+    assert.equal(context.dataAccess.provider.connection.prepare("SELECT count(*) n FROM product_cost_snapshots").get().n, 0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("manual product fields and global detail preferences are stored separately from central facts", async () => {
+  const context = await fixture();
+  try {
+    const filename = await createWorkbook(context.root, [completeRow({ SKU: "EDIT-001", 商品名称: "中台名称" })]);
+    const imported = await context.service.uploadAndValidate({ filename: "edit.xlsx", mimeType: XLSX_MIME, buffer: await fs.readFile(filename), operatorLabel: "test" });
+    await context.service.apply(imported.batch.id, { operatorLabel: "test", acknowledgeWarnings: true });
+    const service = new ProductCatalogService({ repository: context.dataAccess.repositories.productCatalog });
+    const product = (await service.list({ keyword: "EDIT-001" })).products[0];
+    await service.update(product.id, { product_name: "人工名称" }, { operatorLabel: "test", requestId: "edit-request" });
+    await service.saveFieldPreference(["sku_code", "product_name", "country_raw"], { operatorLabel: "test" });
+    const detail = await service.detail(product.id);
+    assert.equal(detail.sourceFacts.product_name, "中台名称");
+    assert.equal(detail.fieldValues.product_name, "人工名称");
+    assert.deepEqual(detail.visibleFields, ["sku_code", "product_name", "country_raw"]);
+  } finally {
+    await context.close();
+  }
+});
+
+test("product images are safely persisted and returned as catalog metadata", async () => {
+  const context = await fixture();
+  try {
+    const filename = await createWorkbook(context.root, [completeRow({ SKU: "IMAGE-001" })]);
+    const imported = await context.service.uploadAndValidate({ filename: "image.xlsx", mimeType: XLSX_MIME, buffer: await fs.readFile(filename), operatorLabel: "test" });
+    await context.service.apply(imported.batch.id, { operatorLabel: "test", acknowledgeWarnings: true });
+    const product = (await context.dataAccess.repositories.productCatalog.list({ keyword: "IMAGE-001" })).products[0];
+    const imageService = new ProductImageService({
+      repository: context.dataAccess.repositories.productCatalog,
+      tempRoot: context.fileStorageConfig.tempRoot,
+      imageRoot: path.join(context.fileStorageConfig.storageRoot, "product-images"),
+    });
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const image = await imageService.upload(product.id, { filename: "商品图.png", mimeType: "image/png", buffer: png, operatorLabel: "test" });
+    assert.equal(image.productId, product.id);
+    assert.deepEqual((await imageService.read(product.id, image.id)).buffer, png);
+    const listed = (await context.dataAccess.repositories.productCatalog.list({ keyword: "IMAGE-001" })).products[0];
+    assert.equal(listed.image.status, "available");
+    assert.equal(listed.image.count, 1);
   } finally {
     await context.close();
   }
@@ -174,7 +262,7 @@ test("applied products are searchable and expose only real catalog facts", async
     assert.equal(catalog.total, 1);
     assert.equal(catalog.products[0].sku, "CAT-001");
     assert.equal(catalog.products[0].lifecycleStatus, "CLEARANCE");
-    assert.equal(catalog.products[0].image.status, "not_integrated");
+    assert.equal(catalog.products[0].image.status, "missing");
     assert.equal(catalog.products[0].aiContentStatus, "not_integrated");
     const detail = await context.dataAccess.repositories.productCatalog.get(catalog.products[0].id);
     assert.equal(detail.sourceFacts.product_name, "竹制收纳架");
@@ -186,10 +274,10 @@ test("applied products are searchable and expose only real catalog facts", async
   }
 });
 
-test("a missing fixed field creates a blocker and prevents apply", async () => {
+test("a missing product identity field creates a blocker and prevents apply", async () => {
   const context = await fixture();
   try {
-    const headers = PRODUCT_PACKAGE_HEADERS.filter((header) => header !== "销售成本人民币");
+    const headers = PRODUCT_PACKAGE_HEADERS.filter((header) => header !== "国家");
     const filename = await createWorkbook(context.root, [completeRow()], headers);
     const result = await context.service.uploadAndValidate({ filename: "missing-field.xlsx", mimeType: XLSX_MIME, buffer: await fs.readFile(filename), operatorLabel: "test" });
     assert.ok(result.batch.blockerCount > 0);
@@ -200,7 +288,7 @@ test("a missing fixed field creates a blocker and prevents apply", async () => {
   }
 });
 
-test("duplicate SKU rows are both retained as blocking evidence", async () => {
+test("duplicate country SKU warehouse rows are grouped and blocked", async () => {
   const parsed = {
     headers: PRODUCT_PACKAGE_HEADERS,
     rows: [
@@ -209,9 +297,24 @@ test("duplicate SKU rows are both retained as blocking evidence", async () => {
     ],
   };
   const validation = validateParsedProductPackage(parsed);
-  assert.equal(validation.rows.length, 2);
-  assert.equal(validation.rows.filter((row) => row.outcome === "exception").length, 2);
-  assert.equal(validation.issues.filter((item) => item.code === "DUPLICATE_SKU").length, 2);
+  assert.equal(validation.rows.length, 1);
+  assert.equal(validation.rows[0].outcome, "exception");
+  assert.equal(validation.issues.filter((item) => item.code === "DUPLICATE_COUNTRY_SKU_WAREHOUSE").length, 1);
+});
+
+test("the same country and SKU can contain multiple warehouse inventory rows", () => {
+  const parsed = {
+    headers: PRODUCT_PACKAGE_HEADERS,
+    rows: [
+      { sourceRowNumber: 2, rawPayload: completeRow({ SKU: "MULTI-WH", 仓库: "MY-A", 仓存: 10 }), formulaFields: [] },
+      { sourceRowNumber: 3, rawPayload: completeRow({ SKU: "MULTI-WH", 仓库: "MY-B", 仓存: 20 }), formulaFields: [] },
+    ],
+  };
+  const validation = validateParsedProductPackage(parsed);
+  assert.equal(validation.rows.length, 1);
+  assert.equal(validation.rows[0].outcome, "new");
+  assert.equal(validation.rows[0].normalizedPayload.inventories.length, 2);
+  assert.equal(validation.counts.blockerCount, 0);
 });
 
 test("unknown fields remain in source evidence and require explicit acknowledgement", async () => {
@@ -233,7 +336,7 @@ test("unknown fields remain in source evidence and require explicit acknowledgem
 test("a confirmed discontinued SKU without a main SKU is not blocked or assigned a false model", async () => {
   const context = await fixture();
   try {
-    const filename = await createWorkbook(context.root, [completeRow({ SKU: "OLD-001", 主SKU: null })]);
+    const filename = await createWorkbook(context.root, [completeRow({ SKU: "OLD-001", 主SKU: null, SKU状态: "灭款" })]);
     const result = await context.service.uploadAndValidate({ filename: "discontinued.xlsx", mimeType: XLSX_MIME, buffer: await fs.readFile(filename), operatorLabel: "test" });
     assert.equal(result.batch.blockerCount, 0);
     assert.ok(result.detail.issues.issues.some((item) => item.code === "DISCONTINUED_WITHOUT_MAIN_SKU" && item.severity === "reminder"));

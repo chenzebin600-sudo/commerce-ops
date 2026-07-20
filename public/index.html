@@ -249,8 +249,8 @@
                   <select id="productCatalogLifecycle"><option value="">全部状态</option></select>
                 </label>
                 <label class="field-block">
-                  <span>仓库</span>
-                  <select id="productCatalogWarehouse"><option value="">全部仓库</option></select>
+                  <span>国家</span>
+                  <select id="productCatalogCountry"><option value="">全部国家</option></select>
                 </label>
                 <button type="submit">查询</button>
                 <button id="resetProductCatalogBtn" class="button-tertiary" type="button">重置</button>
@@ -276,8 +276,8 @@
                   <input id="productPackageFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
                 </label>
                 <div class="product-source-note">
-                  <strong>固定 34 字段合同</strong>
-                  <span>原文件不会被修改；系统保存 SHA-256、来源批次和原始行证据。</span>
+                  <strong>自动识别中台产品包字段</strong>
+                  <span>按国家 + SKU 更新产品；原文件不会被修改，仓库明细会独立保留。</span>
                   <label class="check-field"><input id="productAutoApply" type="checkbox" checked /><span>校验通过后直接入库</span></label>
                 </div>
                 <button id="uploadProductPackageBtn" type="submit">上传产品包</button>
@@ -338,10 +338,35 @@
             <div class="product-drawer-shell">
               <header>
                 <div><span class="eyebrow">PRODUCT DETAIL</span><h2 id="productDrawerTitle">产品详情</h2><p id="productDrawerMeta"></p></div>
-                <button id="closeProductDrawerBtn" class="icon-text-button" type="button" aria-label="关闭产品详情">×</button>
+                <div class="product-drawer-actions">
+                  <button id="configureProductFieldsBtn" class="button-tertiary" type="button">显示字段</button>
+                  <button id="editProductBtn" type="button">编辑</button>
+                  <button id="closeProductDrawerBtn" class="icon-text-button" type="button" aria-label="关闭产品详情">×</button>
+                </div>
               </header>
               <div id="productDrawerContent" class="product-drawer-content"></div>
             </div>
+          </dialog>
+
+          <dialog id="productDetailFieldsDialog" class="product-center-dialog">
+            <form id="productDetailFieldsForm" method="dialog" class="product-dialog-shell">
+              <header><div><h2>产品详情显示字段</h2><p>保存后对所有产品详情生效。</p></div><button class="icon-text-button" value="cancel" aria-label="关闭">×</button></header>
+              <div id="productDetailFieldsList" class="product-field-selector"></div>
+              <footer><button class="button-tertiary" value="cancel">取消</button><button id="saveProductFieldsBtn" type="submit" value="default">保存字段</button></footer>
+            </form>
+          </dialog>
+
+          <dialog id="productEditDialog" class="product-center-dialog product-edit-dialog">
+            <form id="productEditForm" method="dialog" class="product-dialog-shell">
+              <header><div><h2 id="productEditTitle">编辑产品</h2><p>人工修改单独留痕，不覆盖公司中台事实字段。</p></div><button class="icon-text-button" value="cancel" aria-label="关闭">×</button></header>
+              <div id="productEditFields" class="product-edit-fields"></div>
+              <section class="product-image-editor">
+                <div class="section-title-row compact"><div><h3>产品图片</h3><p>支持 JPG、PNG、WebP，单张不超过 10MB。</p></div></div>
+                <div class="product-image-upload-row"><input id="productImageFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple /><button id="uploadProductImagesBtn" class="button-tertiary" type="button">上传图片</button></div>
+                <div id="productImageList" class="product-image-list"></div>
+              </section>
+              <footer><button class="button-tertiary" value="cancel">取消</button><button id="saveProductEditBtn" type="submit" value="default">保存修改</button></footer>
+            </form>
           </dialog>
         </section>
 

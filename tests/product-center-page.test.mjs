@@ -11,8 +11,9 @@ test("product center exposes upload, history, mapping, quality and confirmation 
     "productIssuesPrevBtn", "productIssuesNextBtn", "productRowsPrevBtn", "productRowsNextBtn",
     "productCatalogPanel", "productCatalogSearchForm", "productCatalogTable", "productCatalogDrawer",
     "productAutoApply", "revalidateProductImportBtn",
+    "productDetailFieldsDialog", "productEditDialog", "productImageFiles", "configureProductFieldsBtn", "editProductBtn",
   ]) assert.match(html, new RegExp(`id=["']${id}["']`));
-  assert.match(html, /固定 34 字段合同/);
+  assert.match(html, /按国家 \+ SKU 更新产品/);
   assert.match(html, /原文件不会被修改/);
 });
 
@@ -27,6 +28,9 @@ test("product center uses the authenticated current-origin API and never stores 
   assert.match(source, /"x-file-name"/);
   assert.match(source, /\/issues\?page=\$\{page\}&page_size=100/);
   assert.match(source, /\/rows\?page=\$\{page\}&page_size=100/);
+  assert.doesNotMatch(source, /<th>仓库 \/ 库存<\/th>|<th>来源成本<\/th>/);
+  assert.match(source, /detail-preferences/);
+  assert.match(source, /\/images/);
 });
 
 test("product import creation, validation, completion and failures use stable audit actions", async () => {

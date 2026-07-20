@@ -2733,6 +2733,9 @@ tr:last-child td {
 
 .product-center-panel {
   min-width: 0;
+  display: grid;
+  gap: 18px;
+  padding: 24px;
 }
 
 .product-view-tab {
@@ -2793,7 +2796,7 @@ tr:last-child td {
 }
 
 .product-catalog-table {
-  min-width: 1320px;
+  min-width: 1040px;
 }
 
 .product-catalog-table tbody tr:hover {
@@ -2820,6 +2823,16 @@ tr:last-child td {
   background: #f3f5f7;
   color: var(--text-muted);
   text-align: center;
+}
+
+.product-thumbnail-image {
+  width: 58px;
+  height: 58px;
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f3f5f7;
+  object-fit: cover;
 }
 
 .product-thumbnail-placeholder span {
@@ -2859,7 +2872,7 @@ tr:last-child td {
 }
 
 .product-catalog-drawer {
-  width: min(560px, 100vw);
+  width: min(720px, 100vw);
   max-width: none;
   height: 100vh;
   max-height: none;
@@ -2913,6 +2926,19 @@ tr:last-child td {
   font-size: 22px;
 }
 
+.product-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.product-drawer-actions > button:not(.icon-text-button) {
+  width: auto;
+  min-width: auto;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
 .product-drawer-content {
   padding: 0 24px 32px;
   overflow: auto;
@@ -2949,6 +2975,89 @@ tr:last-child td {
   overflow-wrap: anywhere;
   font-size: 13px;
   line-height: 1.45;
+}
+
+.product-center-dialog {
+  width: min(820px, calc(100vw - 32px));
+  max-width: none;
+  max-height: min(86vh, 900px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 24px 72px rgba(15, 23, 42, 0.2);
+}
+
+.product-edit-dialog {
+  width: min(1040px, calc(100vw - 32px));
+}
+
+.product-center-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.38);
+}
+
+.product-dialog-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: min(86vh, 900px);
+}
+
+.product-dialog-shell > header,
+.product-dialog-shell > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.product-dialog-shell > header h2,
+.product-dialog-shell > header p {
+  margin: 0;
+}
+
+.product-dialog-shell > header h2 { font-size: 18px; }
+.product-dialog-shell > header p { margin-top: 4px; color: var(--text-muted); font-size: 12px; }
+.product-dialog-shell > header .icon-text-button { width: 36px; min-width: 36px; padding: 0; font-size: 22px; }
+.product-dialog-shell > footer { justify-content: flex-end; border-top: 1px solid var(--line); border-bottom: 0; }
+
+.product-field-selector,
+.product-edit-fields {
+  overflow: auto;
+  padding: 20px 22px;
+}
+
+.product-field-group + .product-field-group { margin-top: 22px; }
+.product-field-group h3 { margin: 0 0 10px; font-size: 13px; }
+.product-field-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 16px; }
+.product-field-options label { display: flex; align-items: center; gap: 8px; min-height: 32px; font-size: 13px; }
+
+.product-edit-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+}
+
+.product-edit-fields .field-block { min-width: 0; }
+.product-edit-fields input { width: 100%; }
+.product-field-source { color: var(--text-muted); font-size: 11px; }
+
+.product-image-editor { padding: 0 22px 20px; overflow: auto; }
+.product-image-upload-row { display: flex; align-items: center; gap: 10px; }
+.product-image-upload-row input { flex: 1; min-width: 0; }
+.product-image-list { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.product-image-item { position: relative; min-width: 0; }
+.product-image-item img { width: 100%; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 6px; object-fit: cover; background: #f3f5f7; }
+.product-image-item button { position: absolute; top: 6px; right: 6px; width: 30px; min-width: 30px; min-height: 30px; padding: 0; }
+
+@media (max-width: 900px) {
+  .product-center-panel { padding: 14px; }
+  .product-field-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .product-edit-fields { grid-template-columns: 1fr; }
+  .product-image-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .product-drawer-shell > header { padding: 18px 16px; }
+  .product-drawer-actions { flex-wrap: wrap; justify-content: flex-end; }
 }
 
 .product-upload-band {
