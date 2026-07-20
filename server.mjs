@@ -68,6 +68,9 @@ import { createAdServiceManager } from "./lib/ad-service-manager.mjs";
 import { resolveChromeRuntime } from "./lib/chrome-runtime.mjs";
 import { resolveRuntimeConfig, runtimeEnvironment } from "./lib/runtime-config.mjs";
 import { resolveAdServiceInternalToken } from "./lib/ad-service-token.mjs";
+import { resolvePythonRuntime } from "./lib/python-runtime.mjs";
+import { ProductImportService } from "./lib/product-center/product-import-service.mjs";
+import { createProductCenterApi } from "./lib/product-center/product-center-api.mjs";
 import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
 import { DeepSeekProvider } from "./lib/ai/providers/deepseek-provider.mjs";
@@ -77,6 +80,7 @@ import { createIdentifier } from "./lib/contracts/identifiers.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 const excelCellPolicyModulePath = path.join(__dirname, "lib", "security", "excel-cell-policy.mjs");
+const productPackageParserPath = path.join(__dirname, "scripts", "product-package-parser.py");
 loadLocalEnv(__dirname);
 const runtimeConfig = resolveRuntimeConfig({ bootstrapRoot: __dirname, env: process.env });
 const runtimeEnv = { ...process.env, ...runtimeEnvironment(runtimeConfig) };
@@ -240,6 +244,23 @@ const exportFileService = createExportFileService({
   audit: auditService,
 });
 const handleFileApi = createFileApi({ fileService: exportFileService });
+const productPackagePython = resolvePythonRuntime({
+  appRoot: runtimeConfig.appRoot,
+  env: runtimeEnv,
+  requiredModules: ["openpyxl"],
+});
+const productImportService = new ProductImportService({
+  repository: dataAccess.repositories.productImports,
+  fileService: exportFileService,
+  fileStorageConfig,
+  pythonExecutable: productPackagePython.executable || runtimeConfig.pythonExecutable || "python",
+  parserScript: productPackageParserPath,
+  maxRows: Number(process.env.PRODUCT_IMPORT_MAX_ROWS || 20000),
+});
+const handleProductCenterApi = createProductCenterApi({
+  service: productImportService,
+  maxUploadBytes: fileStorageConfig.maxUploadBytes,
+});
 auditService.recordSafely({
   module: "file",
   action: "file.temp.cleanup",
@@ -2135,6 +2156,9 @@ async function handleApi(req, res, url) {
 
   const auditHandled = await handleAuditApi(req, res, url);
   if (auditHandled) return true;
+
+  const productCenterHandled = await handleProductCenterApi(req, res, url);
+  if (productCenterHandled) return true;
 
   const reviewHandled = await handleFileReviewApi(req, res, url);
   if (reviewHandled) return true;

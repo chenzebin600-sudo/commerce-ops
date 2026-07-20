@@ -25,12 +25,24 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 | `file_lifecycle_protected_files` | 2 | system | `file_id` | export file `CASCADE` |
 | `managed_files` | 7 | business metadata | `id` | lifecycle item/scan `RESTRICT`; unique lifecycle item and `(root_key, relative_path)` |
 | `file_quarantine_records` | 0 | system | `id` | lifecycle item `RESTRICT`, managed file `SET NULL`; unique quarantine path |
+| `product_import_batches` | 0 | product source evidence | `id` | unique source system plus file SHA-256 |
+| `product_import_files` | 0 | product source evidence | `id` | batch/export file `RESTRICT`; unique role and file |
+| `product_import_rows` | 0 | immutable product source rows | `id` | batch `RESTRICT`; unique batch plus source row |
+| `product_import_issues` | 0 | product data quality | `id` | batch/row `RESTRICT`; indexed severity and status |
+| `product_categories` | 0 | product master data | `id` | self parent and source batches `RESTRICT`; normalized source uniqueness |
+| `product_models` | 0 | product master data | `id` | category and source batches `RESTRICT`; unique source main SKU |
+| `product_skus` | 0 | product master data | `id` | category/model/source row/batches; unique normalized source SKU |
+| `product_sku_lifecycle` | 0 | product lifecycle current state | `sku_id` | SKU and source batch `RESTRICT` |
+| `product_sku_lifecycle_events` | 0 | product lifecycle history | `id` | SKU and source batch `RESTRICT` |
+| `product_packaging_profiles` | 0 | product source facts | `sku_id` | SKU/source row `RESTRICT` |
+| `product_cost_snapshots` | 0 | product source facts | `id` | SKU/batch `RESTRICT`; unique SKU plus batch |
+| `product_inventory_snapshots` | 0 | product source facts | `id` | SKU/batch `RESTRICT`; unique SKU, batch and warehouse |
 
 ## Type conversion details
 
 ### JSON text
 
-Convert `at_mobiles_json`, `schedule_config_json`, `payment_date_config_json`, `filters_json`, `log_summary_json`, `metadata_json`, `scopes_json`, `summary_json`, `scope_errors_json`, and `categories_json` to `jsonb`. Validate every source value with `json_valid` before export. Replace the current `LIKE` lookup against `export_files.metadata_json` with a JSONB containment predicate and an expression/index chosen from real query plans.
+Convert `at_mobiles_json`, `schedule_config_json`, `payment_date_config_json`, `filters_json`, `log_summary_json`, `metadata_json`, `scopes_json`, `summary_json`, `scope_errors_json`, `categories_json`, product import payload JSON, mapping JSON, validation JSON and issue value JSON to `jsonb`. Validate every source value with `json_valid` before export. Replace the current `LIKE` lookup against `export_files.metadata_json` with a JSONB containment predicate and an expression/index chosen from real query plans.
 
 ### Date and timezone
 
@@ -69,7 +81,7 @@ Runtime-only dialect operations are now located under `lib/data/sqlite`; `script
 ## Migration sequence
 
 1. Freeze schema changes and create a verified SQLite backup plus file manifest.
-2. Build PostgreSQL migrations from the six SQLite migrations, preserving keys, checks, indexes, and delete behavior.
+2. Build PostgreSQL migrations from the seven SQLite migrations, preserving keys, checks, indexes, and delete behavior.
 3. Create PostgreSQL adapters behind the existing Provider/Repository contracts; keep SQLite as the active provider.
 4. Import reference/config tables: accounts and DingTalk configs, preserving encrypted bytes.
 5. Import task/run/event history, then export/file and lifecycle relationships in FK order.

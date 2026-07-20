@@ -47,6 +47,10 @@
           </div>
           <div class="nav-group">
             <span class="nav-group-label">运营数据</span>
+            <button class="tab-button" type="button" data-page="products" aria-controls="page-products">
+              <span class="nav-monogram" aria-hidden="true">P</span>
+              <span>产品中心</span>
+            </button>
             <button class="tab-button" type="button" data-page="mabang" aria-controls="page-mabang">
               <span class="nav-monogram" aria-hidden="true">M</span>
               <span>马帮数据</span>
@@ -212,6 +216,81 @@
             <div class="action-bar single-action">
               <span class="action-note">系统将收集销量靠前的 5 个商品并调用 DeepSeek 分析。</span>
               <button id="discoverTopBtn" type="button">收集 TOP5 并分析</button>
+            </div>
+          </section>
+        </section>
+
+        <section id="page-products" class="page-section" hidden>
+          <section class="panel product-center-panel">
+            <div class="panel-heading mabang-heading">
+              <div>
+                <h2>产品包导入中心</h2>
+                <p>保存公司商品中台源文件，完成固定字段映射、质量校验和人工确认入库。</p>
+              </div>
+              <div class="segmented-control mabang-segmented-control" role="tablist" aria-label="产品中心页面">
+                <button class="product-view-tab active" type="button" role="tab" data-product-view="upload" aria-selected="true">产品包导入</button>
+                <button class="product-view-tab" type="button" role="tab" data-product-view="history" aria-selected="false">导入历史</button>
+              </div>
+            </div>
+
+            <div id="productImportWorkspace" class="product-view-panel">
+              <form id="productPackageUploadForm" class="product-upload-band">
+                <label class="field-block product-file-field">
+                  <span>公司商品中台产品包 <small>仅支持 .xlsx</small></span>
+                  <input id="productPackageFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
+                </label>
+                <div class="product-source-note">
+                  <strong>固定 34 字段合同</strong>
+                  <span>原文件不会被修改；系统保存 SHA-256、来源批次和原始行证据。</span>
+                </div>
+                <button id="uploadProductPackageBtn" type="submit">上传并校验</button>
+              </form>
+
+              <section id="productImportDetail" class="product-import-detail" hidden>
+                <div class="section-title-row compact">
+                  <div><h3 id="productBatchTitle">导入批次</h3><p id="productBatchMeta"></p></div>
+                  <span id="productAppliedState" class="status-badge success" hidden>已正式入库</span>
+                </div>
+                <div id="productBatchSummary" class="product-summary-grid"></div>
+
+                <div class="product-detail-section">
+                  <div class="section-title-row compact"><div><h3>字段映射</h3><p>未知字段不会静默丢弃，确认后仅应用已映射字段。</p></div></div>
+                  <div id="productFieldMappingTable" class="table-wrap product-table-wrap"></div>
+                </div>
+                <div class="product-detail-section">
+                  <div class="section-title-row compact"><div><h3>数据质量报告</h3><p>阻断问题必须修复；提醒项可知悉后继续。</p></div></div>
+                  <div id="productIssueTable" class="table-wrap product-table-wrap"></div>
+                  <div class="product-detail-pager" aria-label="数据质量报告分页">
+                    <button id="productIssuesPrevBtn" class="button-tertiary" type="button">上一页</button>
+                    <span id="productIssuesPageStatus">第 1 / 1 页</span>
+                    <button id="productIssuesNextBtn" class="button-tertiary" type="button">下一页</button>
+                  </div>
+                </div>
+                <div class="product-detail-section">
+                  <div class="section-title-row compact"><div><h3>解析结果</h3><p>每页展示 100 行；原始字段仍完整保存在批次证据中。</p></div></div>
+                  <div id="productImportRowsTable" class="table-wrap product-table-wrap"></div>
+                  <div class="product-detail-pager" aria-label="解析结果分页">
+                    <button id="productRowsPrevBtn" class="button-tertiary" type="button">上一页</button>
+                    <span id="productRowsPageStatus">第 1 / 1 页</span>
+                    <button id="productRowsNextBtn" class="button-tertiary" type="button">下一页</button>
+                  </div>
+                </div>
+                <div id="productImportConfirmation" class="product-confirmation" hidden>
+                  <div>
+                    <label class="check-field"><input id="productAcknowledgeWarnings" type="checkbox" /><span>我已检查并知悉提醒项</span></label>
+                    <label class="check-field"><input id="productAcknowledgeUnknown" type="checkbox" /><span>我已确认未知字段暂不应用</span></label>
+                  </div>
+                  <button id="applyProductImportBtn" type="button">确认正式入库</button>
+                </div>
+              </section>
+            </div>
+
+            <div id="productImportHistory" class="product-view-panel" hidden>
+              <div class="section-title-row compact">
+                <div><h3>导入历史</h3><p>查看文件、校验结果、人工确认状态和数据量。</p></div>
+                <button id="refreshProductImportsBtn" class="button-tertiary" type="button">刷新记录</button>
+              </div>
+              <div id="productImportHistoryTable" class="table-wrap product-table-wrap"></div>
             </div>
           </section>
         </section>
@@ -828,6 +907,6 @@
         <div class="dialog-actions"><button class="button-secondary" type="button" data-close-dialog="runNowConfirmDialog">取消</button><button id="confirmRunNowBtn" type="button">确认执行</button></div>
       </dialog>
     </main>
-    <script type="module" src="/app.js?v=20260716-operation-audit-1"></script>
+    <script type="module" src="/app.js?v=20260720-product-import-g1a2-1"></script>
   </body>
 </html>

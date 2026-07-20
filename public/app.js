@@ -6,6 +6,7 @@ import {
 } from "./auth-client.mjs";
 import { createAdFrameBridge } from "./ad-frame-bridge.mjs";
 import { createAuditPage } from "./audit-page.mjs";
+import { createProductCenterPage } from "./product-center-page.mjs";
 import { createExcelHtmlRenderer } from "/excel-cell-policy.mjs";
 
 let currentReport = null;
@@ -20,6 +21,7 @@ let applicationInitialized = false;
 let authenticationEnabled = false;
 let adsFrameBridge = null;
 let auditPage = null;
+let productCenterPage = null;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
@@ -80,6 +82,7 @@ const EXPORT_SOURCE_LABELS = {
   mabang_scheduled_order: "定时订单",
   mabang_scheduled_inventory: "定时库存",
   system_file_lifecycle_report: "生命周期报告",
+  product_package_import: "产品包源文件",
 };
 const MABANG_ORDER_FILTER_OPERATORS = [
   { value: "contains", label: "包含", needsValue: true },
@@ -157,6 +160,8 @@ auditPage = createAuditPage({
   onError: (error) => setStatus(error.message || "操作记录加载失败", "error"),
 });
 auditPage.initialize();
+productCenterPage = createProductCenterPage({ authorizedFetch, onStatus: setStatus });
+productCenterPage.initialize();
 adsFrameBridge = createAdFrameBridge({
   windowObject: window,
   frame: $("adsFrame"),
@@ -213,6 +218,10 @@ const PAGE_META = {
   audit: {
     title: "操作记录",
     subtitle: "查看关键操作、失败原因和任务关联；敏感凭证与业务明细不会进入审计记录。",
+  },
+  products: {
+    title: "产品中心",
+    subtitle: "导入公司商品中台产品包，完成字段映射、质量校验、人工确认和来源留痕。",
   },
 };
 
@@ -311,6 +320,7 @@ function switchPage(page) {
   if (page === "mabang" && currentMabangView === "scheduled") refreshScheduledData({ quiet: true }).catch(() => {});
   if (page === "ads") loadAdsAnalyzer();
   if (page === "audit") auditPage.load();
+  if (page === "products") productCenterPage.load().catch((error) => setStatus(error.message, "error"));
   if (location.hash !== `#${page}`) history.replaceState(null, "", `#${page}`);
 }
 
@@ -1079,7 +1089,7 @@ function renderMabangExportFiles() {
 }
 
 async function refreshMabangExportFiles() {
-  const data = await apiJson("/api/files?page=1&page_size=50");
+  const data = await apiJson("/api/files?page=1&page_size=50&scope=mabang");
   mabangExportFilesState.files = data.files || [];
   mabangExportFilesState.total = Number(data.total || 0);
   renderMabangExportFiles();

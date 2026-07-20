@@ -2,5 +2,13 @@
   {
     "prefix": "tests/",
     "reason": "Security tests intentionally include hostile absolute path samples."
+  },
+  {
+    "prefix": "docs/product-query-center-DESIGN.md",
+    "reason": "Local design-capture evidence intentionally records its source workspace path."
+  },
+  {
+    "prefix": "docs/product-query-center-production-analysis.md",
+    "reason": "Local production-analysis evidence intentionally records source and screenshot paths."
   }
 ]

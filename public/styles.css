@@ -2730,3 +2730,239 @@ tr:last-child td {
     transition-duration: 1ms !important;
   }
 }
+
+.product-center-panel {
+  min-width: 0;
+}
+
+.product-view-tab {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  min-height: 36px;
+  padding: 0 14px;
+  font-weight: 700;
+}
+
+.product-view-tab.active {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.product-view-panel[hidden] {
+  display: none;
+}
+
+.product-upload-band {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.2fr) minmax(260px, 1fr) auto;
+  gap: 16px;
+  align-items: end;
+  padding: 20px 0 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.product-source-note {
+  display: grid;
+  gap: 4px;
+  min-height: 42px;
+  align-content: center;
+}
+
+.product-source-note strong {
+  font-size: 13px;
+}
+
+.product-source-note span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.product-import-detail {
+  padding-top: 22px;
+}
+
+.product-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(92px, 1fr));
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  margin: 14px 0 24px;
+}
+
+.product-summary-grid > div {
+  display: grid;
+  gap: 5px;
+  padding: 14px 12px;
+  border-right: 1px solid var(--line);
+}
+
+.product-summary-grid > div:last-child {
+  border-right: 0;
+}
+
+.product-summary-grid span,
+.product-center-table small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.product-summary-grid strong {
+  font-size: 19px;
+  font-variant-numeric: tabular-nums;
+}
+
+.product-detail-section {
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+}
+
+.product-table-wrap {
+  max-height: 440px;
+  overflow: auto;
+}
+
+.product-center-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.product-center-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  text-align: left;
+}
+
+.product-center-table th,
+.product-center-table td {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.product-center-table td strong,
+.product-center-table td small {
+  display: block;
+}
+
+.product-status,
+.product-severity,
+.product-outcome {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #eef1f4;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.product-severity.blocker,
+.product-outcome.exception,
+.product-status.validation_failed,
+.product-status.apply_failed,
+.product-status.missing,
+.product-status.duplicate {
+  background: #fef3f2;
+  color: #b42318;
+}
+
+.product-severity.reminder,
+.product-status.unknown,
+.product-status.preview_ready {
+  background: #fff7ed;
+  color: #b54708;
+}
+
+.product-severity.information,
+.product-outcome.new {
+  background: #eff8ff;
+  color: #175cd3;
+}
+
+.product-status.mapped,
+.product-status.applied,
+.product-outcome.updated,
+.product-outcome.unchanged {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.product-confirmation {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: center;
+  padding: 18px 0 2px;
+  border-top: 1px solid var(--line);
+}
+
+.product-confirmation[hidden] {
+  display: none;
+}
+
+.product-confirmation > div {
+  display: grid;
+  gap: 9px;
+}
+
+.product-empty {
+  margin: 0;
+  padding: 24px 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.product-detail-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.product-detail-pager button {
+  min-width: 72px;
+}
+
+@media (max-width: 1100px) {
+  .product-upload-band {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .product-summary-grid {
+    grid-template-columns: repeat(4, minmax(90px, 1fr));
+  }
+
+  .product-summary-grid > div:nth-child(4) {
+    border-right: 0;
+  }
+}
+
+@media (max-width: 700px) {
+  .product-summary-grid {
+    grid-template-columns: repeat(2, minmax(90px, 1fr));
+  }
+
+  .product-summary-grid > div:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .product-confirmation {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

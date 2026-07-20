@@ -197,10 +197,15 @@ test("a healthy externally-started service is never claimed or stopped", async (
   assert.equal(await manager.stop(), false);
 });
 
-test("portable path scanner has one centralized exception registry", () => {
+test("portable path scanner has one centralized and narrowly scoped exception registry", () => {
   const exceptions = JSON.parse(fs.readFileSync(new URL("../config/portable-path-exceptions.json", import.meta.url), "utf8"));
-  assert.equal(exceptions.length, 1);
-  assert.match(exceptions[0].reason, /Security tests/);
+  assert.deepEqual(exceptions.map((item) => item.prefix).sort(), [
+    "docs/product-query-center-DESIGN.md",
+    "docs/product-query-center-production-analysis.md",
+    "tests/",
+  ]);
+  assert.equal(exceptions.some((item) => item.prefix === "docs/"), false);
+  assert.equal(exceptions.every((item) => typeof item.reason === "string" && item.reason.length >= 20), true);
 });
 
 test("unified package commands expose main scheduler ads and doctor", () => {
