@@ -224,16 +224,52 @@
           <section class="panel product-center-panel">
             <div class="panel-heading mabang-heading">
               <div>
-                <h2>产品包导入中心</h2>
-                <p>保存公司商品中台源文件，完成固定字段映射、质量校验和人工确认入库。</p>
+                <h2>产品中心</h2>
+                <p>查询公司商品中台事实数据，管理产品包同步和数据质量记录。</p>
               </div>
               <div class="segmented-control mabang-segmented-control" role="tablist" aria-label="产品中心页面">
-                <button class="product-view-tab active" type="button" role="tab" data-product-view="upload" aria-selected="true">产品包导入</button>
+                <button class="product-view-tab active" type="button" role="tab" data-product-view="catalog" aria-selected="true">产品查询</button>
+                <button class="product-view-tab" type="button" role="tab" data-product-view="upload" aria-selected="false">产品包导入</button>
                 <button class="product-view-tab" type="button" role="tab" data-product-view="history" aria-selected="false">导入历史</button>
               </div>
             </div>
 
-            <div id="productImportWorkspace" class="product-view-panel">
+            <div id="productCatalogPanel" class="product-view-panel">
+              <form id="productCatalogSearchForm" class="product-catalog-filters">
+                <label class="field-block product-catalog-search">
+                  <span>搜索产品</span>
+                  <input id="productCatalogKeyword" type="search" placeholder="SKU、主 SKU、款号、款名或商品名称" autocomplete="off" />
+                </label>
+                <label class="field-block">
+                  <span>一级类目</span>
+                  <select id="productCatalogCategoryL1"><option value="">全部类目</option></select>
+                </label>
+                <label class="field-block">
+                  <span>生命周期</span>
+                  <select id="productCatalogLifecycle"><option value="">全部状态</option></select>
+                </label>
+                <label class="field-block">
+                  <span>仓库</span>
+                  <select id="productCatalogWarehouse"><option value="">全部仓库</option></select>
+                </label>
+                <button type="submit">查询</button>
+                <button id="resetProductCatalogBtn" class="button-tertiary" type="button">重置</button>
+              </form>
+              <div class="product-catalog-summary">
+                <span id="productCatalogRange">暂无已入库产品</span>
+                <label>每页
+                  <select id="productCatalogPageSize"><option>20</option><option selected>30</option><option>50</option><option>100</option></select>
+                </label>
+              </div>
+              <div id="productCatalogTable" class="table-wrap product-catalog-table-wrap"></div>
+              <div class="product-catalog-pager">
+                <button id="productCatalogPrevBtn" class="button-tertiary" type="button">上一页</button>
+                <span id="productCatalogPageStatus">第 1 / 1 页</span>
+                <button id="productCatalogNextBtn" class="button-tertiary" type="button">下一页</button>
+              </div>
+            </div>
+
+            <div id="productImportWorkspace" class="product-view-panel" hidden>
               <form id="productPackageUploadForm" class="product-upload-band">
                 <label class="field-block product-file-field">
                   <span>公司商品中台产品包 <small>仅支持 .xlsx</small></span>
@@ -242,14 +278,18 @@
                 <div class="product-source-note">
                   <strong>固定 34 字段合同</strong>
                   <span>原文件不会被修改；系统保存 SHA-256、来源批次和原始行证据。</span>
+                  <label class="check-field"><input id="productAutoApply" type="checkbox" checked /><span>校验通过后直接入库</span></label>
                 </div>
-                <button id="uploadProductPackageBtn" type="submit">上传并校验</button>
+                <button id="uploadProductPackageBtn" type="submit">上传产品包</button>
               </form>
 
               <section id="productImportDetail" class="product-import-detail" hidden>
                 <div class="section-title-row compact">
                   <div><h3 id="productBatchTitle">导入批次</h3><p id="productBatchMeta"></p></div>
-                  <span id="productAppliedState" class="status-badge success" hidden>已正式入库</span>
+                  <div class="product-batch-actions">
+                    <button id="revalidateProductImportBtn" class="button-tertiary" type="button" hidden>重新校验</button>
+                    <span id="productAppliedState" class="status-badge success" hidden>已正式入库</span>
+                  </div>
                 </div>
                 <div id="productBatchSummary" class="product-summary-grid"></div>
 
@@ -293,6 +333,16 @@
               <div id="productImportHistoryTable" class="table-wrap product-table-wrap"></div>
             </div>
           </section>
+
+          <dialog id="productCatalogDrawer" class="product-catalog-drawer">
+            <div class="product-drawer-shell">
+              <header>
+                <div><span class="eyebrow">PRODUCT DETAIL</span><h2 id="productDrawerTitle">产品详情</h2><p id="productDrawerMeta"></p></div>
+                <button id="closeProductDrawerBtn" class="icon-text-button" type="button" aria-label="关闭产品详情">×</button>
+              </header>
+              <div id="productDrawerContent" class="product-drawer-content"></div>
+            </div>
+          </dialog>
         </section>
 
         <section id="page-mabang" class="page-section" hidden>

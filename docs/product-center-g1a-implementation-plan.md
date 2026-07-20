@@ -2,7 +2,7 @@
 
 日期：2026-07-20
 
-状态：DESIGN COMPLETE / NOT IMPLEMENTED
+状态：G1A-2 IMPLEMENTED / QUERY BASELINE IMPLEMENTED / LATER G1A STAGES PLANNED
 
 前置基线：G0 产品包设计、F0-F5 PostgreSQL 迁移准备、现有安全与文件治理能力
 生产数据库边界：SQLite 仍是唯一生产数据库；PostgreSQL 只用于 Provider 兼容和迁移演练，未经单独批准不得切换
@@ -33,6 +33,26 @@ G1A 不把产品包做成“上传 Excel 后直接覆盖 products 表”的工�
 6. 新的数据访问从第一天遵循 Repository → Data Access → Provider 合同，并纳入 SQLite/PostgreSQL 双 Provider 测试；本阶段不切换生产 Provider。
 7. 首期使用数据库索引、普通 SQL 视图和服务端分页，不引入 Redis、MinIO、Elasticsearch 或新的任务基础设施。
 8. 当前访问 Token 只能证明“持有密钥”，不能证明自然人身份。导入人和负责人首期保存为明确标注的操作员标签，不能伪造用户外键。
+
+### 0.1 G1A-2 实施校准
+
+真实产品包验证后，首期导入采用“可信中台模板快速路径”：
+
+```text
+手工上传 / 未来中台定时采集
+→ 同一 Source Adapter 输出固定 34 字段快照
+→ 文件与字段安全校验
+→ 中台状态、唯一键、成本和汇率校验
+→ 无真实阻断时直接原子入库
+→ 产品查询与详情立即可见
+```
+
+- 页面默认提供“校验通过后直接入库”；需要审阅时仍可关闭该选项，保留原确认流程。
+- `正常销售`、`清仓商品`、`待开发` 是公司中台当前真实状态值，分别映射为 `ACTIVE`、`CLEARANCE`、`NEW`。
+- 已确认缺少主 SKU 的 16 条灭款记录保存为 `DISCONTINUED`，不创建虚假主 SKU，不进入运营池。
+- 提醒和信息项保留在批次证据中，但不把可入库来源事实伪装成“异常行”。
+- 相同文件在未应用状态下可重新校验，避免规则升级后复用过期校验结果。
+- 未来定时采集只替换文件上传适配器；解析、校验、幂等、Repository 入库和查询 API 不另建一套逻辑。
 
 ## 1. 产品目标
 

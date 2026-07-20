@@ -70,6 +70,7 @@ import { resolveRuntimeConfig, runtimeEnvironment } from "./lib/runtime-config.m
 import { resolveAdServiceInternalToken } from "./lib/ad-service-token.mjs";
 import { resolvePythonRuntime } from "./lib/python-runtime.mjs";
 import { ProductImportService } from "./lib/product-center/product-import-service.mjs";
+import { ProductCatalogService } from "./lib/product-center/product-catalog-service.mjs";
 import { createProductCenterApi } from "./lib/product-center/product-center-api.mjs";
 import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
@@ -257,8 +258,10 @@ const productImportService = new ProductImportService({
   parserScript: productPackageParserPath,
   maxRows: Number(process.env.PRODUCT_IMPORT_MAX_ROWS || 20000),
 });
+const productCatalogService = new ProductCatalogService({ repository: dataAccess.repositories.productCatalog });
 const handleProductCenterApi = createProductCenterApi({
   service: productImportService,
+  catalogService: productCatalogService,
   maxUploadBytes: fileStorageConfig.maxUploadBytes,
 });
 auditService.recordSafely({

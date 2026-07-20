@@ -23,7 +23,7 @@ function completeRow(overrides = {}) {
   return {
     周期: "202606", SKU: "SKU-001", 商品名称: "测试商品", 主SKU: "MAIN-001", 国家: "马来",
     一级品类: "家纺", 二级品类: "床品", 创建日期: "2026-06-01", 新款年月: "202606", 新款月龄: 1,
-    赠品: "否", SKU状态: "正常", 款号: "STYLE-01", 款名: "测试款", 销售规格: "白色 / 150x200cm",
+    赠品: "否", SKU状态: "正常销售", 款号: "STYLE-01", 款名: "测试款", 销售规格: "白色 / 150x200cm",
     单品尺寸: "150x200cm", 单品净重g: 1000, 单品毛重g: 1100, 外箱长cm: 40, 外箱宽cm: 30,
     外箱高cm: 20, 每箱数量: 1, 出货方式: "整箱", 仓库: "MY-A", 仓存: 20, 规划仓: "MY-A",
     销售成本人民币: 10, 国家汇率: 5, 销售成本国家币: 50, "1档价(20%)": 62.5,
@@ -119,6 +119,68 @@ test("a normal Excel product package validates and applies through the standard 
     const file = context.dataAccess.repositories.exportFiles.list({ sourceType: "product_package_import" }).files[0];
     assert.equal(file.sourceType, "product_package_import");
     assert.equal(file.fileHash.length, 64);
+  } finally {
+    await context.close();
+  }
+});
+
+test("company central lifecycle labels map without false blockers", () => {
+  const rows = [
+    completeRow({ SKU: "STATUS-ACTIVE", SKU状态: "正常销售" }),
+    completeRow({ SKU: "STATUS-CLEARANCE", SKU状态: "清仓商品" }),
+    completeRow({ SKU: "STATUS-NEW", SKU状态: "待开发" }),
+  ].map((rawPayload, index) => ({ sourceRowNumber: index + 2, rawPayload, formulaFields: [] }));
+  const result = validateParsedProductPackage({ headers: PRODUCT_PACKAGE_HEADERS, rows });
+  assert.equal(result.counts.blockerCount, 0);
+  assert.equal(result.counts.exceptionCount, 0);
+  assert.deepEqual(result.rows.map((row) => row.normalizedPayload.lifecycle_status), ["ACTIVE", "CLEARANCE", "NEW"]);
+});
+
+test("a preview batch can be revalidated from its persisted source file", async () => {
+  const context = await fixture();
+  try {
+    const filename = await createWorkbook(context.root, [completeRow({ SKU: "REVALIDATE-001" })]);
+    const input = {
+      filename: "revalidate.xlsx",
+      mimeType: XLSX_MIME,
+      buffer: await fs.readFile(filename),
+      operatorLabel: "test_session",
+      requestId: "request-revalidate",
+    };
+    const initial = await context.service.uploadAndValidate(input);
+    const sourceFileId = initial.detail.file.exportFileId;
+    const repeated = await context.service.uploadAndValidate(input);
+    assert.equal(repeated.reused, true);
+    assert.equal(repeated.revalidated, true);
+    assert.equal(repeated.batch.id, initial.batch.id);
+    assert.equal(repeated.detail.file.exportFileId, sourceFileId);
+    assert.equal(repeated.batch.blockerCount, 0);
+    assert.equal(repeated.detail.rows.rows[0].normalizedPayload.lifecycle_status, "ACTIVE");
+  } finally {
+    await context.close();
+  }
+});
+
+test("applied products are searchable and expose only real catalog facts", async () => {
+  const context = await fixture();
+  try {
+    const filename = await createWorkbook(context.root, [
+      completeRow({ SKU: "CAT-001", 商品名称: "竹制收纳架", 主SKU: "CAT-MAIN", 款号: "BAMBOO-1", SKU状态: "清仓商品" }),
+      completeRow({ SKU: "CAT-002", 商品名称: "家纺测试款", 主SKU: "TEXTILE-MAIN", 仓库: "TH-B", 仓存: 9 }),
+    ]);
+    const result = await context.service.uploadAndValidate({ filename: "catalog.xlsx", mimeType: XLSX_MIME, buffer: await fs.readFile(filename), operatorLabel: "test" });
+    await context.service.apply(result.batch.id, { operatorLabel: "test", acknowledgeWarnings: true });
+    const catalog = await context.dataAccess.repositories.productCatalog.list({ keyword: "竹制", page: 1, pageSize: 30 });
+    assert.equal(catalog.total, 1);
+    assert.equal(catalog.products[0].sku, "CAT-001");
+    assert.equal(catalog.products[0].lifecycleStatus, "CLEARANCE");
+    assert.equal(catalog.products[0].image.status, "not_integrated");
+    assert.equal(catalog.products[0].aiContentStatus, "not_integrated");
+    const detail = await context.dataAccess.repositories.productCatalog.get(catalog.products[0].id);
+    assert.equal(detail.sourceFacts.product_name, "竹制收纳架");
+    assert.equal(detail.packaging.itemNetWeightG, 1000);
+    assert.equal(detail.costHistory[0].costCny, 10);
+    assert.equal(detail.inventories[0].warehouse, "MY-A");
   } finally {
     await context.close();
   }
