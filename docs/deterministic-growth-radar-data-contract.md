@@ -1,7 +1,8 @@
 # 确定性货盘增长雷达：G0.5 数据口径与实施前检查
 
 > 状态：G0.5 交付稿  
-> 基准：G0 设计提交 `8dc4bc8394ef1cf98505f000631b5baa74c5bb9d`  
+> 原始基准：G0 设计提交 `8dc4bc8394ef1cf98505f000631b5baa74c5bb9d`  
+> 当前实施基线：主线稳定提交 `4aca65297c62a9be97d22febcd0f8f1dbd67f503`  
 > 分支：`feature/deterministic-product-growth-radar`  
 > 日期：2026-07-21（Asia/Shanghai）  
 > 范围：只固化支线、协调迁移、只读核查真实样例、校准口径、恢复本地测试依赖并定义 G1 数据合同；不实现增长业务功能，不创建或执行增长迁移，不写数据库，不进行真实马帮登录或采集。
@@ -15,19 +16,21 @@
 - 正式分支：`feature/deterministic-product-growth-radar`。
 - 分支创建基准：`e659000bb5a396a291d7434c3d1f963f4a3ba58a`。
 - G0 文档提交：`8dc4bc8394ef1cf98505f000631b5baa74c5bb9d`。
+- rebase 后 G0 文档提交：`d2a0408193ba6aeb5dbdd4d735d719671ad9fbd9`。
+- 原 G0.5 文档提交：`47cf7a98b8de5dfa9b27b5547b8bea92c684a689`；rebase 后为 `9ff68c6efa67b94b3414655c0af7f057fc3fd963`。
 - 提交信息：`docs: design deterministic product growth radar`。
 - 该提交只包含 `docs/deterministic-product-growth-radar-design.md`，共新增 1 个文件。
 - 创建分支前目标分支不存在，因此没有覆盖既有分支。
-- 未合并或变基主线，未修改其他工作树。
+- G0.5 完成时尚未变基主线；恢复 G1A 时已无冲突 rebase 到 `4aca652`，且未修改其他工作树。
 
 ### 1.2 所有已注册工作树
 
 | 工作树 | 当前分支 | 当前 HEAD | 当前状态 |
 | --- | --- | --- | --- |
-| `<permanent-worktree>` | `master` | `98af7ecd54562893e311069a2504c624bdb015ac` | 相对 `origin/master` ahead 3；仅余两份未跟踪的产品查询中心文档 |
-| `<growth-worktree>` | `feature/deterministic-product-growth-radar` | `8dc4bc8394ef1cf98505f000631b5baa74c5bb9d` | G0 提交后干净；本文件新增后仅本文件未跟踪 |
+| `<permanent-worktree>` | `master` | `4aca65297c62a9be97d22febcd0f8f1dbd67f503` | 主线稳定基线；仅余两份与支线无关的未跟踪产品查询中心文档 |
+| `<growth-worktree>` | `feature/deterministic-product-growth-radar` | `9ff68c6efa67b94b3414655c0af7f057fc3fd963` | 已无冲突 rebase 到主线稳定基线，G0/G0.5 完整保留 |
 
-审计开始时永久工作树的 Listing 工作仍是已暂存未提交状态；审计过程中该工作树由外部流程提交为 `98af7ec feat(product-center): add listing workbench`。本支线没有执行该提交，也没有修改永久工作树。
+审计开始时永久工作树的 Listing 工作仍是已暂存未提交状态；审计过程中该工作树由外部流程提交为 `98af7ec feat(product-center): add listing workbench`。后续 Listing AI 形成稳定提交 `4aca652`，本支线只 rebase 到该提交，没有修改永久工作树。
 
 ## 2. 证据范围与语义状态
 
@@ -53,7 +56,7 @@
 
 ### 3.1 当前迁移事实
 
-当前功能分支包含已提交迁移 `001`–`010`，没有 `011`、`012` 或更高编号。
+rebase 后当前功能分支包含主线正式迁移 `001`–`012`，尚未创建增长雷达迁移。
 
 永久工作树当前包含并已提交：
 
@@ -68,16 +71,17 @@
 - `009_product_package_lossless_rows.sql`
 - `010_product_catalog_soft_delete_ai_content.sql`
 - `011_product_listing_workbench.sql`
+- `012_product_listing_ai_content_images.sql`
 
-永久工作树数据库的 `schema_migrations` 也已经记录 `001`–`011`。Listing 的 `product_listing_drafts` 与 `product_listing_publish_records` 表存在，但当前均为 0 行。两个已注册工作树均未发现 `012+` 迁移。
+主线正式最高迁移为 `012_product_listing_ai_content_images.sql`。本次 rebase 后再次扫描确认目录中没有 `013` 或更高正式迁移；正式数据库只允许只读质量检查，不在支线开发中执行测试导入。
 
 ### 3.2 编号建议
 
-1. 主线 Listing 工作台最终保留 `011_product_listing_workbench.sql`；它已进入主线提交 `98af7ec`，不再重编号。
-2. 增长雷达 G1 的第一个迁移建议为 `012_deterministic_growth_radar_foundation.sql`，但只有在 G1 开始前同步主线、再次检查所有工作树后才可创建。
-3. 当前 G0.5 不创建 `011`、`012` 或任何正式迁移。
-4. 推荐合并顺序：主线 Listing `011`（已完成）→ 增长支线同步 `98af7ec` 或其后稳定主线 → 再创建增长 `012` → 完成 G1 测试后合并增长支线。
-5. 若增长创建迁移前主线又提交了 `012` 或更高迁移，增长不坚持使用 `012`，而应使用“同步后的最高已提交编号 + 1”。
+1. 主线保留 `011_product_listing_workbench.sql` 与 `012_product_listing_ai_content_images.sql`，两者均不得修改或重编号。
+2. 增长雷达 G1A 的第一个迁移使用 `013_deterministic_growth_radar_foundation.sql`；创建前仍须再次扫描所有工作树。
+3. G0.5 当时没有创建任何正式迁移；G1A 只能通过官方 `schema_migrations` 迁移器应用新增迁移。
+4. 推荐合并顺序：主线 Listing `011` → 主线 Listing AI `012` → 增长支线同步 `4aca652` → 增长 `013` → 完成 G1A 质量门后合并增长支线。
+5. 若增长创建迁移前主线又提交了 `013` 或更高迁移，增长应使用“同步后的最高已提交编号 + 1”。
 6. 若合并顺序被改变，必须在任一迁移进入共享主线前重新编号尚未合并的一方；已经应用到共享/正式数据库的迁移不得仅改文件名冒充新编号。
 
 ### 3.3 避免并发撞号
@@ -345,12 +349,12 @@ G1 可以先建立店铺主数据和覆盖快照结构，并支持人工导入�
 
 这些事项不一定阻断 G1 的全部工作，但会阻断对应事实链的生产验收或正式迁移：
 
-1. **迁移前同步主线**：当前增长支线尚未包含已提交的 Listing `011`。G1 创建迁移前必须同步稳定主线并再次分配编号。
+1. **迁移前同步主线（已完成）**：支线已无冲突同步 `4aca652`，正式最高迁移为 `012`，增长 G1A 编号为 `013`。
 2. **真实库存样例缺失**：可以先实现通用来源批次/原始行合同和 fixture 解析，但库存解析器、粒度和数值验收不能完成，正式库存事实不能发布。
 3. **订单稳定业务键待验证**：没有官方订单行 ID；同一订单/SKU 可重复多行。G1 必须以更多脱敏样本验证聚合键和跨批次替换策略，不能按整行或订单 × SKU盲目去重。
-4. **支线质量门**：标准测试仍依赖缺失的外部广告服务项目；此外 `npm run build` 的路径扫描会因 G0 文档中的个人绝对路径失败。进入 G1 合并前需以文档级修正和有效广告服务路径恢复质量门。
+4. **支线质量门**：主线稳定基线为 428/428、Build 和 Doctor 通过；支线必须在 rebase 后复验。若外部广告服务目录缺失，只按环境失败单独记录，不修改断言。
 
-已不再阻断 G1 的事项：正式分支已建立，G0 已提交，SQLite 迁移机制和 `001`–`011` 应用记录可读，订单真实样例和文件血缘可读，Node/Python/`pg` 核心依赖已恢复。
+已不再阻断 G1A 的事项：正式分支已建立，G0/G0.5 已提交且 rebase 后保留，SQLite 迁移机制和 `001`–`012` 正式迁移可读，订单真实样例和文件血缘可读，Node/Python/`pg` 核心依赖已恢复。
 
 ### B. 阻断 G2 确定性规则和评分的事项
 
@@ -766,7 +770,7 @@ npm test
 
 ### 27.4 额外构建检查
 
-执行 `npm run build` 时，`check:paths` 因已提交的 G0 文档含个人 Windows 绝对路径、私有用户目录和旧项目名而失败。该失败是文档可移植性质量门，不是增长业务代码失败。G1 合并前应以单独的文档修正将绝对路径替换为占位符；本 G0.5 不改写已审核的 G0 文档，也不修改路径扫描器或跳过检查。
+G0.5 执行 `npm run build` 时，`check:paths` 曾因 G0 文档含个人 Windows 绝对路径而失败。恢复 G1A 时已通过本次独立文档基线更新将实现路径替换为占位符，不修改路径扫描器或跳过检查；Build 仍须在 rebase 后重新执行。
 
 ## 28. G1 可以直接实施的内容
 
@@ -852,12 +856,12 @@ G1 可按订单事实、库存原始层、主数据/映射三条子轨并行实�
 ## 34. G0.5 结论与停止点
 
 - 正式功能分支和 G0 文档提交已完成。
-- 主线 Listing `011` 已稳定提交；增长 G1 预计使用下一可用编号，当前为 `012`，但必须在同步主线后复核。
+- 主线 Listing `011` 与 Listing AI `012` 已稳定提交；支线已同步 `4aca652`，增长 G1A 使用 `013_deterministic_growth_radar_foundation.sql`。
 - 找到并验证了两份真实订单样例；订单行、状态、数量、字段缺口和跨批次变化已经形成数据合同约束。
 - 没有找到真实库存模块样例；产品包辅助数据也没有预测日销量值。
 - 预测日销量的公开算法已确认，但当前实例范围、粒度、配置和 AI 包含关系未确认，所以整体仍为 `source_predicted_daily_sales/unconfirmed`。
 - 可售库存、退款净额、稳定店铺 ID和 `current_online` 均未确认，并已按 G1/G2/G3/售后分级。
-- 本地 Node/Python/`pg` 依赖已恢复，367/368 测试通过；剩余失败为外部广告服务目录缺失。
+- G0.5 历史验证为 367/368，剩余失败来自外部广告服务目录缺失；当前主线稳定基线已提升为 428/428，支线须在 G1A 编码前复验。
 - 本节点没有修改业务代码、数据库或真实数据，没有执行真实采集，没有创建增长迁移，也没有进入 G1。
 
 **停止点：** 完成本文件核验后暂停，等待确认，不进入 G1 编码。

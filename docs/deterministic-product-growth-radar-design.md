@@ -1,11 +1,14 @@
 # 确定性货盘增长雷达：G0 现状审计与系统设计
 
-> 文档状态：G0 设计冻结候选稿  
-> 审计基线：`e659000bb5a396a291d7434c3d1f963f4a3ba58a`  
+> 文档状态：G0 设计冻结稿；G1A 实施基线已更新  
+> 原始审计基线：`e659000bb5a396a291d7434c3d1f963f4a3ba58a`  
+> 当前实施基线：`4aca65297c62a9be97d22febcd0f8f1dbd67f503`  
 > 审计日期：2026-07-21（Asia/Shanghai）  
-> 当前工作树：`C:\Users\PC\.codex\worktrees\22d5\New project2`（detached HEAD）  
-> 永久工作树：`C:\Users\PC\Documents\New project2`（`master`，相对 `origin/master` ahead 2，且存在未提交工作）  
+> 当前工作树：`<growth-worktree>`（`feature/deterministic-product-growth-radar`）  
+> 永久工作树：`<permanent-worktree>`（`master`，稳定提交 `4aca652`）  
 > 本文范围：只做审计、架构、数据契约、规则、阶段计划与验收设计；不实现业务代码、不执行数据库迁移、不写业务数据、不真实采集马帮数据。
+
+为避免固化个人机器信息，本文以 `<growth-worktree>` 和 `<permanent-worktree>` 表示两个工作树。原始审计结论保留；本次只更新已经稳定的主线、迁移、测试和合并信息。
 
 ## 1. 执行结论
 
@@ -17,7 +20,7 @@
 4. 库存导出中的 `预测日销量(个)` 尚不能直接等同于业务口径“货盘日销”；其周期、粒度、覆盖范围、是否含 AI 团队均未在现有代码或文档中得到确认。
 5. 当前订单字段不足以准确计算退款订单数、退款件数和退款金额，只有退货原因、备注、作废状态等线索。
 6. 当前认证是单一应用令牌/本地兼容模式，没有可信的用户身份和负责人声明，因此暂时不能安全实现“普通运营仅看本人负责范围”。
-7. 永久工作树正在进行产品 Listing 工作，包含未提交的 `011_product_listing_workbench.sql` 等文件；增长雷达若修改共享的服务端、数据访问、权限、审计或前端入口，合并风险较高。
+7. 产品 Listing 工作台与 Listing AI 已在主线稳定提交，正式迁移为 `011_product_listing_workbench.sql` 和 `012_product_listing_ai_content_images.sql`；增长雷达仍须以小补丁方式接入共享的服务端、数据访问、权限、审计和前端入口。
 
 因此，G1 应先建立“来源绑定 → 不可变导出证据 → 类型化事实 → 映射与质量门 → 可重放计算”的数据底座。只有在日销口径、AI 团队边界、SKU 身份和在线覆盖都被确认且数据新鲜时，系统才允许输出确定性推荐；否则只显示“数据不足/口径待确认/数据过期”，不得猜测。
 
@@ -67,10 +70,10 @@
 
 **现状事实**
 
-- 当前审计工作树位于 `C:\Users\PC\.codex\worktrees\22d5\New project2`，处于 detached HEAD。
-- HEAD 为 `e659000bb5a396a291d7434c3d1f963f4a3ba58a`，与本地 `master` 当前指向相同。
-- 永久工作树位于 `C:\Users\PC\Documents\New project2`，`master` 相对 `origin/master` ahead 2，并存在产品查询/Listing 方向的大量未提交修改。
-- 本 G0 没有创建或切换分支；建议分支名尚未实际创建。
+- 原始 G0 审计基线为 `e659000bb5a396a291d7434c3d1f963f4a3ba58a`；当时工作树处于 detached HEAD。
+- 当前正式支线为 `feature/deterministic-product-growth-radar`，已 rebase 到主线稳定提交 `4aca65297c62a9be97d22febcd0f8f1dbd67f503`。
+- G0 与 G0.5 文档提交均在 rebase 后保留，未压缩或删除。
+- 永久工作树保持在 `master` 的 `4aca652`；其中两份未跟踪产品查询中心参考文档不属于本支线。
 - 当前默认端口为 3101；SQLite 默认位于 `storage/commerce-ops.sqlite`。本审计工作树中没有可供核对的实时 `storage` 数据库。
 
 **设计提案**
@@ -223,13 +226,13 @@ G1 把已持久化 Excel 视为不可变来源证据，记录 `file_id`、哈希
 **现状事实**
 
 - 当前生产数据访问默认仍是 SQLite，启动时按文件名顺序执行 `migrations/*.sql`，通过 `schema_migrations` 记录，单迁移事务化，没有 down migration。
-- PostgreSQL 依赖和准备代码已经存在，但当前工作树未安装/不可解析 `pg` 依赖，不能把 PostgreSQL 视作已验证运行路径。
-- G0 执行了完整 `npm test`：363 项中 358 通过、5 失败。失败均与本机运行依赖有关：Node 子进程路径 `ENOENT`、被忽略的 `.venv-mabang` Python 不存在、`pg` 包未安装。
+- 原始 G0 曾因本机 Node/Python/`pg` 依赖不完整出现环境失败；G0.5 已恢复这些核心依赖并单独记录剩余的外部广告服务目录问题。
+- 当前主线稳定基线为 428/428 测试通过，Build 与 Doctor 通过；支线在开始 G1A 编码前必须在 rebase 后重新验证同一质量门。
 - 测试没有真实访问马帮；计划任务相关测试使用 mock worker/通知。
 
 **设计结论**
 
-G1 不能以“现有测试全绿”为基线；开发前需恢复本地 Node 子进程、Python 环境和 npm 依赖，再建立增长模块的纯 fixture 测试。真实马帮访问继续排除在自动测试之外。
+G1A 以主线 428/428 为回归基线，并建立增长模块的纯 fixture 与隔离数据库测试。真实马帮访问继续排除在自动测试之外；外部广告服务目录缺失只能作为环境失败单独记录，不能通过改断言掩盖。
 
 ## 4. 目标架构与责任边界
 
@@ -965,19 +968,19 @@ createListingDraftFromGrowthRecommendation(recommendationId, idempotencyKey)
 
 ### 16.1 当前冲突面
 
-永久工作树当前正在修改/新增的高风险区域包括：
+Listing 与 Listing AI 已稳定，但未来合并仍需关注以下公共冲突热点：
 
 - `server.mjs`；
 - `lib/data/data-access.mjs` 与 PostgreSQL/SQLite 迁移支持；
 - 产品中心权限、AI 内容、API、审计和前端文件；
-- 新的产品 Listing repository/service；
-- 未提交的 `migrations/011_product_listing_workbench.sql`；
+- 产品 Listing repository/service 与 Listing AI 文件；
+- 已有正式迁移 `011_product_listing_workbench.sql` 与 `012_product_listing_ai_content_images.sql`，两者不得修改；
 - `public/app.js`、`public/index.html`、`public/product-center-page.mjs`、`public/styles.css`。
 
 ### 16.2 缓解策略
 
-1. G1 开始前基于永久工作树已提交且稳定的最新 HEAD 重新建立功能分支。
-2. 等 Listing 的 `011` 迁移编号稳定后，再分配增长迁移编号；不要在当前支线抢占 `011`。
+1. G1A 已基于主线稳定提交 `4aca65297c62a9be97d22febcd0f8f1dbd67f503` 完成 rebase；继续保持支线独立提交。
+2. 主线正式最高迁移为 `012_product_listing_ai_content_images.sql`；增长 G1A 使用 `013_deterministic_growth_radar_foundation.sql`，创建前仍需再次扫描编号。
 3. 新逻辑优先放在 `lib/growth-radar/`、独立 repository/service/route/page/test 中。
 4. 对 scheduler、产品中心和 Listing 使用窄只读/交接端口，避免修改它们的核心表和服务。
 5. 共享 `server.mjs`、权限、审计白名单、文件 source type 和导航入口采用小补丁，最后集成。
@@ -1124,7 +1127,7 @@ createListingDraftFromGrowthRecommendation(recommendationId, idempotencyKey)
 
 ### 18.2 必须由工程确认/完成
 
-1. 永久工作树 Listing 工作提交并稳定迁移编号，或明确增长分支的合并顺序。
+1. 已完成：Listing 与 Listing AI 已提交，主线稳定基线为 `4aca652`，增长迁移排在主线 `012` 之后。
 2. 恢复缺失的 npm/Python/Node 子进程依赖，使现有基线测试可重现。
 3. 确认目标数据库是当前 SQLite、PostgreSQL，还是双兼容；G1 迁移必须有相应契约测试。
 4. 明确可信身份/SSO 计划；在此之前批准管理员封闭访问策略。
