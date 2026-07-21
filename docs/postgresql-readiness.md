@@ -57,7 +57,9 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 | `product_identity_mappings` | 0 | country and SKU identity mapping | `id` | product/batches `RESTRICT`; unique source, platform, country and SKU |
 | `growth_mapping_issues` | 0 | identity quality queue | `id` | batch/raw row `RESTRICT`; unique issue key |
 | `growth_inventory_raw_rows` | 0 | inventory source rows | `id` | batch `RESTRICT`; unique batch plus source row |
-| `growth_inventory_snapshots` | 0 | inventory snapshot framework | `id` | batch/product `RESTRICT`; unique batch plus source row |
+| `growth_inventory_snapshots` | 0 | warehouse-grained inventory snapshots | `id` | batch/product `RESTRICT`; unique snapshot, SKU and warehouse grain |
+| `growth_order_inventory_links` | 0 | order-to-inventory linkage facts | `id` | order line/batches/snapshot `RESTRICT`; unique order line plus inventory batch |
+| `growth_sku_warehouse_sales_metrics` | 0 | separated own/source-visible sales metrics | `id` | inventory snapshot/batches `RESTRICT`; one metric row per inventory snapshot |
 | `growth_data_quality_issues` | 0 | growth data quality | `id` | batch `RESTRICT`; unique issue key |
 | `growth_mapping_events` | 0 | mapping business history | `id` | indexed mapping type, mapping ID and occurrence time |
 | `growth_shop_sku_observations` | 0 | historical observed facts | `id` | shop/product/batches `RESTRICT`; unique observation key |
@@ -112,7 +114,7 @@ Runtime-only dialect operations are now located under `lib/data/sqlite`; `script
 ## Migration sequence
 
 1. Freeze schema changes and create a verified SQLite backup plus file manifest.
-2. Build PostgreSQL migrations from the thirteen SQLite migrations, preserving keys, checks, indexes, and delete behavior.
+2. Build PostgreSQL migrations from the fourteen SQLite migrations, preserving keys, checks, indexes, and delete behavior.
 3. Create PostgreSQL adapters behind the existing Provider/Repository contracts; keep SQLite as the active provider.
 4. Import reference/config tables: accounts and DingTalk configs, preserving encrypted bytes.
 5. Import task/run/event history, then export/file and lifecycle relationships in FK order.

@@ -73,6 +73,7 @@ function orderWorkbook() {
     sheetName: "订单明细",
     headers: ["订单编号", "店铺名", "平台", "SKU", "客户姓名", "电话1", "邮寄地址"],
     redactedHeaders: ["客户姓名", "电话1", "邮寄地址"],
+    piiFilteredHeaders: ["客户姓名", "电话1", "邮寄地址"],
     formulaCellCount: 0,
     rowCount: rows.length,
     rows,
@@ -84,6 +85,7 @@ function inventoryWorkbook() {
     sheetName: "库存明细",
     headers: ["SKU", "仓库", "可用库存"],
     redactedHeaders: [],
+    piiFilteredHeaders: [],
     formulaCellCount: 0,
     rowCount: 1,
     rows: [{
@@ -94,7 +96,10 @@ function inventoryWorkbook() {
       normalized: {
         sourceSku: "SKU-1", warehouseName: "WH-A", availableQuantity: 12, physicalQuantity: 15,
         lockedQuantity: 3, inTransitQuantity: null, pendingShipmentQuantity: null,
-        sourcePredictedDailySales: null, snapshotAt: AT, sellableQuantityStatus: "unconfirmed", daysOfSupplyStatus: "unavailable",
+        productStatus: "正常销售", categoryLevel1: "测试类目", categoryLevel2: null, categoryLevel3: null,
+        sourceVisibleSales7d: 5, sourceVisibleSales28d: 18, sourceVisibleSales42d: 25,
+        sourceVisibleSalesStatus: "confirmed", sourcePredictedDailySales: 0.5, snapshotAt: AT,
+        sellableQuantityStatus: "unconfirmed", daysOfSupplyStatus: "unavailable",
       },
     }],
   };
@@ -168,7 +173,7 @@ test("G1A deterministic growth radar foundation", async (t) => {
 
     await t.test("04 migration creates the complete G1A table set", async () => {
       const rows = await dataAccess.provider.query("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'growth_%' OR name='product_identity_mappings')");
-      assert.equal(rows.rows.length, 14);
+      assert.equal(rows.rows.length, 16);
     });
 
     await t.test("05 historical observations reject current-online semantics", async () => {
@@ -179,7 +184,8 @@ test("G1A deterministic growth radar foundation", async (t) => {
     });
 
     await t.test("06 preview creates no database batch", async () => {
-      orderPreview = await service.previewFile("mabang_order", { filename: "C:/outside/订单样本.xlsx", sourceFilename: "订单样本.xlsx", sourceSha256: ORDER_SHA });
+      orderPreview = await service.previewFile("mabang_order", { filename: "C:/outside/订单样本.xlsx", sourceFilename: "订单样本.xlsx",
+        sourceSha256: ORDER_SHA, sourceScope: { dateFrom: "2026-07-09", dateTo: "2026-07-15" } });
       const summary = await service.summary();
       assert.equal(summary.batches, 0);
     });
@@ -217,7 +223,14 @@ test("G1A deterministic growth radar foundation", async (t) => {
     await t.test("22 raw storage excludes sensitive source values", async () => {
       const result = await dataAccess.provider.query("SELECT raw_values_json,redacted_fields_json FROM growth_order_raw_rows ORDER BY source_row_number LIMIT 1");
       assert.equal(result.rows[0].raw_values_json.includes("客户姓名"), false);
-      assert.equal(JSON.parse(result.rows[0].redacted_fields_json).includes("客户姓名"), true);
+      assert.equal(JSON.parse(result.rows[0].redacted_fields_json).includes("客户姓名"), false);
+    });
+
+    await t.test("22a batch metadata stores only the PII field count", async () => {
+      const row = (await dataAccess.provider.query(`SELECT source_headers_json,redacted_headers_json,
+        pii_filtered_field_count FROM growth_source_batches WHERE source_type='mabang_order'`)).rows[0];
+      assert.equal(JSON.stringify([row.source_headers_json, row.redacted_headers_json]).includes("客户姓名"), false);
+      assert.equal(Number(row.pii_filtered_field_count), 3);
     });
 
     await t.test("23 source batch stores basename instead of an absolute path", () => assert.equal(orderApplied.batch.sourceFilename, "订单样本.xlsx"));
@@ -246,7 +259,8 @@ test("G1A deterministic growth radar foundation", async (t) => {
       changed.normalized.orderStatus = "已发货";
       changed.normalized.cancelledAt = null;
       changed.normalized.effectiveStatus = "valid";
-      const preview = await service.previewFile("mabang_order", { filename: "orders-second.xlsx", sourceFilename: "orders-second.xlsx", sourceSha256: ORDER_SHA_2 });
+      const preview = await service.previewFile("mabang_order", { filename: "orders-second.xlsx", sourceFilename: "orders-second.xlsx",
+        sourceSha256: ORDER_SHA_2, sourceScope: { dateFrom: "2026-07-09", dateTo: "2026-07-15" } });
       await service.applyPreview("mabang_order", { previewId: preview.previewId, idempotencyKey: ORDER_SHA_2 });
       const summary = await service.summary();
       assert.equal(summary.orderHeaders, 3);
@@ -353,6 +367,70 @@ test("G1A deterministic growth radar foundation", async (t) => {
       assert.equal(result.rows[0].days_of_supply_status, "unavailable");
     });
 
+    await t.test("38a source scope remains unconfirmed for both source domains", async () => {
+      const result = await dataAccess.provider.query("SELECT DISTINCT source_scope_status FROM growth_source_batches ORDER BY source_scope_status");
+      assert.deepEqual(result.rows.map((row) => row.source_scope_status), ["unconfirmed"]);
+    });
+
+    await t.test("38b order lines persist the normalized source warehouse", async () => {
+      const result = await dataAccess.provider.query("SELECT DISTINCT source_warehouse_name,normalized_source_warehouse_name FROM growth_order_lines");
+      assert.equal(result.rows.length, 1);
+      assert.equal(result.rows[0].source_warehouse_name, "WH-A");
+      assert.equal(result.rows[0].normalized_source_warehouse_name, "WH-A");
+    });
+
+    await t.test("38c inventory sales fields stay source-visible and warehouse-grained", async () => {
+      const row = (await dataAccess.provider.query(`SELECT normalized_warehouse_name,source_visible_sales_7d,
+        source_visible_sales_28d,source_visible_sales_42d,source_predicted_daily_sales,source_scope_status
+        FROM growth_inventory_snapshots`)).rows[0];
+      assert.equal(row.normalized_warehouse_name, "WH-A");
+      assert.deepEqual([Number(row.source_visible_sales_7d), Number(row.source_visible_sales_28d),
+        Number(row.source_visible_sales_42d), Number(row.source_predicted_daily_sales)], [5, 18, 25, 0.5]);
+      assert.equal(row.source_scope_status, "unconfirmed");
+    });
+
+    await t.test("38c1 inventory grain accepts another warehouse and rejects a duplicate SKU warehouse", async () => {
+      const batchId = (await dataAccess.provider.query("SELECT id FROM growth_source_batches WHERE source_type='mabang_inventory'")).rows[0].id;
+      const values = ["inventory-wh-b", batchId, 3, "SKU-1", "SKU-1", "WH-B", "WH-B", AT,
+        "country_unresolved", "confirmed", AT];
+      await dataAccess.provider.execute(`INSERT INTO growth_inventory_snapshots (
+        id,batch_id,source_row_number,source_sku,normalized_source_sku,warehouse_name,normalized_warehouse_name,
+        snapshot_at,mapping_status,quality_status,created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, values);
+      await assert.rejects(dataAccess.provider.execute(`INSERT INTO growth_inventory_snapshots (
+        id,batch_id,source_row_number,source_sku,normalized_source_sku,warehouse_name,normalized_warehouse_name,
+        snapshot_at,mapping_status,quality_status,created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, ["inventory-duplicate", batchId, 4, "SKU-1", "SKU-1", "WH-A", "WH-A", AT,
+        "country_unresolved", "confirmed", AT]));
+      await dataAccess.provider.execute("DELETE FROM growth_inventory_snapshots WHERE id='inventory-wh-b'");
+    });
+
+    await t.test("38d SKU plus warehouse linkage is independent from shop-country mapping", async () => {
+      const result = await dataAccess.provider.query(`SELECT match_status,COUNT(*) AS total
+        FROM growth_order_inventory_links WHERE is_current=1 GROUP BY match_status ORDER BY match_status`);
+      assert.deepEqual(result.rows.map((row) => [row.match_status, Number(row.total)]), [["matched", 2], ["unmatched", 2]]);
+    });
+
+    await t.test("38e sales layers never add source-visible sales to own sales", async () => {
+      const row = (await dataAccess.provider.query(`SELECT own_sales_quantity_7d,own_sales_order_count_7d,
+        own_sales_effective_line_count_7d,own_sales_quantity_7d_status,source_visible_sales_7d,
+        source_predicted_daily_sales_status FROM growth_sku_warehouse_sales_metrics`)).rows[0];
+      assert.equal(Number(row.own_sales_quantity_7d), 5);
+      assert.equal(Number(row.own_sales_order_count_7d), 2);
+      assert.equal(Number(row.own_sales_effective_line_count_7d), 2);
+      assert.equal(row.own_sales_quantity_7d_status, "confirmed");
+      assert.equal(Number(row.source_visible_sales_7d), 5);
+      assert.equal(row.source_predicted_daily_sales_status, "source_prediction_not_actual");
+    });
+
+    await t.test("38f no company-sales naming exists before scope confirmation", async () => {
+      const tables = ["growth_inventory_snapshots", "growth_sku_warehouse_sales_metrics"];
+      for (const table of tables) {
+        const columns = await dataAccess.provider.query(`PRAGMA table_info(${table})`);
+        assert.equal(columns.rows.some((column) => /company_sales/i.test(column.name)), false);
+      }
+    });
+
     await t.test("39 freshness reports order and inventory independently", async () => {
       const freshness = await service.freshness();
       assert.deepEqual(freshness.map((item) => item.sourceType).sort(), ["mabang_inventory", "mabang_order"]);
@@ -381,6 +459,8 @@ test("G1A deterministic growth radar foundation", async (t) => {
     await t.test("44 parser contract redacts identity and contact headers", async () => {
       const source = await fs.readFile(path.join(projectRoot, "scripts", "growth-radar-parser.py"), "utf8");
       for (const sensitive of ["customer", "address", "phone", "email", "客户", "地址", "电话"]) assert.match(source, new RegExp(sensitive, "i"));
+      assert.match(source, /ORDER_ALLOWED_HEADERS/);
+      assert.match(source, /header not in ORDER_ALLOWED_HEADERS/);
       assert.match(source, /FORMULA_CELL_REDACTED/);
     });
   } finally {

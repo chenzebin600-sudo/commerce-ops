@@ -1,5 +1,7 @@
 # 确定性货盘增长雷达：G0.5 数据口径与实施前检查
 
+> 后续口径：G1A.5 已完成真实库存审计。库存范围统一为 `source_scope_status = unconfirmed`，订单库存关联键为 `source_sku + source_warehouse`，销售指标分层与 PII 白名单以 `docs/deterministic-growth-radar-g1a5-scope-and-linkage.md` 为准；本文关于“尚无真实库存样例”的内容仅保留为 G0.5 历史证据。
+
 > 状态：G0.5 交付稿  
 > 原始基准：G0 设计提交 `8dc4bc8394ef1cf98505f000631b5baa74c5bb9d`  
 > 当前实施基线：主线稳定提交 `4aca65297c62a9be97d22febcd0f8f1dbd67f503`  

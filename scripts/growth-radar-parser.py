@@ -13,11 +13,41 @@ from openpyxl import load_workbook
 
 ORDER_SHEET_HINTS = ("订单明细", "订单")
 INVENTORY_SHEET_HINTS = ("库存明细", "库存")
-SENSITIVE_ORDER_HEADER_PATTERN = re.compile(
-    r"客户|买家|收件|收货|地址|电话|手机|邮箱|邮编|邮政编码|身份证|证件|联系人|账号|备注|"
-    r"customer|buyer|receiver|recipient|address|phone|mobile|email|postcode|postal|identity|contact|account|note",
+ORDER_ALLOWED_HEADERS = frozenset({
+    "订单编号",
+    "交运时间",
+    "店铺名",
+    "平台",
+    "订单状态",
+    "仓库",
+    "SKU总数量",
+    "SKU",
+    "商品数量",
+    "商品中文名称",
+    "商品销售单价",
+    "订单核算金额（人民币）",
+    "付款时间",
+    "平台SKU",
+    "订单商品名称",
+    "SKU明细",
+    "作废时间",
+})
+PII_ORDER_HEADER_PATTERN = re.compile(
+    r"所属地区|所属城市|客户|买家|收件|收货|地址|电话|手机|邮箱|邮编|邮政编码|身份证|证件|联系人|账号|"
+    r"customer|buyer|receiver|recipient|address|phone|mobile|email|postcode|postal|identity|contact|account",
     re.IGNORECASE,
 )
+NON_PII_ORDER_HEADERS = frozenset({"买家自选物流方式"})
+COLLECTION_METADATA_FIELDS = {
+    "导出时间": "exportedAt",
+    "开始日期": "dateFrom",
+    "结束日期": "dateTo",
+    "库存缓存更新时间": "inventorySnapshotAt",
+}
+
+
+def is_pii_order_header(header):
+    return header not in NON_PII_ORDER_HEADERS and bool(PII_ORDER_HEADER_PATTERN.search(header or ""))
 
 
 def json_value(value):
@@ -84,6 +114,19 @@ def normalized_time(value):
     return normalized_text(value)
 
 
+def normalized_sales_periods(value):
+    text = normalized_text(value)
+    if text is None:
+        return (None, None, None, "unavailable")
+    parts = [part.strip() for part in text.replace("／", "/").split("/")]
+    if len(parts) != 3:
+        return (None, None, None, "invalid")
+    values = [normalized_number(part) for part in parts]
+    if any(value is None for value in values):
+        return (None, None, None, "invalid")
+    return (*values, "confirmed")
+
+
 def choose_sheet(workbook, domain):
     hints = ORDER_SHEET_HINTS if domain == "order" else INVENTORY_SHEET_HINTS
     for worksheet in workbook.worksheets:
@@ -103,13 +146,26 @@ def keyed_headers(headers):
     return result
 
 
+def collection_metadata(workbook):
+    result = {}
+    for worksheet in workbook.worksheets:
+        if worksheet.title not in ("采集信息", "任务信息"):
+            continue
+        for cells in worksheet.iter_rows(min_col=1, max_col=2):
+            key = normalized_text(cells[0].value)
+            target = COLLECTION_METADATA_FIELDS.get(key)
+            if target:
+                result[target] = normalized_time(cells[1].value)
+    return result
+
+
 def order_normalized(raw):
     status = normalized_text(raw.get("订单状态"))
     if status == "已作废":
         effective_status = "invalid_cancelled"
     elif status == "已发货":
         effective_status = "valid"
-    elif status in ("配货中", "待处理"):
+    elif status in ("配货中", "待处理", "待审核"):
         effective_status = "pending"
     else:
         effective_status = "unconfirmed"
@@ -139,9 +195,14 @@ def order_normalized(raw):
 
 def inventory_normalized(raw):
     source_sku = normalized_text(raw.get("库存SKU编号")) or normalized_text(raw.get("SKU"))
+    sales_7d, sales_28d, sales_42d, sales_status = normalized_sales_periods(raw.get("销量(7/28/42)"))
     return {
         "sourceSku": source_sku,
         "warehouseName": normalized_text(raw.get("仓库")),
+        "productStatus": normalized_text(raw.get("商品状态")),
+        "categoryLevel1": normalized_text(raw.get("一级目录")),
+        "categoryLevel2": normalized_text(raw.get("二级目录")),
+        "categoryLevel3": normalized_text(raw.get("三级目录")),
         "availableQuantity": normalized_number(raw.get("可用库存量")),
         "physicalQuantity": normalized_number(raw.get("实际库存"))
         if raw.get("实际库存") is not None
@@ -153,6 +214,10 @@ def inventory_normalized(raw):
         "pendingShipmentQuantity": normalized_number(raw.get("未发货量"))
         if raw.get("未发货量") is not None
         else normalized_number(raw.get("调拨未发货")),
+        "sourceVisibleSales7d": sales_7d,
+        "sourceVisibleSales28d": sales_28d,
+        "sourceVisibleSales42d": sales_42d,
+        "sourceVisibleSalesStatus": sales_status,
         "sourcePredictedDailySales": normalized_number(raw.get("预测日销量(个)")),
         "snapshotAt": normalized_time(raw.get("数据更新时间")) or normalized_time(raw.get("更新时间")),
         "sellableQuantity": None,
@@ -179,8 +244,13 @@ def row_issue_codes(domain, normalized, formula_fields):
         quantity = normalized.get("quantity")
         if quantity is None or quantity <= 0:
             issues.append("ORDER_QUANTITY_INVALID")
-    elif not normalized.get("sourceSku"):
-        issues.append("INVENTORY_SKU_MISSING")
+    else:
+        if not normalized.get("sourceSku"):
+            issues.append("INVENTORY_SKU_MISSING")
+        if not normalized.get("warehouseName"):
+            issues.append("INVENTORY_WAREHOUSE_MISSING")
+        if normalized.get("sourceVisibleSalesStatus") == "invalid":
+            issues.append("INVENTORY_VISIBLE_SALES_INVALID")
     return issues
 
 
@@ -188,6 +258,7 @@ def parse_workbook(filename, domain, max_rows):
     workbook = load_workbook(filename, read_only=True, data_only=False, keep_links=False)
     try:
         worksheet = choose_sheet(workbook, domain)
+        metadata = collection_metadata(workbook)
         iterator = worksheet.iter_rows()
         try:
             header_cells = next(iterator)
@@ -196,17 +267,24 @@ def parse_workbook(filename, domain, max_rows):
                 "sheetName": worksheet.title,
                 "headers": [],
                 "redactedHeaders": [],
+                "piiFilteredHeaders": [],
                 "rows": [],
                 "rowCount": 0,
                 "formulaCellCount": 0,
+                "collectionMetadata": metadata,
             }
         headers = [str(cell.value).strip() if cell.value is not None else "" for cell in header_cells]
         keys = keyed_headers(headers)
         redacted_indexes = set()
+        pii_filtered_indexes = set()
         if domain == "order":
             redacted_indexes = {
                 index for index, header in enumerate(headers)
-                if SENSITIVE_ORDER_HEADER_PATTERN.search(header or "")
+                if header not in ORDER_ALLOWED_HEADERS
+            }
+            pii_filtered_indexes = {
+                index for index, header in enumerate(headers)
+                if is_pii_order_header(header)
             }
         rows = []
         formula_count = 0
@@ -256,9 +334,11 @@ def parse_workbook(filename, domain, max_rows):
             "sheetName": worksheet.title,
             "headers": headers,
             "redactedHeaders": [headers[index] for index in sorted(redacted_indexes)],
+            "piiFilteredHeaders": [headers[index] for index in sorted(pii_filtered_indexes)],
             "rows": rows,
             "rowCount": len(rows),
             "formulaCellCount": formula_count,
+            "collectionMetadata": metadata,
         }
     finally:
         workbook.close()

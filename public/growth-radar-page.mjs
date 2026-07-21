@@ -29,6 +29,7 @@ const LABELS = Object.freeze({
   country_unresolved: "国家待确认",
   sku_ambiguous: "跨国家歧义",
   sku_unmatched: "SKU 未匹配",
+  unconfirmed: "范围未确认",
 });
 
 function esc(value) {
@@ -67,11 +68,13 @@ function summarizePreview(preview, domain) {
     ["未匹配 SKU", summary.unmatchedSkus],
   ] : [
     ["原始行", summary.rawRowCount], ["快照候选", summary.snapshotCandidateCount], ["拒绝行", summary.rejectedRowCount],
+    ["唯一 SKU", summary.uniqueSkuCount], ["仓库", summary.warehouseCount], ["多仓 SKU", summary.multiWarehouseSkuCount],
+    ["订单行匹配", summary.matchedOrderLineCount], ["订单行未匹配", summary.unmatchedOrderLineCount],
   ];
   return `<div class="gr-preview-result">
     <div class="gr-preview-head"><div><span class="gr-eyebrow">预览完成 · 尚未写库</span><h3>${esc(preview.sourceFilename)}</h3></div>${badge("只读预览", "info")}</div>
     <div class="gr-mini-metrics">${items.map(([label, value]) => `<div><span>${esc(label)}</span><strong>${formatNumber(value)}</strong></div>`).join("")}</div>
-    <p class="gr-method-note">${domain === "orders" ? "订单金额只采用订单级人民币核算金额；行金额不可用。作废订单保留事实，但不进入历史销量聚合。" : "当前没有生产库存样本。可售库存语义未确认，库销比不可计算，本次仅验证接入框架。"}</p>
+    <p class="gr-method-note">${domain === "orders" ? `订单金额只采用订单级人民币核算金额；行金额不可用。PII 白名单过滤 ${formatNumber(preview.piiFilteredFieldCount)} 个字段。` : "库存保持 SKU + 仓库粒度；范围销量与自有订单销量分层保存，预测日销量明确标记为预测值。来源权限范围仍为 unconfirmed。"}</p>
   </div>`;
 }
 
@@ -89,7 +92,7 @@ export function createGrowthRadarPage({ authorizedFetch, onStatus = () => {} }) 
   function renderShell() {
     root().innerHTML = `
       <header class="gr-hero">
-        <div><span class="growth-radar-kicker">DATA FOUNDATION · G1A</span><h2>订单事实与身份映射</h2><p>从来源批次到标准事实逐层留痕。所有映射确认与撤销均进入审计记录。</p></div>
+        <div><span class="growth-radar-kicker">DATA FOUNDATION · G1A.5</span><h2>订单、库存与仓库关联底座</h2><p>来源范围保持未确认；订单自有销量、库存可见销量与预测值分层留痕。</p></div>
         <div class="gr-semantic-state"><span>${badge("historical_observed", "success")}<small>历史观察已实现</small></span><span>${badge("current_online", "muted")}<small>当前在线未实现</small></span></div>
       </header>
       <section class="gr-kpis" aria-label="数据底座摘要">
@@ -97,7 +100,8 @@ export function createGrowthRadarPage({ authorizedFetch, onStatus = () => {} }) 
           ["来源批次", state.summary.batches, "可追溯导入"],
           ["标准订单", state.summary.orderHeaders, `作废 ${formatNumber(state.summary.cancelledOrders)}`],
           ["当前明细", state.summary.orderLines, "行金额不可用"],
-          ["历史观察", state.summary.historicalObserved, "不等于在线货盘"],
+          ["库存快照", state.summary.inventorySnapshots, `多仓 SKU ${formatNumber(state.summary.multiWarehouseSkus)}`],
+          ["仓库匹配", state.summary.matchedOrderInventoryLinks, `未匹配 ${formatNumber(state.summary.unmatchedOrderInventoryLinks)}`],
           ["待定店铺", state.summary.unresolvedShopMappings, "需人工确认"],
           ["质量问题", state.summary.openQualityIssues, "开放问题"],
         ].map(([label, value, hint]) => `<article><span>${esc(label)}</span><strong>${formatNumber(value)}</strong><small>${esc(hint)}</small></article>`).join("")}
@@ -119,8 +123,8 @@ export function createGrowthRadarPage({ authorizedFetch, onStatus = () => {} }) 
 
   async function renderBatches() {
     const data = await api("/api/growth-radar/source-batches?page_size=100");
-    const rows = data.batches.map((item) => `<tr><td><strong>${esc(LABELS[item.sourceType] || item.sourceType)}</strong><small>${esc(item.sourceFilename || "无来源文件名")}</small></td><td>${formatNumber(item.rowCount)}</td><td>${badge(item.status, item.status === "applied" ? "success" : "warning")}</td><td>${formatDate(item.importedAt || item.createdAt)}</td><td><code>${esc(item.id.slice(0, 8))}</code></td></tr>`);
-    return heading("来源批次", "每次导入保留来源哈希、文件名、采集范围和处理结果。") + table(["来源", "行数", "状态", "入库时间", "批次"], rows);
+    const rows = data.batches.map((item) => `<tr><td><strong>${esc(LABELS[item.sourceType] || item.sourceType)}</strong><small>${esc(item.sourceFilename || "无来源文件名")}</small></td><td>${formatNumber(item.rowCount)}</td><td>${badge(item.sourceScopeStatus, "warning")}</td><td>${badge(item.status, item.status === "applied" ? "success" : "warning")}</td><td>${formatDate(item.importedAt || item.createdAt)}</td><td><code>${esc(item.id.slice(0, 8))}</code></td></tr>`);
+    return heading("来源批次", "每次导入只保留来源哈希、文件名、采集范围和处理结果；权限范围未确认前不命名为全公司数据。") + table(["来源", "行数", "范围", "状态", "入库时间", "批次"], rows);
   }
 
   function heading(title, description, action = "") {
@@ -131,11 +135,11 @@ export function createGrowthRadarPage({ authorizedFetch, onStatus = () => {} }) 
     const isOrder = domain === "orders";
     const preview = state.previews[domain];
     const title = isOrder ? "订单事实预览" : "库存接入预览";
-    const detail = isOrder ? "选择马帮订单 Excel，先执行无写入预览；确认后才进入隔离的数据底座。" : "当前节点只有库存框架，没有生产样本。上传时必须明确国家与平台范围。";
+    const detail = isOrder ? "选择马帮订单 Excel，先执行无写入预览；确认后才进入隔离的数据底座。" : "库存来源按 SKU + 仓库保留；国家代码仅用于后续产品映射，不再阻塞订单库存关联。";
     return heading(title, detail) + `<div class="gr-import-grid"><section class="gr-upload-card">
       <span class="gr-step">01 · SELECT</span><h4>选择 Excel 来源文件</h4>
       <input id="gr-${domain}-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
-      ${isOrder ? "" : `<div class="gr-inline-fields"><label>平台<input id="gr-inventory-platform" value="mabang" /></label><label>国家代码<input id="gr-inventory-country" maxlength="8" placeholder="例如 TH" /></label></div>`}
+      ${isOrder ? "" : `<div class="gr-inline-fields"><label>来源平台<input id="gr-inventory-platform" value="mabang" /></label><label>国家代码（可选）<input id="gr-inventory-country" maxlength="8" placeholder="例如 TH" /></label></div>`}
       <button type="button" data-gr-preview="${domain}">生成只读预览</button><p>预览阶段不创建批次、不写原始行、不生成标准事实。</p>
     </section><section class="gr-confirm-card"><span class="gr-step">02 · APPLY</span><h4>确认入库</h4><p>${preview ? "预览已就绪。确认后将使用来源哈希作为幂等键。" : "请先生成预览并核对行数、订单数和歧义口径。"}</p><button type="button" data-gr-apply="${domain}" ${preview ? "" : "disabled"}>确认写入数据底座</button></section></div>${preview ? summarizePreview(preview, domain) : ""}`;
   }
@@ -185,7 +189,7 @@ export function createGrowthRadarPage({ authorizedFetch, onStatus = () => {} }) 
   async function renderFreshness() {
     const [data, coverage] = await Promise.all([api("/api/growth-radar/freshness"), api("/api/growth-radar/coverage/status")]);
     const cards = data.freshness.map((item) => `<article><span>${esc(LABELS[item.sourceType] || item.sourceType)}</span><strong>${formatDate(item.latestAt)}</strong><small>${formatNumber(item.batchCount)} 个批次</small></article>`).join("");
-    return heading("数据新鲜度与语义边界", "新鲜度只回答最近一次事实采集时间，不代表店铺当前仍在线销售。") + `<div class="gr-freshness-grid">${cards || empty("尚未导入订单或库存批次。")}</div><div class="gr-boundary"><div><span>HISTORICAL OBSERVED</span><strong>${coverage.historicalObservedImplemented ? "已实现" : "未实现"}</strong><p>由有效历史订单事实聚合，作废订单不计入。</p></div><div class="disabled"><span>CURRENT ONLINE</span><strong>未实现</strong><p>没有平台在线状态权威来源，不做推断、不生成快照。</p></div><div class="disabled"><span>INVENTORY AUTHORITY</span><strong>未验证</strong><p>没有生产库存样本，可售库存和库销比语义保持不可用。</p></div></div>`;
+    return heading("数据新鲜度与语义边界", "新鲜度只回答最近一次事实采集时间，不代表店铺当前仍在线销售。") + `<div class="gr-freshness-grid">${cards || empty("尚未导入订单或库存批次。")}</div><div class="gr-boundary"><div><span>HISTORICAL OBSERVED</span><strong>${coverage.historicalObservedImplemented ? "已实现" : "未实现"}</strong><p>由有效历史订单事实聚合，作废订单不计入。</p></div><div class="disabled"><span>CURRENT ONLINE</span><strong>未实现</strong><p>没有平台在线状态权威来源，不做推断、不生成快照。</p></div><div><span>INVENTORY SOURCE SCOPE</span><strong>UNCONFIRMED</strong><p>真实库存结构已验证，但仅代表当前账号可见范围，不等于全公司库存或销量。</p></div></div>`;
   }
 
   async function renderView() {
@@ -215,7 +219,6 @@ export function createGrowthRadarPage({ authorizedFetch, onStatus = () => {} }) 
       if (domain === "inventory") {
         headers["x-source-platform"] = document.getElementById("gr-inventory-platform").value.trim();
         headers["x-source-country"] = document.getElementById("gr-inventory-country").value.trim().toUpperCase();
-        if (!headers["x-source-country"]) throw new Error("库存预览必须填写国家代码。");
       }
       const data = await api(`/api/growth-radar/import/${domain}/preview`, { method: "POST", headers, body: file });
       state.previews[domain] = data.preview;
