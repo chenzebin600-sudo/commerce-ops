@@ -436,7 +436,7 @@
                     <button id="regenerateAffectedContentBtn" class="button-tertiary" type="button">查看并重新生成受影响内容</button>
                   </div>
 
-                  <section id="workflowProductFacts" class="workflow-step" data-workbench-section data-workflow-step="product_facts">
+                  <section id="workflowProductFacts" class="listing-workflow-step" data-workbench-section data-listing-workflow-step="product_facts">
                     <header class="workflow-step-header"><div><span class="section-index">01</span><h3>产品事实</h3><p>确认生成上架内容所依据的中台事实，人工调整继续保存为独立覆盖值。</p></div><div class="step-header-actions"><span class="workflow-state not_started" data-step-state="product_facts">未开始</span><button class="button-tertiary" type="button" data-toggle-workflow-step="workflowProductFacts">收起</button></div></header>
                     <section id="workbenchProductInfo" class="workbench-subsection">
                       <header><div><h4>核心产品信息</h4><p>中台事实只读，人工覆盖不会修改产品包原始行。</p></div><div class="source-legend"><span class="source-badge central">中台来源</span><span class="source-badge manual">人工维护</span></div></header>
@@ -449,7 +449,7 @@
                     <footer class="workflow-step-actions"><button id="confirmProductFactsBtn" class="workflow-primary-action" type="button">确认产品信息</button></footer>
                   </section>
 
-                  <section id="workflowListingStrategy" class="workflow-step" data-workbench-section data-workflow-step="listing_strategy">
+                  <section id="workflowListingStrategy" class="listing-workflow-step" data-workbench-section data-listing-workflow-step="listing_strategy">
                     <header class="workflow-step-header"><div><span class="section-index">02</span><h3>上架策略</h3><p>先确定平台、站点、店铺和类目，再确认目标用户、产品定位与内容风格。</p></div><div class="step-header-actions"><span class="workflow-state not_started" data-step-state="listing_strategy">未开始</span><button class="button-tertiary" type="button" data-toggle-workflow-step="workflowListingStrategy">收起</button></div></header>
                     <section id="workbenchListingTarget" class="workbench-subsection">
                       <header><div><h4>上架目标</h4><p>草稿按产品、平台、国家和店铺隔离，当前不会调用平台发布接口。</p></div><span class="source-badge platform">平台字段</span></header>
@@ -482,7 +482,7 @@
                     <footer class="workflow-step-actions"><button id="generateListingStrategyBtn" class="workflow-primary-action" type="button" data-generate-ai-types="target_audience,product_positioning,content_style,usage_scenarios">AI 建议上架策略</button></footer>
                   </section>
 
-                  <section id="workflowProductCopy" class="workflow-step" data-workbench-section data-workflow-step="product_copy">
+                  <section id="workflowProductCopy" class="listing-workflow-step" data-workbench-section data-listing-workflow-step="product_copy">
                     <header class="workflow-step-header"><div><span class="section-index">03</span><h3>商品文案</h3><p>标题、副标题、描述、卖点与场景共享同一套 Listing AI Context。</p></div><div class="step-header-actions"><span class="workflow-state not_started" data-step-state="product_copy">未开始</span><button class="button-tertiary" type="button" data-toggle-workflow-step="workflowProductCopy">收起</button></div></header>
                     <div id="productAiConfigurationNotice" class="product-ai-notice"></div>
                     <section id="workbenchTitle" class="workbench-subsection">
@@ -521,7 +521,7 @@
                     <footer class="workflow-step-actions"><button id="generateListingCopyBtn" class="workflow-primary-action" type="button" data-generate-ai-types="listing_title,listing_subtitle,listing_description,selling_points,usage_scenarios">生成整套商品文案</button></footer>
                   </section>
 
-                  <section id="workflowImageAssets" class="workflow-step" data-workbench-section data-workflow-step="image_assets">
+                  <section id="workflowImageAssets" class="listing-workflow-step" data-workbench-section data-listing-workflow-step="image_assets">
                     <header class="workflow-step-header"><div><span class="section-index">04</span><h3>图片素材</h3><p>区分产品原始素材、当前上架素材与 AI 图片方案；任何候选都需要明确采用。</p></div><div class="step-header-actions"><span class="workflow-state not_started" data-step-state="image_assets">未开始</span><button class="button-tertiary" type="button" data-toggle-workflow-step="workflowImageAssets">收起</button></div></header>
                     <section id="workbenchMedia" class="workbench-subsection">
                       <header><div><h4>产品原始素材</h4><p>上传内容进入产品素材层，不会自动加入当前上架草稿。</p></div><span class="source-badge central">产品素材</span></header>
@@ -543,7 +543,7 @@
                     <footer class="workflow-step-actions"><button id="generateImagePlanBtn" class="workflow-primary-action" type="button">生成图片方案</button></footer>
                   </section>
 
-                  <section id="workflowCommerceLogistics" class="workflow-step" data-workbench-section data-workflow-step="commerce_logistics">
+                  <section id="workflowCommerceLogistics" class="listing-workflow-step" data-workbench-section data-listing-workflow-step="commerce_logistics">
                     <header class="workflow-step-header"><div><span class="section-index">05</span><h3>交易与物流</h3><p>集中维护变体、价格、库存、物流和平台属性，不混入 AI 文案操作。</p></div><div class="step-header-actions"><span class="workflow-state not_started" data-step-state="commerce_logistics">未开始</span><button class="button-tertiary" type="button" data-toggle-workflow-step="workflowCommerceLogistics">收起</button></div></header>
                     <section id="workbenchVariants" class="workbench-subsection">
                       <header><div><h4>SKU、价格与库存</h4><p>产品成本只读，销售配置属于当前上架草稿。</p></div><div class="source-legend"><span class="source-badge central">产品包</span><span class="source-badge platform">平台字段</span></div></header>
@@ -579,7 +579,7 @@
                     <footer class="workflow-step-actions"><button id="saveCommerceInfoBtn" class="workflow-primary-action" type="button">保存交易信息</button></footer>
                   </section>
 
-                  <section id="workflowPublicationChecks" class="workflow-step validation-section" data-workbench-section data-workflow-step="publication_checks">
+                  <section id="workflowPublicationChecks" class="listing-workflow-step validation-section" data-workbench-section data-listing-workflow-step="publication_checks">
                     <header class="workflow-step-header"><div><span class="section-index">06</span><h3>发布检查</h3><p>只生成发布前检查报告与平台预览，不会向平台发布商品。</p></div><div class="step-header-actions"><span class="workflow-state not_started" data-step-state="publication_checks">未开始</span><button class="button-tertiary" type="button" data-toggle-workflow-step="workflowPublicationChecks">收起</button></div></header>
                     <section id="workbenchValidation" class="workbench-subsection">
                       <header><div><h4>检查报告</h4><p>问题按六个工作流步骤归组，可直接定位到对应字段。</p></div><span id="listingReadinessBadge" class="listing-status draft">尚未检查</span></header>

@@ -21,6 +21,8 @@ test("01 page exposes the six-step listing flow", async () => {
   const source = await html();
   for (const id of workflowIds) assert.match(source, new RegExp(`id=["']${id}["']`));
   assert.equal([...source.matchAll(/data-workbench-section/g)].length, 6);
+  assert.equal([...source.matchAll(/data-listing-workflow-step=/g)].length, 6);
+  assert.equal([...source.matchAll(/data-workflow-step="(?:product_facts|listing_strategy|product_copy|image_assets|commerce_logistics|publication_checks)"/g)].length, 0);
 });
 
 test("02 all thirteen existing business modules remain present", async () => {
@@ -135,6 +137,16 @@ test("19 mainline workflow files do not include growth radar work", async () => 
 test("20 workflow steps can collapse without removing their content", async () => {
   const [markup, styles, source] = await Promise.all([html(), css(), ui()]);
   assert.equal([...markup.matchAll(/data-toggle-workflow-step=/g)].length, 6);
-  assert.match(styles, /\.workflow-step\.collapsed > :not\(\.workflow-step-header\)/);
+  assert.match(styles, /\.listing-workflow-step\.collapsed > :not\(\.workflow-step-header\)/);
   assert.match(source, /classList\.toggle\("collapsed"\)/);
+});
+
+test("21 listing workflow selectors are isolated from the competitor analysis workflow", async () => {
+  const [markup, styles, source] = await Promise.all([html(), css(), ui()]);
+  for (const id of workflowIds) {
+    assert.match(markup, new RegExp(`<section id=["']${id}["'] class=["']listing-workflow-step`));
+  }
+  assert.doesNotMatch(markup, /<section id="workflow(?:ProductFacts|ListingStrategy|ProductCopy|ImageAssets|CommerceLogistics|PublicationChecks)" class="workflow-step"/);
+  assert.match(styles, /\.listing-workflow-step \{[\s\S]*?display: block;/);
+  assert.match(source, /\[data-listing-workflow-step="\$\{step\}"\]/);
 });

@@ -775,7 +775,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
         element.className = `workflow-state ${status}`;
         element.textContent = WORKFLOW_STATE_LABELS[status];
       });
-      const section = documentObject.querySelector(`[data-workflow-step="${step}"]`);
+      const section = documentObject.querySelector(`[data-listing-workflow-step="${step}"]`);
       if (section) section.dataset.workflowStatus = status;
     }
     const imagePlanButton = byId("generateImagePlanBtn");
