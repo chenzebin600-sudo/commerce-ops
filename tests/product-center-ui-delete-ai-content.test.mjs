@@ -291,3 +291,43 @@ test("25 migration 010 is additive and preserves existing product data", async (
     assert.equal(context.access.provider.connection.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
   } finally { await context.close(); }
 });
+
+test("26 listing AI adoption persists the selected candidate and manual revision", async () => {
+  const context = await fixture();
+  try {
+    const repository = context.access.repositories.productAiContents;
+    const draft = await repository.create({
+      productId: "product-1", country: "马来西亚", sku: "SKU-001", provider: "deepseek", model: "deepseek-chat",
+      contentType: "listing_title", inputContext: { target: { platform: "shopee" } },
+      outputContent: { titles: [{ text: "标题一" }, { text: "标题二" }, { text: "标题三" }] },
+      promptVersion: "product-listing-content-v1", status: "draft", createdBy: "tester", contextHash: "a".repeat(64),
+    });
+    const confirmed = await repository.confirm("product-1", draft.id, { operatorLabel: "tester", adoptedContent: { value: "标题二", selectedCandidateIndex: 1 } });
+    assert.equal(confirmed.status, "confirmed");
+    assert.equal(confirmed.adoptedContent.value, "标题二");
+    const manual = await repository.markManual("product-1", draft.id, { value: "人工修改标题" }, { operatorLabel: "tester" });
+    assert.equal(manual.isManuallyModified, true);
+    assert.equal(manual.manualContent.value, "人工修改标题");
+  } finally { await context.close(); }
+});
+
+test("27 restoring a listing AI version archives the current version and keeps the adopted value", async () => {
+  const context = await fixture();
+  try {
+    const repository = context.access.repositories.productAiContents;
+    const first = await repository.create({
+      productId: "product-1", country: "马来西亚", sku: "SKU-001", provider: "deepseek", model: "deepseek-chat",
+      contentType: "listing_subtitle", inputContext: {}, outputContent: { subtitles: [{ text: "第一版" }] },
+      promptVersion: "product-listing-content-v1", status: "confirmed", createdBy: "tester",
+    });
+    const second = await repository.create({
+      productId: "product-1", country: "马来西亚", sku: "SKU-001", provider: "deepseek", model: "deepseek-chat",
+      contentType: "listing_subtitle", inputContext: {}, outputContent: { subtitles: [{ text: "第二版" }] },
+      promptVersion: "product-listing-content-v1", status: "confirmed", createdBy: "tester",
+    });
+    const restored = await repository.restore("product-1", first.id, { operatorLabel: "tester", adoptedContent: { value: "第一版" } });
+    assert.equal(restored.status, "confirmed");
+    assert.equal(restored.adoptedContent.value, "第一版");
+    assert.equal((await repository.get(second.id)).status, "archived");
+  } finally { await context.close(); }
+});

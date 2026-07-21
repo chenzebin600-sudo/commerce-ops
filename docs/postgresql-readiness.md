@@ -46,6 +46,8 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 | `product_ai_contents` | 0 | confirmed/draft product AI content versions | `id` | SKU `RESTRICT`; unique product, content type and version |
 | `product_listing_drafts` | 0 | platform listing preparation | `id` | SKU `RESTRICT`; one active draft per product, platform, country and shop key |
 | `product_listing_publish_records` | 0 | future platform publication history | `id` | listing draft `RESTRICT`; no platform calls are active in this release |
+| `product_image_generation_tasks` | 0 | AI image plan and generation task history | `id` | SKU `RESTRICT`, listing draft `SET NULL`; prompt/context snapshots retained |
+| `product_image_generation_items` | 0 | per-slot AI image generation state | `id` | task `CASCADE`; unique task plus slot key |
 
 ## Type conversion details
 
@@ -55,7 +57,7 @@ Convert `at_mobiles_json`, `schedule_config_json`, `payment_date_config_json`, `
 
 Product field override values, detail-field preferences, and product AI input/output documents are also JSON text and must become `jsonb`. Product identity is now the normalized pair `country_raw + sku_code_normalized`; PostgreSQL must preserve the corresponding composite uniqueness instead of reverting to a globally unique raw SKU. Product soft-delete columns on `product_skus` remain nullable timestamps and bounded actor/reason text.
 
-Listing search keywords, selling points, usage scenarios, platform attributes, variants, pricing, media, logistics, compliance, validation results, and future publication request/response payloads are JSON text in SQLite and must become validated `jsonb`. The active listing identity is the partial unique key `(product_sku_id, platform, country, shop_key) WHERE deleted_at IS NULL`.
+Listing search keywords, selling points, usage scenarios, platform attributes, variants, pricing, media, logistics, compliance, validation results, AI adoption metadata, AI image context/prompt plans, and future publication request/response payloads are JSON text in SQLite and must become validated `jsonb`. The active listing identity is the partial unique key `(product_sku_id, platform, country, shop_key) WHERE deleted_at IS NULL`.
 
 ### Date and timezone
 

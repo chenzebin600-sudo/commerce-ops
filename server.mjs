@@ -76,6 +76,9 @@ import { createProductCenterApi } from "./lib/product-center/product-center-api.
 import { ProductAiContentService } from "./lib/product-center/product-ai-content-service.mjs";
 import { ProductListingService } from "./lib/product-center/product-listing-service.mjs";
 import { createProductAccessPolicy } from "./lib/product-center/product-access-policy.mjs";
+import { resolveImageGenerationConfig } from "./lib/product-center/image-generation-config.mjs";
+import { createImageGenerationProvider } from "./lib/product-center/image-generation-provider.mjs";
+import { ProductImageGenerationService } from "./lib/product-center/product-image-generation-service.mjs";
 import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
 import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
@@ -271,6 +274,11 @@ const productAiContentService = new ProductAiContentService({
   repository: dataAccess.repositories.productAiContents,
   configured: Boolean(productAiApiKey),
   model: process.env.DEEPSEEK_MODEL || "deepseek-v4",
+  titleLimits: {
+    shopee: Number(process.env.LISTING_TITLE_LIMIT_SHOPEE || 120),
+    lazada: Number(process.env.LISTING_TITLE_LIMIT_LAZADA || 255),
+    tiktok_shop: Number(process.env.LISTING_TITLE_LIMIT_TIKTOK_SHOP || 188),
+  },
   gateway: new AiGateway({
     provider: new DeepSeekProvider({
       apiKey: productAiApiKey,
@@ -295,6 +303,14 @@ const productAiContentService = new ProductAiContentService({
     }),
   }),
 });
+const imageGenerationConfig = resolveImageGenerationConfig(process.env);
+const productImageGenerationService = new ProductImageGenerationService({
+  repository: dataAccess.repositories.productImageGenerations,
+  aiContentService: productAiContentService,
+  provider: createImageGenerationProvider(imageGenerationConfig),
+  config: imageGenerationConfig,
+  listingService: productListingService,
+});
 const productImageService = new ProductImageService({
   repository: dataAccess.repositories.productCatalog,
   tempRoot: fileStorageConfig.tempRoot,
@@ -306,6 +322,7 @@ const handleProductCenterApi = createProductCenterApi({
   catalogService: productCatalogService,
   imageService: productImageService,
   aiContentService: productAiContentService,
+  imageGenerationService: productImageGenerationService,
   listingService: productListingService,
   accessPolicy: productAccessPolicy,
   maxUploadBytes: fileStorageConfig.maxUploadBytes,

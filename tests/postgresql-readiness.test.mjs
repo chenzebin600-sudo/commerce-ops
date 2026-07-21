@@ -21,7 +21,7 @@ test("SQLite readiness inspection is read-only and returns schema metadata only"
   const after = await fs.stat(databasePath);
   assert.equal(report.integrity, "ok");
   assert.equal(report.foreignKeyViolations, 0);
-  assert.equal(report.tableCount, 36);
+  assert.equal(report.tableCount, 38);
   assert.equal(report.modifiedDuringProbe, false);
   assert.equal(before.size, after.size);
   assert.equal(before.mtimeMs, after.mtimeMs);

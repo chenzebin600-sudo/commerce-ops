@@ -180,7 +180,11 @@ test("publication checks distinguish blockers from logistics warnings", () => {
 
 test("the workbench uses one scrollable page and no legacy edit tabs", async () => {
   const html = await fs.readFile("public/index.html", "utf8");
-  for (const id of ["workbenchProductInfo", "workbenchListingTarget", "workbenchContent", "workbenchAi", "workbenchVariants", "workbenchMedia", "workbenchLogistics", "workbenchAttributes", "workbenchValidation"]) {
+  for (const id of [
+    "workbenchProductInfo", "workbenchListingTarget", "workbenchPositioning", "workbenchTitle", "workbenchSubtitle",
+    "workbenchDescription", "workbenchAi", "workbenchVariants", "workbenchMedia", "workbenchAiImages",
+    "workbenchLogistics", "workbenchAttributes", "workbenchValidation",
+  ]) {
     assert.match(html, new RegExp(`id=["']${id}["']`));
   }
   assert.doesNotMatch(html, /data-product-edit-tab|productEditInfoPanel|productEditImagesPanel|productEditAiPanel/);
