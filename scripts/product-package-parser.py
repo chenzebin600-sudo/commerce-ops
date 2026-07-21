@@ -17,6 +17,27 @@ def json_value(value):
     return str(value)
 
 
+def value_type(cell):
+    value = cell.value
+    if cell.data_type == "f":
+        return "formula"
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, dt.datetime):
+        return "datetime"
+    if isinstance(value, dt.date):
+        return "date"
+    if isinstance(value, dt.time):
+        return "time"
+    return "text"
+
+
 def parse_workbook(filename, max_rows, output_filename=None):
     workbook = load_workbook(filename, read_only=True, data_only=False, keep_links=False)
     try:
@@ -37,6 +58,7 @@ def parse_workbook(filename, max_rows, output_filename=None):
                 if row_count >= max_rows:
                     raise ValueError("PRODUCT_PACKAGE_ROW_LIMIT_EXCEEDED")
                 values = [json_value(cell.value) for cell in cells[: len(headers)]]
+                value_types = [value_type(cell) for cell in cells[: len(headers)]]
                 if not any(value is not None and str(value).strip() for value in values):
                     continue
                 formula_indexes = []
@@ -50,11 +72,13 @@ def parse_workbook(filename, max_rows, output_filename=None):
                     output.write(json.dumps({
                         "sourceRowNumber": excel_row_number,
                         "values": values,
+                        "valueTypes": value_types,
                         "formulaIndexes": formula_indexes,
                     }, ensure_ascii=False, separators=(",", ":")))
                     output.write("\n")
                 else:
                     raw_payload = {}
+                    raw_types = {}
                     formula_fields = []
                     header_occurrences = {}
                     for index, header in enumerate(headers):
@@ -63,11 +87,13 @@ def parse_workbook(filename, max_rows, output_filename=None):
                         occurrence = header_occurrences[source_key]
                         key = source_key if occurrence == 1 else f"{source_key}__duplicate_{occurrence}"
                         raw_payload[key] = values[index] if index < len(values) else None
+                        raw_types[key] = value_types[index] if index < len(value_types) else "null"
                         if index in formula_indexes:
                             formula_fields.append(header)
                     rows.append({
                         "sourceRowNumber": excel_row_number,
                         "rawPayload": raw_payload,
+                        "rawTypes": raw_types,
                         "formulaFields": formula_fields,
                     })
         finally:

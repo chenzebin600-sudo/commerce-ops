@@ -28,6 +28,8 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 | `product_import_batches` | 0 | product source evidence | `id` | unique source system plus file SHA-256 |
 | `product_import_files` | 0 | product source evidence | `id` | batch/export file `RESTRICT`; unique role and file |
 | `product_import_rows` | 0 | immutable product source rows | `id` | batch `RESTRICT`; unique batch plus source row |
+| `product_package_rows` | 0 | lossless product source rows | `id` | batch/import row `RESTRICT`; unique source row identity and current row version |
+| `product_import_field_changes` | 0 | product source field diffs | `id` | batch/package row `RESTRICT`; indexed by batch, country, SKU and field |
 | `product_import_issues` | 0 | product data quality | `id` | batch/row `RESTRICT`; indexed severity and status |
 | `product_categories` | 0 | product master data | `id` | self parent and source batches `RESTRICT`; normalized source uniqueness |
 | `product_models` | 0 | product master data | `id` | category and source batches `RESTRICT`; unique source main SKU |

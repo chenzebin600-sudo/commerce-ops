@@ -40,6 +40,8 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     loaded: false,
     issuePage: 1,
     issueTotalPages: 1,
+    changePage: 1,
+    changeTotalPages: 1,
     rowPage: 1,
     rowTotalPages: 1,
     catalogPage: 1,
@@ -91,6 +93,32 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       </tr>`).join("")}</tbody></table>` : '<p class="product-empty">未发现数据质量问题。</p>';
   }
 
+  function formatSourceValue(value) {
+    if (value === null || value === undefined || value === "") return "空";
+    if (typeof value === "object") return JSON.stringify(value);
+    return String(value);
+  }
+
+  function renderChanges(result) {
+    const changes = result?.changes || [];
+    state.changePage = Number(result?.page || 1);
+    state.changeTotalPages = Math.max(1, Number(result?.totalPages || 1));
+    byId("productChangesPrevBtn").disabled = state.changePage <= 1;
+    byId("productChangesNextBtn").disabled = state.changePage >= state.changeTotalPages;
+    byId("productChangesPageStatus").textContent = `第 ${state.changePage} / ${state.changeTotalPages} 页 · ${Number(result?.total || 0)} 项字段变化`;
+    byId("productImportChangesTable").innerHTML = changes.length ? `<table class="product-center-table product-change-table">
+      <thead><tr><th>行号</th><th>国家 / 仓库</th><th>SKU / 商品</th><th>字段</th><th>原值</th><th>新值</th><th>人工覆盖</th></tr></thead>
+      <tbody>${changes.map((item) => `<tr>
+        <td>${esc(item.sourceRowNumber)}</td>
+        <td><strong>${esc(item.country)}</strong><small>${esc(item.warehouse || "未指定")}</small></td>
+        <td><strong>${esc(item.sku)}</strong><small>${esc(item.productName)}</small></td>
+        <td><strong>${esc(item.sourceHeader)}</strong><small>${esc(item.fieldCode)}</small></td>
+        <td>${esc(formatSourceValue(item.oldValue))}</td>
+        <td class="product-change-new">${esc(formatSourceValue(item.newValue))}</td>
+        <td>${item.hasManualOverride ? '<span class="product-override-badge">保留人工值</span>' : '-'}</td>
+      </tr>`).join("")}</tbody></table>` : '<p class="product-empty">本批次没有字段级变化；新增源行请在解析结果中查看。</p>';
+  }
+
   function renderRows(result) {
     const rows = result?.rows || [];
     state.rowPage = Number(result?.page || 1);
@@ -99,9 +127,9 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     byId("productRowsNextBtn").disabled = state.rowPage >= state.rowTotalPages;
     byId("productRowsPageStatus").textContent = `第 ${state.rowPage} / ${state.rowTotalPages} 页 · ${Number(result?.total || 0)} 行`;
     byId("productImportRowsTable").innerHTML = rows.length ? `<table class="product-center-table">
-      <thead><tr><th>行号</th><th>SKU</th><th>商品名称</th><th>主 SKU</th><th>生命周期</th><th>结果</th></tr></thead>
+      <thead><tr><th>行号</th><th>国家 / 仓库</th><th>SKU</th><th>商品名称</th><th>主 SKU</th><th>生命周期</th><th>结果</th></tr></thead>
       <tbody>${rows.map((row) => `<tr>
-        <td>${esc(row.sourceRowNumber)}</td><td><strong>${esc(row.sourceSku)}</strong></td>
+        <td>${esc(row.sourceRowNumber)}</td><td><strong>${esc(row.sourceCountryRaw)}</strong><small>${esc(row.sourceWarehouseRaw || "未指定")} · 第 ${esc(row.rowOccurrence)} 次</small></td><td><strong>${esc(row.sourceSku)}</strong></td>
         <td>${esc(row.normalizedPayload?.product_name)}</td><td>${esc(row.normalizedPayload?.main_sku_code)}</td>
         <td>${esc(LIFECYCLE_LABELS[row.normalizedPayload?.lifecycle_status] || row.normalizedPayload?.lifecycle_status)}</td>
         <td><span class="product-outcome ${esc(row.outcome)}">${esc(OUTCOME_LABELS[row.outcome] || row.outcome)}</span></td>
@@ -120,17 +148,16 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     byId("productBatchTitle").textContent = `批次 ${batch.id.slice(0, 8)}`;
     byId("productBatchMeta").textContent = `${STATUS_LABELS[batch.status] || batch.status} · ${formatDate(batch.createdAt)} · 文件 ${batch.fileHashShort || "-"}`;
     const values = [
-      ["数据行", batch.rowCount], ["新增", batch.newCount], ["更新", batch.updatedCount], ["无变化", batch.unchangedCount],
-      ["阻断", batch.blockerCount], ["提醒", batch.reminderCount], ["未知字段", batch.unknownFields?.length || 0], ["类目", batch.validationSummary?.categoryCount || 0],
+      ["源行", batch.validationSummary?.sourceRowCount ?? batch.rowCount], ["计划写入", batch.willWriteCount], ["新增", batch.newCount], ["变化", batch.updatedCount],
+      ["无变化", batch.unchangedCount], ["未匹配", batch.unmatchedCount], ["阻断", batch.blockerCount], ["信息", batch.informationCount],
     ];
     byId("productBatchSummary").innerHTML = values.map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
     renderMapping(batch.mapping);
+    renderChanges(detail.changes);
     renderIssues(detail.issues);
     renderRows(detail.rows);
     const confirmArea = byId("productImportConfirmation");
     confirmArea.hidden = batch.status !== "preview_ready";
-    byId("productAcknowledgeWarnings").checked = batch.reminderCount === 0;
-    byId("productAcknowledgeUnknown").checked = (batch.unknownFields?.length || 0) === 0;
     const applyButton = byId("applyProductImportBtn");
     applyButton.disabled = batch.blockerCount > 0;
     applyButton.textContent = batch.blockerCount > 0 ? "存在阻断问题，无法入库" : "确认正式入库";
@@ -149,6 +176,20 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     if (!batchId) return;
     const data = await responseJson(await authorizedFetch(`/api/product-center/imports/${encodeURIComponent(batchId)}/issues?page=${page}&page_size=100`));
     renderIssues(data);
+  }
+
+  async function loadChangePage(page = 1) {
+    const batchId = state.activeDetail?.batch?.id;
+    if (!batchId) return;
+    const params = new URLSearchParams({ page: String(page), page_size: "100" });
+    const country = byId("productChangeCountryFilter").value.trim();
+    const sku = byId("productChangeSkuFilter").value.trim();
+    const field = byId("productChangeFieldFilter").value.trim();
+    if (country) params.set("country", country);
+    if (sku) params.set("sku", sku);
+    if (field) params.set("field", field);
+    const data = await responseJson(await authorizedFetch(`/api/product-center/imports/${encodeURIComponent(batchId)}/changes?${params}`));
+    renderChanges(data);
   }
 
   async function loadRowPage(page) {
@@ -408,7 +449,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     onStatus("图片已从产品展示中移除。", "success");
   }
 
-  async function apply({ automatic = false } = {}) {
+  async function apply() {
     const batch = state.activeDetail?.batch;
     if (!batch) return null;
     const button = byId("applyProductImportBtn");
@@ -417,10 +458,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       const response = await authorizedFetch(`/api/product-center/imports/${encodeURIComponent(batch.id)}/apply`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          acknowledgeWarnings: automatic || byId("productAcknowledgeWarnings").checked,
-          acknowledgeUnknownFields: automatic || byId("productAcknowledgeUnknown").checked,
-        }),
+        body: JSON.stringify({ confirmed: true }),
       });
       await responseJson(response);
       await loadDetail(batch.id);
@@ -433,13 +471,6 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       button.disabled = false;
       return false;
     }
-  }
-
-  async function maybeAutoApply(detail) {
-    const batch = detail?.batch;
-    if (!byId("productAutoApply").checked || !batch || batch.status !== "preview_ready" || batch.blockerCount > 0) return false;
-    state.activeDetail = detail;
-    return apply({ automatic: true });
   }
 
   async function upload(event) {
@@ -463,11 +494,8 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       const data = await responseJson(response);
       renderDetail(data.detail);
       await loadHistory();
-      const applied = await maybeAutoApply(data.detail);
-      if (!applied) {
-        const message = data.revalidated ? "原批次已按最新规则重新校验。" : data.reused ? "该文件已存在，已打开原导入批次。" : "产品包校验完成。";
-        onStatus(data.detail?.batch?.blockerCount ? `${message} 请先处理阻断问题。` : `${message} 可以确认入库。`, data.detail?.batch?.blockerCount ? "error" : "success");
-      }
+      const message = data.revalidated ? "原批次已按最新规则重新校验。" : data.reused ? "该文件已存在，已打开原导入批次。" : "产品包解析完成，已生成逐行差异预览。";
+      onStatus(data.detail?.batch?.blockerCount ? `${message} 请先处理真实阻断问题。` : `${message} 请确认后入库。`, data.detail?.batch?.blockerCount ? "error" : "success");
     } catch (error) {
       onStatus(error.message, "error");
     } finally {
@@ -486,8 +514,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       const response = await authorizedFetch(`/api/product-center/imports/${encodeURIComponent(batch.id)}/revalidate`, { method: "POST" });
       const data = await responseJson(response);
       renderDetail(data.detail);
-      const applied = await maybeAutoApply(data.detail);
-      if (!applied) onStatus(data.detail.batch.blockerCount ? "重新校验完成，仍有真实阻断问题。" : "重新校验完成，可以入库。", data.detail.batch.blockerCount ? "error" : "success");
+      onStatus(data.detail.batch.blockerCount ? "重新校验完成，仍有真实阻断问题。" : "重新校验完成，请检查差异后确认入库。", data.detail.batch.blockerCount ? "error" : "success");
       await loadHistory();
     } catch (error) {
       onStatus(error.message, "error");
@@ -508,6 +535,16 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     });
     byId("productIssuesPrevBtn").addEventListener("click", () => loadIssuePage(state.issuePage - 1).catch((error) => onStatus(error.message, "error")));
     byId("productIssuesNextBtn").addEventListener("click", () => loadIssuePage(state.issuePage + 1).catch((error) => onStatus(error.message, "error")));
+    byId("productChangesPrevBtn").addEventListener("click", () => loadChangePage(state.changePage - 1).catch((error) => onStatus(error.message, "error")));
+    byId("productChangesNextBtn").addEventListener("click", () => loadChangePage(state.changePage + 1).catch((error) => onStatus(error.message, "error")));
+    byId("productChangeFilters").addEventListener("submit", (event) => {
+      event.preventDefault();
+      loadChangePage(1).catch((error) => onStatus(error.message, "error"));
+    });
+    byId("resetProductChangeFiltersBtn").addEventListener("click", () => {
+      byId("productChangeFilters").reset();
+      loadChangePage(1).catch((error) => onStatus(error.message, "error"));
+    });
     byId("productRowsPrevBtn").addEventListener("click", () => loadRowPage(state.rowPage - 1).catch((error) => onStatus(error.message, "error")));
     byId("productRowsNextBtn").addEventListener("click", () => loadRowPage(state.rowPage + 1).catch((error) => onStatus(error.message, "error")));
     byId("productCatalogSearchForm").addEventListener("submit", (event) => {

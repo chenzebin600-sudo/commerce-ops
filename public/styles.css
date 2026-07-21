@@ -3124,6 +3124,33 @@ tr:last-child td {
   border-top: 1px solid var(--line);
 }
 
+.product-change-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr)) auto auto;
+  gap: 10px;
+  align-items: end;
+  margin: 0 0 14px;
+}
+
+.product-change-new {
+  background: #fdecea;
+  color: #d93025;
+  font-weight: 600;
+}
+
+.product-override-badge {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #fff7ed;
+  color: #b54708;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
 .product-table-wrap {
   max-height: 440px;
   overflow: auto;
@@ -3256,6 +3283,10 @@ tr:last-child td {
     align-items: stretch;
   }
 
+  .product-change-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .product-summary-grid {
     grid-template-columns: repeat(4, minmax(90px, 1fr));
   }
@@ -3292,5 +3323,10 @@ tr:last-child td {
   .product-confirmation {
     align-items: stretch;
     flex-direction: column;
+  }
+
+
+  .product-change-filters {
+    grid-template-columns: 1fr;
   }
 }

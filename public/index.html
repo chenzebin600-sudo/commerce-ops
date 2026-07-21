@@ -277,8 +277,7 @@
                 </label>
                 <div class="product-source-note">
                   <strong>自动识别中台产品包字段</strong>
-                  <span>按国家 + SKU 更新产品；原文件不会被修改，仓库明细会独立保留。</span>
-                  <label class="check-field"><input id="productAutoApply" type="checkbox" checked /><span>校验通过后直接入库</span></label>
+                  <span>每条 Excel 源行都会独立预览；确认后按国家 + SKU + 仓库 + 出现序号写入。</span>
                 </div>
                 <button id="uploadProductPackageBtn" type="submit">上传产品包</button>
               </form>
@@ -298,7 +297,23 @@
                   <div id="productFieldMappingTable" class="table-wrap product-table-wrap"></div>
                 </div>
                 <div class="product-detail-section">
-                  <div class="section-title-row compact"><div><h3>数据质量报告</h3><p>阻断问题必须修复；提醒项可知悉后继续。</p></div></div>
+                  <div class="section-title-row compact"><div><h3>字段差异预览</h3><p>只比较本次源文件与数据库中上一版源数据；人工覆盖值不会参与比较或被覆盖。</p></div></div>
+                  <form id="productChangeFilters" class="product-change-filters">
+                    <label class="field-block"><span>国家</span><input id="productChangeCountryFilter" type="search" placeholder="例如 马来" /></label>
+                    <label class="field-block"><span>SKU</span><input id="productChangeSkuFilter" type="search" placeholder="完整 SKU" /></label>
+                    <label class="field-block"><span>字段</span><input id="productChangeFieldFilter" type="search" placeholder="例如 product_name" /></label>
+                    <button type="submit">筛选变化</button>
+                    <button id="resetProductChangeFiltersBtn" class="button-tertiary" type="button">重置</button>
+                  </form>
+                  <div id="productImportChangesTable" class="table-wrap product-table-wrap"></div>
+                  <div class="product-detail-pager" aria-label="字段差异分页">
+                    <button id="productChangesPrevBtn" class="button-tertiary" type="button">上一页</button>
+                    <span id="productChangesPageStatus">第 1 / 1 页</span>
+                    <button id="productChangesNextBtn" class="button-tertiary" type="button">下一页</button>
+                  </div>
+                </div>
+                <div class="product-detail-section">
+                  <div class="section-title-row compact"><div><h3>数据质量报告</h3><p>只有文件不可读、必需表头缺失或国家/SKU 为空会阻断；业务字段差异只作信息提示。</p></div></div>
                   <div id="productIssueTable" class="table-wrap product-table-wrap"></div>
                   <div class="product-detail-pager" aria-label="数据质量报告分页">
                     <button id="productIssuesPrevBtn" class="button-tertiary" type="button">上一页</button>
@@ -316,10 +331,7 @@
                   </div>
                 </div>
                 <div id="productImportConfirmation" class="product-confirmation" hidden>
-                  <div>
-                    <label class="check-field"><input id="productAcknowledgeWarnings" type="checkbox" /><span>我已检查并知悉提醒项</span></label>
-                    <label class="check-field"><input id="productAcknowledgeUnknown" type="checkbox" /><span>我已确认未知字段暂不应用</span></label>
-                  </div>
+                  <div><strong>确认后将以单个数据库事务写入全部可写源行。</strong><span>人工覆盖、人工图片和历史批次不会被删除。</span></div>
                   <button id="applyProductImportBtn" type="button">确认正式入库</button>
                 </div>
               </section>
