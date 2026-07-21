@@ -15,16 +15,16 @@ Status: PASS
 ## Source inventory
 
 - SQLite version: 3.51.2
-- Source main database size at snapshot start: 520192 bytes
-- Snapshot size: 520192 bytes
-- Snapshot SHA-256: `22e298e37ebc5a622abb26b83e0686d8f05f64472d57cdde9d55195d0e787b12`
+- Source main database size at snapshot start: 260440064 bytes
+- Snapshot size: 260440064 bytes
+- Snapshot SHA-256: `0243d64b6eed259b8bfae15f8e436b83d8366537c82dabf5973a52ffbe0a4382`
 - Snapshot integrity: ok
 - Snapshot foreign-key violations: 0
-- Tables: 15
-- Columns: 222
-- Rows: 636
-- Raw SQLite indexes: 45
-- Logical foreign keys: 14
+- Tables: 36
+- Columns: 579
+- Rows: 167307
+- Raw SQLite indexes: 108
+- Logical foreign keys: 53
 
 ## Target inventory
 
@@ -32,19 +32,19 @@ Status: PASS
 - Database: `commerce_ops_migration_test`
 - Schema: `app`
 - Migration role: `commerce_migrator`
-- Tables: 15
-- Columns: 222
-- Indexes: 47 (expected 47)
-- Foreign keys: 14
-- CHECK constraints: 23
-- Insert order: `dingtalk_robot_configs` -> `mabang_account_profiles` -> `operation_audit_events` -> `scheduler_leases` -> `schema_migrations` -> `mabang_filter_option_cache` -> `scheduled_export_tasks` -> `scheduled_export_runs` -> `export_files` -> `scheduled_export_run_events` -> `file_lifecycle_protected_files` -> `file_lifecycle_scans` -> `file_lifecycle_items` -> `managed_files` -> `file_quarantine_records`
+- Tables: 36
+- Columns: 579
+- Indexes: 110 (expected 110)
+- Foreign keys: 53
+- CHECK constraints: 71
+- Insert order: `dingtalk_robot_configs` -> `export_files` -> `file_lifecycle_items` -> `file_lifecycle_protected_files` -> `file_lifecycle_scans` -> `file_quarantine_records` -> `mabang_account_profiles` -> `mabang_filter_option_cache` -> `managed_files` -> `operation_audit_events` -> `product_ai_contents` -> `product_categories` -> `product_cost_snapshots` -> `product_detail_preferences` -> `product_field_override_events` -> `product_field_overrides` -> `product_images` -> `product_import_batches` -> `product_import_field_changes` -> `product_import_files` -> `product_import_issues` -> `product_import_rows` -> `product_inventory_snapshots` -> `product_listing_drafts` -> `product_listing_publish_records` -> `product_models` -> `product_package_rows` -> `product_packaging_profiles` -> `product_sku_lifecycle` -> `product_sku_lifecycle_events` -> `product_skus` -> `scheduled_export_run_events` -> `scheduled_export_runs` -> `scheduled_export_tasks` -> `scheduler_leases` -> `schema_migrations`
 
 ## Consistency verification
 
 | Table | Rows | Columns | SQLite indexes | PostgreSQL indexes | FKs | Full-row hash | Key-field hash |
 |---|---:|---:|---:|---:|---:|---|---|
 | `dingtalk_robot_configs` | 1 | 12 | 1 | 1 | 0 | PASS | PASS |
-| `export_files` | 2 | 18 | 10 | 10 | 2 | PASS | PASS |
+| `export_files` | 6 | 18 | 10 | 10 | 2 | PASS | PASS |
 | `file_lifecycle_items` | 14 | 39 | 5 | 5 | 1 | PASS | PASS |
 | `file_lifecycle_protected_files` | 2 | 3 | 1 | 1 | 1 | PASS | PASS |
 | `file_lifecycle_scans` | 1 | 14 | 3 | 3 | 1 | PASS | PASS |
@@ -52,12 +52,33 @@ Status: PASS
 | `mabang_account_profiles` | 2 | 10 | 1 | 1 | 0 | PASS | PASS |
 | `mabang_filter_option_cache` | 381 | 11 | 1 | 2 | 1 | PASS | PASS |
 | `managed_files` | 7 | 16 | 5 | 5 | 2 | PASS | PASS |
-| `operation_audit_events` | 182 | 21 | 5 | 5 | 0 | PASS | PASS |
+| `operation_audit_events` | 222 | 21 | 5 | 5 | 0 | PASS | PASS |
+| `product_ai_contents` | 0 | 19 | 4 | 4 | 1 | PASS | PASS |
+| `product_categories` | 78 | 13 | 3 | 3 | 3 | PASS | PASS |
+| `product_cost_snapshots` | 18601 | 14 | 3 | 3 | 2 | PASS | PASS |
+| `product_detail_preferences` | 1 | 7 | 1 | 1 | 0 | PASS | PASS |
+| `product_field_override_events` | 100 | 8 | 2 | 2 | 1 | PASS | PASS |
+| `product_field_overrides` | 80 | 9 | 2 | 2 | 1 | PASS | PASS |
+| `product_images` | 0 | 16 | 3 | 3 | 1 | PASS | PASS |
+| `product_import_batches` | 4 | 30 | 3 | 3 | 0 | PASS | PASS |
+| `product_import_field_changes` | 2 | 19 | 3 | 3 | 3 | PASS | PASS |
+| `product_import_files` | 4 | 5 | 3 | 3 | 2 | PASS | PASS |
+| `product_import_issues` | 2149 | 14 | 2 | 2 | 2 | PASS | PASS |
+| `product_import_rows` | 21979 | 20 | 6 | 6 | 1 | PASS | PASS |
+| `product_inventory_snapshots` | 21976 | 7 | 3 | 3 | 2 | PASS | PASS |
+| `product_listing_drafts` | 0 | 36 | 4 | 4 | 1 | PASS | PASS |
+| `product_listing_publish_records` | 0 | 13 | 2 | 2 | 1 | PASS | PASS |
+| `product_models` | 6500 | 12 | 2 | 2 | 3 | PASS | PASS |
+| `product_package_rows` | 21714 | 57 | 4 | 4 | 4 | PASS | PASS |
+| `product_packaging_profiles` | 18347 | 11 | 1 | 1 | 2 | PASS | PASS |
+| `product_sku_lifecycle` | 18347 | 11 | 2 | 2 | 2 | PASS | PASS |
+| `product_sku_lifecycle_events` | 18393 | 10 | 2 | 2 | 2 | PASS | PASS |
+| `product_skus` | 18347 | 26 | 8 | 8 | 5 | PASS | PASS |
 | `scheduled_export_run_events` | 34 | 11 | 1 | 2 | 1 | PASS | PASS |
 | `scheduled_export_runs` | 2 | 21 | 4 | 4 | 1 | PASS | PASS |
 | `scheduled_export_tasks` | 1 | 24 | 3 | 3 | 2 | PASS | PASS |
 | `scheduler_leases` | 1 | 4 | 1 | 1 | 0 | PASS | PASS |
-| `schema_migrations` | 6 | 2 | 1 | 1 | 0 | PASS | PASS |
+| `schema_migrations` | 11 | 2 | 1 | 1 | 0 | PASS | PASS |
 
 All row hashes are calculated after normalizing booleans, JSON key order, UUID case, UTC timestamps, dates, integers, and bigint strings. Hashes are reported only as match results in this table; no sensitive row values are included.
 
@@ -71,7 +92,7 @@ All row hashes are calculated after normalizing booleans, JSON key order, UUID c
 
 ## Result
 
-- Successful migrations: 15/15 tables.
+- Successful migrations: 36/36 tables.
 - Failed migrations: 0.
 - Failures: None.
 - Schema conversion: completed.

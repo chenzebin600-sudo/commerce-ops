@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="Lazada、Shopee、TikTok Shop 竞品分析、关键词研究、订单采集与广告分析工作台" />
     <title>跨境电商 AI 运营工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260721-product-center-ui-ai-1" />
+    <link rel="stylesheet" href="/styles.css?v=20260721-product-listing-workbench-1" />
   </head>
   <body>
     <section id="authGate" class="auth-gate" aria-labelledby="authTitle" hidden>
@@ -393,50 +393,158 @@
             </form>
           </dialog>
 
-          <dialog id="productEditDialog" class="product-center-dialog product-edit-dialog">
-            <form id="productEditForm" method="dialog" class="product-dialog-shell">
-              <header><div><h2 id="productEditTitle">编辑产品</h2><p>人工修改单独留痕，不覆盖公司中台事实字段。</p></div><button class="icon-text-button" value="cancel" aria-label="关闭">×</button></header>
-              <div class="product-edit-tabs" role="tablist" aria-label="产品编辑区域">
-                <button class="product-edit-tab active" type="button" data-product-edit-tab="info">产品信息</button>
-                <button class="product-edit-tab" type="button" data-product-edit-tab="images">产品图片</button>
-                <button class="product-edit-tab" type="button" data-product-edit-tab="ai">AI卖点与场景</button>
+          <dialog id="productEditDialog" class="product-listing-workbench-dialog">
+            <div id="productEditForm" class="product-listing-workbench">
+              <header class="workbench-toolbar">
+                <div class="workbench-identity">
+                  <button id="productWorkbenchBackBtn" class="button-tertiary" type="button">返回产品查询</button>
+                  <div><span class="workbench-kicker">平台上架工作台</span><h2 id="productEditTitle">编辑产品</h2><p id="productWorkbenchMeta">产品包事实与平台草稿分层保存</p></div>
+                  <span id="productListingStatus" class="listing-status draft">草稿</span>
+                </div>
+                <div class="workbench-actions">
+                  <button id="cancelProductEditBtn" class="button-tertiary" type="button">取消</button>
+                  <button id="saveListingDraftBtn" class="button-secondary" type="button">保存草稿</button>
+                  <button id="saveAndCheckListingBtn" type="button">保存并检查</button>
+                  <button id="publishListingBtn" class="button-tertiary" type="button" disabled title="平台发布接口尚未接入">发布到平台</button>
+                  <button id="closeProductEditBtn" class="icon-text-button" type="button" aria-label="关闭上架工作台">×</button>
+                </div>
+              </header>
+
+              <div class="workbench-layout">
+                <nav class="workbench-navigation" aria-label="上架工作台模块">
+                  <button type="button" data-workbench-anchor="workbenchProductInfo" class="active">产品信息</button>
+                  <button type="button" data-workbench-anchor="workbenchListingTarget">上架目标</button>
+                  <button type="button" data-workbench-anchor="workbenchContent">标题与描述</button>
+                  <button type="button" data-workbench-anchor="workbenchAi">AI卖点与场景</button>
+                  <button type="button" data-workbench-anchor="workbenchVariants">SKU与价格</button>
+                  <button type="button" data-workbench-anchor="workbenchMedia">图片与视频</button>
+                  <button type="button" data-workbench-anchor="workbenchLogistics">物流包装</button>
+                  <button type="button" data-workbench-anchor="workbenchAttributes">平台属性</button>
+                  <button type="button" data-workbench-anchor="workbenchValidation">发布检查</button>
+                </nav>
+
+                <main id="productWorkbenchScroll" class="workbench-scroll">
+                  <section id="workbenchProductInfo" class="workbench-section" data-workbench-section>
+                    <header><div><span class="section-index">01</span><h3>产品基础信息</h3><p>中台事实保持只读；允许人工维护的字段继续保存为独立覆盖值。</p></div><div class="source-legend"><span class="source-badge central">产品包</span><span class="source-badge manual">人工修改</span></div></header>
+                    <div id="productWorkbenchIdentityFacts" class="workbench-fact-grid"></div>
+                    <div id="productEditFields" class="product-edit-fields"></div>
+                  </section>
+
+                  <section id="workbenchListingTarget" class="workbench-section" data-workbench-section>
+                    <header><div><span class="section-index">02</span><h3>上架目标</h3><p>草稿按产品、平台、国家和店铺隔离，当前不会调用平台接口。</p></div><span class="source-badge platform">平台字段</span></header>
+                    <div class="workbench-field-grid">
+                      <label class="field-block required"><span>平台</span><select id="listingPlatform"><option value="">请选择</option><option value="shopee">Shopee</option><option value="lazada">Lazada</option><option value="tiktok_shop">TikTok Shop</option></select></label>
+                      <label class="field-block"><span>国家</span><input id="listingCountry" type="text" readonly /></label>
+                      <label class="field-block required"><span>店铺名称</span><input id="listingShopName" type="text" maxlength="300" /></label>
+                      <label class="field-block"><span>店铺 ID</span><input id="listingShopId" type="text" maxlength="200" /></label>
+                      <label class="field-block"><span>站点</span><input id="listingMarketplace" type="text" maxlength="100" /></label>
+                      <label class="field-block required"><span>平台类目</span><input id="listingCategoryName" type="text" maxlength="500" /></label>
+                      <label class="field-block"><span>平台类目 ID</span><input id="listingCategoryId" type="text" maxlength="200" /></label>
+                      <label class="field-block"><span>上架模式</span><select id="listingMode"><option value="standard">标准上架</option><option value="preorder">预售</option><option value="test">测试草稿</option></select></label>
+                    </div>
+                    <div id="listingDraftSelector" class="listing-draft-selector"></div>
+                  </section>
+
+                  <section id="workbenchContent" class="workbench-section" data-workbench-section>
+                    <header><div><span class="section-index">03</span><h3>商品标题与描述</h3><p>这些内容属于平台草稿，不会写回公司商品中台。</p></div><span class="source-badge platform">平台字段</span></header>
+                    <div class="workbench-field-grid">
+                      <label class="field-block required workbench-wide"><span>商品标题 <small id="listingTitleCount">0 字</small></span><input id="listingTitle" type="text" maxlength="1000" /></label>
+                      <label class="field-block workbench-wide"><span>副标题 <small id="listingSubtitleCount">0 字</small></span><input id="listingSubtitle" type="text" maxlength="1000" /></label>
+                      <label class="field-block workbench-wide"><span>商品描述 <small id="listingDescriptionCount">0 字</small></span><textarea id="listingDescription" rows="8" maxlength="20000"></textarea></label>
+                      <label class="field-block"><span>搜索关键词</span><textarea id="listingKeywords" rows="3" placeholder="每行一个关键词"></textarea></label>
+                      <label class="field-block"><span>目标用户</span><textarea id="listingTargetUsers" rows="3"></textarea></label>
+                      <label class="field-block"><span>品牌</span><input id="listingBrand" type="text" /></label>
+                      <label class="field-block"><span>型号</span><input id="listingModel" type="text" /></label>
+                      <label class="field-block"><span>内容语言</span><select id="listingLanguage"><option>中文</option><option>英文</option><option>泰语</option><option>马来语</option><option>印尼语</option><option>越南语</option><option>菲律宾英语</option></select></label>
+                    </div>
+                  </section>
+
+                  <section id="workbenchAi" class="workbench-section product-ai-panel" data-workbench-section>
+                    <header><div><span class="section-index">04</span><h3>AI 卖点与使用场景</h3><p>生成结果先留在页面，只有保存草稿或确认采用后才会入库。</p></div><span class="source-badge ai">AI 生成</span></header>
+                    <div id="productAiConfigurationNotice" class="product-ai-notice"></div>
+                    <div class="product-ai-inputs">
+                      <label class="field-block"><span>目标平台</span><select id="productAiPlatform"><option>通用电商</option><option>Shopee</option><option>Lazada</option><option>TikTok Shop</option></select></label>
+                      <label class="field-block"><span>目标国家</span><input id="productAiCountry" type="text" /></label>
+                      <label class="field-block"><span>输出语言</span><select id="productAiLanguage"><option>中文</option><option>英文</option><option>泰语</option><option>马来语</option><option>印尼语</option><option>越南语</option><option>菲律宾英语</option></select></label>
+                      <label class="field-block"><span>目标用户</span><input id="productAiTargetUsers" type="text" /></label>
+                      <label class="field-block"><span>产品定位</span><input id="productAiPositioning" type="text" /></label>
+                      <label class="field-block"><span>内容风格</span><input id="productAiStyle" type="text" /></label>
+                      <label class="field-block"><span>卖点数量</span><input id="productAiSellingPointCount" type="number" min="1" max="10" value="5" /></label>
+                      <label class="field-block"><span>场景数量</span><input id="productAiScenarioCount" type="number" min="1" max="10" value="5" /></label>
+                      <label class="field-block product-ai-wide"><span>特殊要求</span><textarea id="productAiSpecialRequirements" rows="2"></textarea></label>
+                      <label class="field-block product-ai-wide"><span>禁止出现的内容</span><textarea id="productAiForbiddenContent" rows="2"></textarea></label>
+                    </div>
+                    <div class="product-ai-toolbar">
+                      <button id="generateProductAiBtn" type="button">生成内容</button>
+                      <button id="cancelProductAiBtn" class="button-tertiary" type="button" hidden>取消等待</button>
+                      <button id="copyProductAiBtn" class="button-tertiary" type="button" disabled>复制全部</button>
+                      <button id="showProductAiHistoryBtn" class="button-tertiary" type="button">查看历史版本</button>
+                    </div>
+                    <div id="productAiResult" class="product-ai-result"><p class="product-empty">尚未生成内容。AI 不会自动保存或覆盖产品字段。</p></div>
+                    <div id="productAiSaveActions" class="product-ai-save-actions" hidden>
+                      <button id="saveProductAiDraftBtn" class="button-tertiary" type="button">保存为 AI 草稿</button>
+                      <button id="confirmProductAiBtn" type="button">确认采用</button>
+                    </div>
+                  </section>
+
+                  <section id="workbenchVariants" class="workbench-section" data-workbench-section>
+                    <header><div><span class="section-index">05</span><h3>SKU 与价格</h3><p>产品成本只读；售价、原价和活动价属于当前上架草稿。</p></div><div class="source-legend"><span class="source-badge central">产品包</span><span class="source-badge platform">平台字段</span></div></header>
+                    <div id="listingVariantFacts" class="workbench-fact-grid"></div>
+                    <div class="workbench-field-grid">
+                      <label class="field-block required"><span>销售价</span><input id="listingSalePrice" type="number" min="0" step="0.01" /></label>
+                      <label class="field-block"><span>原价</span><input id="listingOriginalPrice" type="number" min="0" step="0.01" /></label>
+                      <label class="field-block"><span>活动价</span><input id="listingPromotionPrice" type="number" min="0" step="0.01" /></label>
+                      <label class="field-block"><span>可售库存</span><input id="listingAvailableStock" type="number" min="0" step="1" /></label>
+                      <label class="field-block"><span>变体名称</span><input id="listingVariantName" type="text" /></label>
+                      <label class="field-block"><span>变体状态</span><select id="listingVariantStatus"><option value="active">启用</option><option value="inactive">停用</option></select></label>
+                    </div>
+                  </section>
+
+                  <section id="workbenchMedia" class="workbench-section" data-workbench-section>
+                    <header><div><span class="section-index">06</span><h3>商品图片与视频</h3><p>基础素材可以复用；平台选择、主图和顺序单独保存到草稿。</p></div><div class="source-legend"><span class="source-badge central">产品素材</span><span class="source-badge platform">上架素材</span></div></header>
+                    <div class="product-image-upload-row"><input id="productImageFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple /><button id="uploadProductImagesBtn" class="button-tertiary" type="button">上传基础图片</button></div>
+                    <div id="productImageList" class="product-image-list"></div>
+                    <h4>当前上架素材</h4>
+                    <p class="workbench-help">勾选图片加入草稿，拖动卡片调整顺序，选择一张作为平台主图。</p>
+                    <div id="listingMediaList" class="listing-media-list"></div>
+                    <label class="field-block"><span>视频地址 <small>接口预留</small></span><input id="listingVideoUrl" type="url" placeholder="https://" /></label>
+                  </section>
+
+                  <section id="workbenchLogistics" class="workbench-section" data-workbench-section>
+                    <header><div><span class="section-index">07</span><h3>物流与包装</h3><p>默认读取产品包规格；草稿修改不会覆盖原始尺寸或重量。</p></div><div class="source-legend"><span class="source-badge central">产品包</span><span class="source-badge platform">平台字段</span></div></header>
+                    <div class="workbench-field-grid">
+                      <label class="field-block"><span>重量（g）</span><input id="listingWeightG" type="number" min="0" /></label>
+                      <label class="field-block"><span>长（cm）</span><input id="listingLengthCm" type="number" min="0" step="0.1" /></label>
+                      <label class="field-block"><span>宽（cm）</span><input id="listingWidthCm" type="number" min="0" step="0.1" /></label>
+                      <label class="field-block"><span>高（cm）</span><input id="listingHeightCm" type="number" min="0" step="0.1" /></label>
+                      <label class="field-block"><span>包装类型</span><input id="listingPackageType" type="text" /></label>
+                      <label class="field-block"><span>发货仓库</span><input id="listingWarehouse" type="text" /></label>
+                      <label class="field-block"><span>物流渠道</span><input id="listingLogisticsChannel" type="text" /></label>
+                      <label class="field-block"><span>是否预售</span><select id="listingPreorder"><option value="false">否</option><option value="true">是</option></select></label>
+                      <label class="field-block"><span>备货天数</span><input id="listingLeadTimeDays" type="number" min="0" max="365" /></label>
+                    </div>
+                  </section>
+
+                  <section id="workbenchAttributes" class="workbench-section" data-workbench-section>
+                    <header><div><span class="section-index">08</span><h3>平台属性</h3><p>平台类目属性接口接入后可动态替换；当前支持人工维护通用属性结构。</p></div><span class="source-badge platform">平台字段</span></header>
+                    <div id="listingAttributesTable" class="listing-attributes-table"></div>
+                    <button id="addListingAttributeBtn" class="button-tertiary" type="button">添加属性</button>
+                  </section>
+
+                  <section id="workbenchValidation" class="workbench-section validation-section" data-workbench-section>
+                    <header><div><span class="section-index">09</span><h3>发布检查</h3><p>保存并检查只更新草稿状态，不会发布商品。</p></div><span id="listingReadinessBadge" class="listing-status draft">尚未检查</span></header>
+                    <div id="listingValidationSummary" class="listing-validation-summary"><p class="product-empty">点击“保存并检查”生成发布前检查结果。</p></div>
+                  </section>
+                </main>
               </div>
-              <section id="productEditInfoPanel" class="product-edit-panel">
-                <div id="productEditFields" class="product-edit-fields"></div>
-              </section>
-              <section id="productEditImagesPanel" class="product-edit-panel product-image-editor" hidden>
-                <div class="section-title-row compact"><div><h3>产品图片</h3><p>支持 JPG、PNG、WebP，单张不超过 10MB。</p></div></div>
-                <div class="product-image-upload-row"><input id="productImageFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple /><button id="uploadProductImagesBtn" class="button-tertiary" type="button">上传图片</button></div>
-                <div id="productImageList" class="product-image-list"></div>
-              </section>
-              <section id="productEditAiPanel" class="product-edit-panel product-ai-panel" hidden>
-                <div id="productAiConfigurationNotice" class="product-ai-notice"></div>
-                <div class="product-ai-inputs">
-                  <label class="field-block"><span>目标平台</span><select id="productAiPlatform"><option>通用电商</option><option>Shopee</option><option>Lazada</option><option>TikTok Shop</option></select></label>
-                  <label class="field-block"><span>目标国家</span><input id="productAiCountry" type="text" /></label>
-                  <label class="field-block"><span>输出语言</span><select id="productAiLanguage"><option>中文</option><option>英文</option><option>泰语</option><option>马来语</option><option>印尼语</option><option>越南语</option><option>菲律宾英语</option></select></label>
-                  <label class="field-block"><span>目标用户</span><input id="productAiTargetUsers" type="text" /></label>
-                  <label class="field-block"><span>产品定位</span><input id="productAiPositioning" type="text" /></label>
-                  <label class="field-block"><span>内容风格</span><input id="productAiStyle" type="text" /></label>
-                  <label class="field-block"><span>卖点数量</span><input id="productAiSellingPointCount" type="number" min="1" max="10" value="5" /></label>
-                  <label class="field-block"><span>场景数量</span><input id="productAiScenarioCount" type="number" min="1" max="10" value="5" /></label>
-                  <label class="field-block product-ai-wide"><span>特殊要求</span><textarea id="productAiSpecialRequirements" rows="2"></textarea></label>
-                  <label class="field-block product-ai-wide"><span>禁止出现的内容</span><textarea id="productAiForbiddenContent" rows="2"></textarea></label>
-                </div>
-                <div class="product-ai-toolbar">
-                  <button id="generateProductAiBtn" type="button">生成内容</button>
-                  <button id="cancelProductAiBtn" class="button-tertiary" type="button" hidden>取消等待</button>
-                  <button id="copyProductAiBtn" class="button-tertiary" type="button" disabled>复制全部</button>
-                  <button id="showProductAiHistoryBtn" class="button-tertiary" type="button">查看历史版本</button>
-                </div>
-                <div id="productAiResult" class="product-ai-result"><p class="product-empty">尚未生成内容。生成结果只保存在当前页面，点击保存草稿或确认采用后才会写入数据库。</p></div>
-                <div id="productAiSaveActions" class="product-ai-save-actions" hidden>
-                  <button id="saveProductAiDraftBtn" class="button-tertiary" type="button">保存为草稿</button>
-                  <button id="confirmProductAiBtn" type="button">确认采用</button>
-                </div>
-              </section>
-              <footer><button class="button-tertiary" value="cancel">取消</button><button id="saveProductEditBtn" type="submit" value="default">保存产品信息</button></footer>
-            </form>
+            </div>
+          </dialog>
+
+          <dialog id="productDiscardDialog" class="product-center-dialog product-discard-dialog">
+            <div class="product-dialog-shell">
+              <header><div><h2>放弃本次修改？</h2><p>当前修改尚未保存，关闭后本次修改将丢失。</p></div></header>
+              <footer><button id="continueProductEditBtn" class="button-tertiary" type="button">继续编辑</button><button id="discardProductEditBtn" class="button-danger" type="button">放弃修改并关闭</button></footer>
+            </div>
           </dialog>
 
           <dialog id="productDeleteDialog" class="product-center-dialog product-delete-dialog">
@@ -1068,6 +1176,6 @@
         <div class="dialog-actions"><button class="button-secondary" type="button" data-close-dialog="runNowConfirmDialog">取消</button><button id="confirmRunNowBtn" type="button">确认执行</button></div>
       </dialog>
     </main>
-    <script type="module" src="/app.js?v=20260721-product-center-ui-ai-1"></script>
+    <script type="module" src="/app.js?v=20260721-product-listing-workbench-1"></script>
   </body>
 </html>

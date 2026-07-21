@@ -298,8 +298,15 @@ function addRecentTask(label) {
   }
 }
 
-function switchPage(page) {
+function switchPage(page, { skipProductClose = false } = {}) {
   if (!PAGE_META[page]) page = "link";
+  if (!skipProductClose && page !== "products" && productCenterPage?.isEditing()) {
+    productCenterPage.requestClose("route-change").then((closed) => {
+      if (closed) switchPage(page, { skipProductClose: true });
+      else if (location.hash !== "#products") history.replaceState(null, "", "#products");
+    }).catch((error) => setStatus(error.message, "error"));
+    return;
+  }
   document.querySelectorAll(".tab-button").forEach((button) => {
     button.classList.toggle("active", button.dataset.page === page);
     if (button.dataset.page === page) button.setAttribute("aria-current", "page");

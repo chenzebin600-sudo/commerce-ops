@@ -74,6 +74,7 @@ import { ProductCatalogService } from "./lib/product-center/product-catalog-serv
 import { ProductImageService } from "./lib/product-center/product-image-service.mjs";
 import { createProductCenterApi } from "./lib/product-center/product-center-api.mjs";
 import { ProductAiContentService } from "./lib/product-center/product-ai-content-service.mjs";
+import { ProductListingService } from "./lib/product-center/product-listing-service.mjs";
 import { createProductAccessPolicy } from "./lib/product-center/product-access-policy.mjs";
 import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
@@ -263,6 +264,7 @@ const productImportService = new ProductImportService({
   parseTimeoutMs: Number(process.env.PRODUCT_IMPORT_PARSE_TIMEOUT_MS || 600000),
 });
 const productCatalogService = new ProductCatalogService({ repository: dataAccess.repositories.productCatalog });
+const productListingService = new ProductListingService({ repository: dataAccess.repositories.productListings });
 const productAccessPolicy = createProductAccessPolicy(process.env);
 const productAiApiKey = getDeepSeekApiKey();
 const productAiContentService = new ProductAiContentService({
@@ -304,6 +306,7 @@ const handleProductCenterApi = createProductCenterApi({
   catalogService: productCatalogService,
   imageService: productImageService,
   aiContentService: productAiContentService,
+  listingService: productListingService,
   accessPolicy: productAccessPolicy,
   maxUploadBytes: fileStorageConfig.maxUploadBytes,
 });

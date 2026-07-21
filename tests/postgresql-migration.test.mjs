@@ -8,9 +8,11 @@ import {
   assertMigrationTestTarget,
   buildPostgresqlSchema,
   createSqliteMigrationSnapshot,
+  encodeNormalizedPostgresqlMigrationValue,
   encodePostgresqlMigrationValue,
   inspectSqliteSchema,
   normalizeMigrationValue,
+  normalizePostgresqlMigrationValue,
   openReadOnlySqliteSnapshot,
   readNormalizedTableRows,
   tableDigests,
@@ -63,6 +65,26 @@ test("SQLite schema conversion produces native PostgreSQL types and constraints"
   }
 });
 
+test("external and correlation identifiers remain text instead of being guessed as UUIDs", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`CREATE TABLE external_identifiers (
+      id TEXT PRIMARY KEY,
+      request_id TEXT,
+      shop_id TEXT,
+      platform_category_id TEXT,
+      platform_product_id TEXT,
+      platform_listing_id TEXT
+    );`);
+    const source = inspectSqliteSchema(database);
+    const table = source.tables.find((item) => item.name === "external_identifiers");
+    assert.equal(table.columns.find((item) => item.name === "id").logicalType, "uuid");
+    for (const name of ["request_id", "shop_id", "platform_category_id", "platform_product_id", "platform_listing_id"]) {
+      assert.equal(table.columns.find((item) => item.name === name).logicalType, "text");
+    }
+  } finally { database.close(); }
+});
+
 test("migration normalization gives SQLite and PostgreSQL-shaped rows equal hashes", () => {
   const database = new DatabaseSync(":memory:");
   try {
@@ -91,6 +113,22 @@ test("PostgreSQL JSON parameters are encoded as JSON rather than PostgreSQL arra
   const column = { name: "scopes_json", logicalType: "json" };
   assert.equal(encodePostgresqlMigrationValue('["main","ads"]', column), '["main","ads"]');
   assert.equal(encodePostgresqlMigrationValue({ b: 2, a: 1 }, column), '{"a":1,"b":2}');
+  assert.equal(encodeNormalizedPostgresqlMigrationValue("人工商品名", column), '"人工商品名"');
+  assert.equal(normalizePostgresqlMigrationValue("人工商品名", column), "人工商品名");
+  assert.deepEqual(normalizePostgresqlMigrationValue({ b: 2, a: 1 }, column), { a: 1, b: 2 });
+});
+
+test("already-normalized JSON scalar rows can be hashed without a second parse", () => {
+  const table = {
+    columns: [
+      { name: "id", logicalType: "integer", pk: true },
+      { name: "next_value_json", logicalType: "json", pk: false },
+    ],
+  };
+  const rows = [{ id: 1, next_value_json: "人工商品名" }];
+  const digest = tableDigests(rows, table, { valuesAreNormalized: true });
+  assert.match(digest.full, /^[0-9a-f]{64}$/);
+  assert.match(digest.keys, /^[0-9a-f]{64}$/);
 });
 
 test("official SQLite backup creates a consistent read-only migration source", async () => {

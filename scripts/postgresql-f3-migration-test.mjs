@@ -10,9 +10,10 @@ import {
   assertMigrationTestTarget,
   buildPostgresqlSchema,
   createSqliteMigrationSnapshot,
-  encodePostgresqlMigrationValue,
+  encodeNormalizedPostgresqlMigrationValue,
   inspectSqliteSchema,
   normalizeMigrationValue,
+  normalizePostgresqlMigrationValue,
   openReadOnlySqliteSnapshot,
   quoteIdentifier,
   readNormalizedTableRows,
@@ -41,14 +42,22 @@ async function migrationStage(label, callback) {
     return await callback();
   } catch (error) {
     const code = String(error?.code || "MIGRATION_STAGE_FAILED").slice(0, 80);
-    const wrapped = new Error(`${label} [${code}]`);
+    const safeContext = [error?.name, error?.table, error?.column, error?.constraint, error?.routine]
+      .filter(Boolean).map((value) => String(value).slice(0, 100)).join("/");
+    const wrapped = new Error(`${label} [${code}]${safeContext ? ` (${safeContext})` : ""}`);
     wrapped.code = code;
     throw wrapped;
   }
 }
 
 async function resetAndMigrate({ provider, config, source, generated, rowsByTable }) {
-  const order = topologicalTableOrder(source);
+  let order;
+  try {
+    order = topologicalTableOrder(source);
+  } catch (error) {
+    if (!/foreign-key graph contains a cycle/i.test(error.message)) throw error;
+    order = source.tables.map((table) => table.name);
+  }
   await provider.transaction(async (transaction) => {
     const identity = await transaction.query("SELECT current_database() AS database, current_user AS username");
     if (identity.rows[0]?.database !== config.testDatabase || identity.rows[0]?.username !== config.migratorUser) {
@@ -66,15 +75,11 @@ async function resetAndMigrate({ provider, config, source, generated, rowsByTabl
     for (let index = 0; index < generated.tableStatements.length; index += 1) {
       await migrationStage(`F3 create table ${source.tables[index].name}`, () => transaction.executeScript(generated.tableStatements[index]));
     }
-    for (let index = 0; index < generated.foreignKeyStatements.length; index += 1) {
-      await migrationStage(`F3 create foreign key ${index + 1}`, () => transaction.executeScript(generated.foreignKeyStatements[index]));
-    }
-
     for (const tableName of order) {
       const table = source.tables.find((candidate) => candidate.name === tableName);
       const statement = tableInsertSql(config.schema, table, transaction);
       for (const row of rowsByTable.get(tableName)) {
-        await migrationStage(`F3 insert table ${tableName}`, () => transaction.execute(statement, table.columns.map((column) => encodePostgresqlMigrationValue(row[column.name], column))));
+        await migrationStage(`F3 insert table ${tableName}`, () => transaction.execute(statement, table.columns.map((column) => encodeNormalizedPostgresqlMigrationValue(row[column.name], column))));
       }
       if (table.autoIncrement) {
         const identityColumn = table.columns.find((column) => column.logicalType === "identity");
@@ -83,6 +88,12 @@ async function resetAndMigrate({ provider, config, source, generated, rowsByTabl
         if (!sequenceName) throw new Error(`F3 identity sequence is missing for ${table.name}`);
         await transaction.query(`SELECT setval($1::regclass, GREATEST(COALESCE(MAX(${quoteIdentifier(identityColumn.name)}), 1), 1), COUNT(*) > 0) FROM ${qualified(config.schema, table.name)}`, [sequenceName]);
       }
+    }
+
+    // Foreign keys are created after loading so cyclic relationships can be
+    // migrated without disabling or weakening referential validation.
+    for (let index = 0; index < generated.foreignKeyStatements.length; index += 1) {
+      await migrationStage(`F3 create foreign key ${index + 1}`, () => transaction.executeScript(generated.foreignKeyStatements[index]));
     }
 
     for (let index = 0; index < generated.indexStatements.length; index += 1) {
@@ -106,7 +117,7 @@ async function inspectPostgresqlTarget(provider, source, config) {
   for (const table of source.tables) {
     const projection = table.columns.map((column) => quoteIdentifier(column.name)).join(", ");
     const result = await provider.query(`SELECT ${projection} FROM ${qualified(config.schema, table.name)}`);
-    const normalizedRows = result.rows.map((row) => Object.fromEntries(table.columns.map((column) => [column.name, normalizeMigrationValue(row[column.name], column)])));
+    const normalizedRows = result.rows.map((row) => Object.fromEntries(table.columns.map((column) => [column.name, normalizePostgresqlMigrationValue(row[column.name], column)])));
     tables.push({
       name: table.name,
       rows: normalizedRows,
@@ -139,8 +150,8 @@ function validateMigration({ source, generated, rowsByTable, target }) {
   const tables = source.tables.map((table) => {
     const targetTable = target.tables.find((candidate) => candidate.name === table.name);
     const sourceRows = rowsByTable.get(table.name);
-    const sourceHashes = tableDigests(sourceRows, table);
-    const targetHashes = tableDigests(targetTable?.rows || [], table);
+    const sourceHashes = tableDigests(sourceRows, table, { valuesAreNormalized: true });
+    const targetHashes = tableDigests(targetTable?.rows || [], table, { valuesAreNormalized: true });
     const rowMatch = targetTable?.rowCount === table.rowCount;
     const columnMatch = targetTable?.columnCount === table.columns.length;
     const fullHashMatch = sourceHashes.full === targetHashes.full;

@@ -226,7 +226,7 @@ CREATE TABLE "app"."managed_files" (
 
 CREATE TABLE "app"."operation_audit_events" (
   "id" uuid,
-  "request_id" uuid NOT NULL,
+  "request_id" text NOT NULL,
   "occurred_at" timestamptz NOT NULL,
   "module" text NOT NULL,
   "action" text NOT NULL,
@@ -247,6 +247,506 @@ CREATE TABLE "app"."operation_audit_events" (
   "metadata_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
   "created_at" timestamptz NOT NULL,
   PRIMARY KEY ("id")
+);
+
+CREATE TABLE "app"."product_ai_contents" (
+  "id" uuid,
+  "product_sku_id" uuid NOT NULL,
+  "country" text NOT NULL,
+  "sku" text NOT NULL,
+  "provider" text NOT NULL,
+  "model" text NOT NULL,
+  "content_type" text NOT NULL DEFAULT 'selling_points_and_scenarios',
+  "input_context_json" jsonb NOT NULL,
+  "output_content_json" jsonb NOT NULL,
+  "prompt_version" text NOT NULL,
+  "status" text NOT NULL,
+  "version" integer NOT NULL,
+  "created_by" text NOT NULL,
+  "request_id" text,
+  "created_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  "confirmed_at" timestamptz,
+  "confirmed_by" text,
+  "archived_at" timestamptz,
+  PRIMARY KEY ("id"),
+  UNIQUE ("product_sku_id", "content_type", "version"),
+  CHECK (status IN ('draft', 'confirmed', 'archived')),
+  CHECK (version >= 1)
+);
+
+CREATE TABLE "app"."product_categories" (
+  "id" uuid,
+  "parent_id" uuid,
+  "parent_key" text NOT NULL,
+  "level" integer NOT NULL,
+  "source_system" text NOT NULL,
+  "source_name" text NOT NULL,
+  "normalized_name" text NOT NULL,
+  "status" text NOT NULL DEFAULT 'active',
+  "first_seen_batch_id" uuid NOT NULL,
+  "last_seen_batch_id" uuid NOT NULL,
+  "created_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  "inactive_at" timestamptz,
+  PRIMARY KEY ("id"),
+  UNIQUE ("source_system", "level", "parent_key", "normalized_name"),
+  CHECK (level IN (1, 2)),
+  CHECK (status IN ('active', 'inactive', 'review_required'))
+);
+
+CREATE TABLE "app"."product_cost_snapshots" (
+  "id" uuid,
+  "sku_id" uuid NOT NULL,
+  "batch_id" uuid NOT NULL,
+  "country_raw" text,
+  "cost_cny" numeric NOT NULL,
+  "exchange_rate" numeric NOT NULL,
+  "exchange_direction" text NOT NULL,
+  "cost_local" numeric NOT NULL,
+  "price_tier_20" numeric,
+  "price_tier_25" numeric,
+  "price_tier_35" numeric,
+  "price_tier_45" numeric,
+  "attach_rate" numeric,
+  "created_at" timestamptz NOT NULL,
+  PRIMARY KEY ("id"),
+  UNIQUE ("sku_id", "batch_id"),
+  CHECK (exchange_direction IN ('local_per_cny', 'cny_per_local', 'equivalent'))
+);
+
+CREATE TABLE "app"."product_detail_preferences" (
+  "scope_key" text,
+  "visible_fields_json" jsonb NOT NULL,
+  "revision" integer NOT NULL DEFAULT 1,
+  "operator_label" text NOT NULL,
+  "request_id" text,
+  "created_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  PRIMARY KEY ("scope_key"),
+  CHECK (revision >= 1)
+);
+
+CREATE TABLE "app"."product_field_override_events" (
+  "id" uuid,
+  "sku_id" uuid NOT NULL,
+  "field_code" text NOT NULL,
+  "previous_value_json" jsonb,
+  "next_value_json" jsonb,
+  "operator_label" text NOT NULL,
+  "request_id" text,
+  "occurred_at" timestamptz NOT NULL,
+  PRIMARY KEY ("id")
+);
+
+CREATE TABLE "app"."product_field_overrides" (
+  "sku_id" uuid,
+  "field_code" text,
+  "value_json" jsonb,
+  "operator_label" text NOT NULL,
+  "request_id" text,
+  "revision" integer NOT NULL DEFAULT 1,
+  "created_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  "deleted_at" timestamptz,
+  PRIMARY KEY ("sku_id", "field_code"),
+  CHECK (revision >= 1)
+);
+
+CREATE TABLE "app"."product_images" (
+  "id" uuid,
+  "sku_id" uuid NOT NULL,
+  "original_filename" text NOT NULL,
+  "storage_filename" text NOT NULL,
+  "relative_path" text NOT NULL,
+  "mime_type" text NOT NULL,
+  "file_size" bigint NOT NULL,
+  "file_hash" text NOT NULL,
+  "is_primary" integer NOT NULL DEFAULT 0,
+  "sort_order" integer NOT NULL DEFAULT 0,
+  "status" text NOT NULL DEFAULT 'available',
+  "operator_label" text NOT NULL,
+  "request_id" text,
+  "created_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  "deleted_at" timestamptz,
+  PRIMARY KEY ("id"),
+  UNIQUE ("relative_path"),
+  CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp')),
+  CHECK (file_size > 0),
+  CHECK (is_primary IN (0, 1)),
+  CHECK (status IN ('available', 'deleted', 'missing', 'integrity_failed'))
+);
+
+CREATE TABLE "app"."product_import_batches" (
+  "id" uuid,
+  "source_system" text NOT NULL DEFAULT 'company_product_center',
+  "source_period" text,
+  "source_country_raw" text,
+  "file_sha256" text NOT NULL,
+  "header_fingerprint" text,
+  "status" text NOT NULL,
+  "row_count" integer NOT NULL DEFAULT 0,
+  "new_count" integer NOT NULL DEFAULT 0,
+  "updated_count" integer NOT NULL DEFAULT 0,
+  "unchanged_count" integer NOT NULL DEFAULT 0,
+  "conflict_count" integer NOT NULL DEFAULT 0,
+  "exception_count" integer NOT NULL DEFAULT 0,
+  "blocker_count" integer NOT NULL DEFAULT 0,
+  "reminder_count" integer NOT NULL DEFAULT 0,
+  "information_count" integer NOT NULL DEFAULT 0,
+  "mapping_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "unknown_fields_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "validation_summary_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "operator_label" text NOT NULL,
+  "request_id" text,
+  "revision" integer NOT NULL DEFAULT 1,
+  "error_code" text,
+  "error_summary" text,
+  "created_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  "applied_at" timestamptz,
+  "cancelled_at" timestamptz,
+  "unmatched_count" integer NOT NULL DEFAULT 0,
+  "will_write_count" integer NOT NULL DEFAULT 0,
+  PRIMARY KEY ("id"),
+  CHECK (status IN ('uploaded', 'validating', 'preview_ready', 'applying', 'applied', 'validation_failed', 'apply_failed', 'cancelled')),
+  CHECK (row_count >= 0),
+  CHECK (new_count >= 0),
+  CHECK (updated_count >= 0),
+  CHECK (unchanged_count >= 0),
+  CHECK (conflict_count >= 0),
+  CHECK (exception_count >= 0),
+  CHECK (blocker_count >= 0),
+  CHECK (reminder_count >= 0),
+  CHECK (information_count >= 0),
+  CHECK (revision >= 1),
+  CHECK (unmatched_count >= 0),
+  CHECK (will_write_count >= 0)
+);
+
+CREATE TABLE "app"."product_import_field_changes" (
+  "id" uuid,
+  "import_batch_id" uuid NOT NULL,
+  "import_row_id" uuid NOT NULL,
+  "product_package_row_id" uuid,
+  "source_row_number" integer NOT NULL,
+  "country_raw" text,
+  "sku_code" text,
+  "warehouse_raw" text,
+  "chinese_name" text,
+  "source_header" text NOT NULL,
+  "field_name" text NOT NULL,
+  "old_value_json" jsonb,
+  "new_value_json" jsonb,
+  "old_type" text,
+  "new_type" text,
+  "has_manual_override" integer NOT NULL DEFAULT 0,
+  "changed_at" timestamptz NOT NULL,
+  "created_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  PRIMARY KEY ("id"),
+  CHECK (source_row_number >= 2),
+  CHECK (has_manual_override IN (0, 1))
+);
+
+CREATE TABLE "app"."product_import_files" (
+  "id" uuid,
+  "batch_id" uuid NOT NULL,
+  "export_file_id" uuid NOT NULL,
+  "file_role" text NOT NULL DEFAULT 'source',
+  "created_at" timestamptz NOT NULL,
+  PRIMARY KEY ("id"),
+  UNIQUE ("export_file_id"),
+  UNIQUE ("batch_id", "file_role"),
+  CHECK (file_role IN ('source', 'error_report', 'diff_export'))
+);
+
+CREATE TABLE "app"."product_import_issues" (
+  "id" uuid,
+  "batch_id" uuid NOT NULL,
+  "row_id" uuid,
+  "source_row_number" integer,
+  "issue_code" text NOT NULL,
+  "severity" text NOT NULL,
+  "field_code" text,
+  "current_value_json" jsonb,
+  "suggested_value_json" jsonb,
+  "message" text NOT NULL,
+  "suggestion" text,
+  "status" text NOT NULL DEFAULT 'open',
+  "created_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  PRIMARY KEY ("id"),
+  CHECK (severity IN ('blocker', 'reminder', 'information')),
+  CHECK (status IN ('open', 'acknowledged', 'resolved', 'ignored'))
+);
+
+CREATE TABLE "app"."product_import_rows" (
+  "id" uuid,
+  "batch_id" uuid NOT NULL,
+  "source_row_number" integer NOT NULL,
+  "source_sku" text,
+  "row_sha256" text NOT NULL,
+  "raw_payload_json" jsonb NOT NULL,
+  "normalized_payload_json" jsonb NOT NULL,
+  "validation_codes_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "outcome" text NOT NULL,
+  "target_sku_id" uuid,
+  "applied_at" timestamptz,
+  "created_at" timestamptz NOT NULL,
+  "source_country_raw" text,
+  "product_key" text,
+  "product_sha256" text,
+  "source_warehouse_raw" text,
+  "source_row_key" text,
+  "row_occurrence" integer NOT NULL DEFAULT 1,
+  "raw_types_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "package_row_id" uuid,
+  PRIMARY KEY ("id"),
+  UNIQUE ("batch_id", "source_row_number"),
+  CHECK (source_row_number >= 2),
+  CHECK (outcome IN ('new', 'updated', 'unchanged', 'conflict', 'exception')),
+  CHECK (row_occurrence >= 1)
+);
+
+CREATE TABLE "app"."product_inventory_snapshots" (
+  "id" uuid,
+  "sku_id" uuid NOT NULL,
+  "batch_id" uuid NOT NULL,
+  "warehouse_raw" text NOT NULL,
+  "warehouse_stock" numeric,
+  "planned_warehouse_raw" text,
+  "captured_at" timestamptz NOT NULL,
+  PRIMARY KEY ("id"),
+  UNIQUE ("sku_id", "batch_id", "warehouse_raw")
+);
+
+CREATE TABLE "app"."product_listing_drafts" (
+  "id" uuid,
+  "product_sku_id" uuid NOT NULL,
+  "country" text NOT NULL,
+  "sku" text NOT NULL,
+  "platform" text NOT NULL,
+  "shop_id" text,
+  "shop_key" text NOT NULL,
+  "shop_name" text,
+  "marketplace" text,
+  "platform_category_id" text,
+  "platform_category_name" text,
+  "listing_mode" text NOT NULL DEFAULT 'standard',
+  "title" text,
+  "subtitle" text,
+  "description" text,
+  "search_keywords_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "brand" text,
+  "model" text,
+  "target_users" text,
+  "content_language" text NOT NULL DEFAULT '中文',
+  "selling_points_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "usage_scenarios_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "platform_attributes_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "variants_json" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "pricing_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "media_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "logistics_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "compliance_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "status" text NOT NULL DEFAULT 'draft',
+  "validation_result_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "revision" integer NOT NULL DEFAULT 1,
+  "created_by" text NOT NULL,
+  "updated_by" text NOT NULL,
+  "created_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  "deleted_at" timestamptz,
+  PRIMARY KEY ("id"),
+  CHECK (platform IN ('shopee', 'lazada', 'tiktok_shop')),
+  CHECK (status IN ('draft', 'ready', 'publishing', 'published', 'failed', 'archived')),
+  CHECK (revision >= 1)
+);
+
+CREATE TABLE "app"."product_listing_publish_records" (
+  "id" uuid,
+  "listing_draft_id" uuid NOT NULL,
+  "platform" text NOT NULL,
+  "shop_id" text,
+  "request_payload_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "response_payload_json" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "platform_product_id" text,
+  "platform_listing_id" text,
+  "publish_status" text NOT NULL,
+  "error_code" text,
+  "error_message" text,
+  "published_at" timestamptz,
+  "created_at" timestamptz NOT NULL,
+  PRIMARY KEY ("id"),
+  CHECK (publish_status IN ('pending', 'publishing', 'published', 'failed', 'cancelled'))
+);
+
+CREATE TABLE "app"."product_models" (
+  "id" uuid,
+  "source_system" text NOT NULL,
+  "source_main_sku" text NOT NULL,
+  "category_id" uuid NOT NULL,
+  "canonical_name" text,
+  "identity_status" text NOT NULL DEFAULT 'confirmed',
+  "first_seen_batch_id" uuid NOT NULL,
+  "last_seen_batch_id" uuid NOT NULL,
+  "revision" integer NOT NULL DEFAULT 1,
+  "created_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  "inactive_at" timestamptz,
+  PRIMARY KEY ("id"),
+  UNIQUE ("source_system", "source_main_sku"),
+  CHECK (identity_status IN ('confirmed', 'review_required', 'inactive')),
+  CHECK (revision >= 1)
+);
+
+CREATE TABLE "app"."product_package_rows" (
+  "id" uuid,
+  "source_system" text NOT NULL DEFAULT 'company_product_center',
+  "source_row_key" text NOT NULL,
+  "product_key" text NOT NULL,
+  "country_normalized" text NOT NULL,
+  "sku_normalized" text NOT NULL,
+  "warehouse_normalized" text NOT NULL,
+  "row_occurrence" integer NOT NULL,
+  "source_row_sha256" text NOT NULL,
+  "semantic_row_sha256" text NOT NULL,
+  "raw_payload_json" jsonb NOT NULL,
+  "raw_types_json" jsonb NOT NULL,
+  "normalized_payload_json" jsonb NOT NULL,
+  "raw_source_period_json" jsonb,
+  "raw_sku_code_json" jsonb,
+  "raw_product_name_json" jsonb,
+  "raw_main_sku_code_json" jsonb,
+  "raw_country_raw_json" jsonb,
+  "raw_category_l1_json" jsonb,
+  "raw_category_l2_json" jsonb,
+  "raw_source_created_date_json" jsonb,
+  "raw_new_product_month_json" jsonb,
+  "raw_new_product_age_months_json" jsonb,
+  "raw_gift_raw_json" jsonb,
+  "raw_source_status_json" jsonb,
+  "raw_style_code_json" jsonb,
+  "raw_style_name_json" jsonb,
+  "raw_sales_spec_json" jsonb,
+  "raw_item_dimensions_raw_json" jsonb,
+  "raw_item_net_weight_g_json" jsonb,
+  "raw_item_gross_weight_g_json" jsonb,
+  "raw_carton_length_cm_json" jsonb,
+  "raw_carton_width_cm_json" jsonb,
+  "raw_carton_height_cm_json" jsonb,
+  "raw_carton_quantity_json" jsonb,
+  "raw_shipping_method_json" jsonb,
+  "raw_warehouse_raw_json" jsonb,
+  "raw_warehouse_stock_json" jsonb,
+  "raw_planned_warehouse_raw_json" jsonb,
+  "raw_cost_cny_json" jsonb,
+  "raw_exchange_rate_json" jsonb,
+  "raw_cost_local_json" jsonb,
+  "raw_price_tier_20_json" jsonb,
+  "raw_price_tier_25_json" jsonb,
+  "raw_price_tier_35_json" jsonb,
+  "raw_price_tier_45_json" jsonb,
+  "raw_attach_rate_json" jsonb,
+  "raw_forecast_daily_sales_json" jsonb,
+  "import_batch_id" uuid NOT NULL,
+  "source_row_number" integer NOT NULL,
+  "first_seen_batch_id" uuid NOT NULL,
+  "latest_batch_id" uuid NOT NULL,
+  "latest_import_row_id" uuid NOT NULL,
+  "latest_source_row_number" integer NOT NULL,
+  "revision" integer NOT NULL DEFAULT 1,
+  "created_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  PRIMARY KEY ("id"),
+  UNIQUE ("source_system", "source_row_key"),
+  CHECK (row_occurrence >= 1),
+  CHECK (source_row_number >= 2),
+  CHECK (latest_source_row_number >= 2),
+  CHECK (revision >= 1)
+);
+
+CREATE TABLE "app"."product_packaging_profiles" (
+  "sku_id" uuid,
+  "source_row_id" uuid NOT NULL,
+  "item_dimensions_raw" text,
+  "item_net_weight_g" numeric,
+  "item_gross_weight_g" numeric,
+  "carton_length_cm" numeric,
+  "carton_width_cm" numeric,
+  "carton_height_cm" numeric,
+  "carton_quantity" integer,
+  "shipping_method" text,
+  "updated_at" timestamptz NOT NULL,
+  PRIMARY KEY ("sku_id")
+);
+
+CREATE TABLE "app"."product_sku_lifecycle" (
+  "sku_id" uuid,
+  "status_code" text NOT NULL,
+  "revision" integer NOT NULL DEFAULT 1,
+  "decision_source" text NOT NULL,
+  "source_status_raw" text,
+  "source_batch_id" uuid NOT NULL,
+  "reason_code" text NOT NULL,
+  "operator_label" text NOT NULL,
+  "request_id" text,
+  "effective_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  PRIMARY KEY ("sku_id"),
+  CHECK (status_code IN ('ACTIVE', 'NEW', 'CLEARANCE', 'DISCONTINUED', 'ARCHIVED')),
+  CHECK (revision >= 1),
+  CHECK (decision_source IN ('central', 'manual', 'rule'))
+);
+
+CREATE TABLE "app"."product_sku_lifecycle_events" (
+  "id" uuid,
+  "sku_id" uuid NOT NULL,
+  "from_status_code" text,
+  "to_status_code" text NOT NULL,
+  "decision_source" text NOT NULL,
+  "source_batch_id" uuid NOT NULL,
+  "reason_code" text NOT NULL,
+  "operator_label" text NOT NULL,
+  "request_id" text,
+  "occurred_at" timestamptz NOT NULL,
+  PRIMARY KEY ("id"),
+  CHECK (to_status_code IN ('ACTIVE', 'NEW', 'CLEARANCE', 'DISCONTINUED', 'ARCHIVED')),
+  CHECK (decision_source IN ('central', 'manual', 'rule'))
+);
+
+CREATE TABLE "app"."product_skus" (
+  "id" uuid,
+  "source_system" text NOT NULL,
+  "source_sku" text NOT NULL,
+  "normalized_sku" text NOT NULL,
+  "category_id" uuid NOT NULL,
+  "model_id" uuid,
+  "source_product_name" text NOT NULL,
+  "source_main_sku" text,
+  "source_style_code" text,
+  "source_style_name" text,
+  "source_sales_spec" text,
+  "source_status_raw" text NOT NULL,
+  "current_source_row_id" uuid NOT NULL,
+  "first_seen_batch_id" uuid NOT NULL,
+  "last_seen_batch_id" uuid NOT NULL,
+  "revision" integer NOT NULL DEFAULT 1,
+  "created_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL,
+  "archived_at" timestamptz,
+  "country_raw" text NOT NULL DEFAULT '',
+  "sku_code_normalized" text NOT NULL DEFAULT '',
+  "deleted_at" timestamptz,
+  "deleted_by" text,
+  "delete_reason" text,
+  "restored_at" timestamptz,
+  "restored_by" text,
+  PRIMARY KEY ("id"),
+  UNIQUE ("source_system", "normalized_sku"),
+  CHECK (revision >= 1)
 );
 
 CREATE TABLE "app"."scheduled_export_run_events" (
@@ -354,6 +854,84 @@ ALTER TABLE "app"."managed_files" ADD CONSTRAINT "fk_managed_files_1" FOREIGN KE
 
 ALTER TABLE "app"."managed_files" ADD CONSTRAINT "fk_managed_files_2" FOREIGN KEY ("lifecycle_item_id") REFERENCES "app"."file_lifecycle_items" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
 
+ALTER TABLE "app"."product_ai_contents" ADD CONSTRAINT "fk_product_ai_contents_1" FOREIGN KEY ("product_sku_id") REFERENCES "app"."product_skus" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_categories" ADD CONSTRAINT "fk_product_categories_1" FOREIGN KEY ("last_seen_batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_categories" ADD CONSTRAINT "fk_product_categories_2" FOREIGN KEY ("first_seen_batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_categories" ADD CONSTRAINT "fk_product_categories_3" FOREIGN KEY ("parent_id") REFERENCES "app"."product_categories" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_cost_snapshots" ADD CONSTRAINT "fk_product_cost_snapshots_1" FOREIGN KEY ("batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_cost_snapshots" ADD CONSTRAINT "fk_product_cost_snapshots_2" FOREIGN KEY ("sku_id") REFERENCES "app"."product_skus" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_field_override_events" ADD CONSTRAINT "fk_product_field_override_events_1" FOREIGN KEY ("sku_id") REFERENCES "app"."product_skus" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_field_overrides" ADD CONSTRAINT "fk_product_field_overrides_1" FOREIGN KEY ("sku_id") REFERENCES "app"."product_skus" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_images" ADD CONSTRAINT "fk_product_images_1" FOREIGN KEY ("sku_id") REFERENCES "app"."product_skus" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_import_field_changes" ADD CONSTRAINT "fk_product_import_field_changes_1" FOREIGN KEY ("product_package_row_id") REFERENCES "app"."product_package_rows" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_import_field_changes" ADD CONSTRAINT "fk_product_import_field_changes_2" FOREIGN KEY ("import_row_id") REFERENCES "app"."product_import_rows" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_import_field_changes" ADD CONSTRAINT "fk_product_import_field_changes_3" FOREIGN KEY ("import_batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_import_files" ADD CONSTRAINT "fk_product_import_files_1" FOREIGN KEY ("export_file_id") REFERENCES "app"."export_files" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_import_files" ADD CONSTRAINT "fk_product_import_files_2" FOREIGN KEY ("batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_import_issues" ADD CONSTRAINT "fk_product_import_issues_1" FOREIGN KEY ("row_id") REFERENCES "app"."product_import_rows" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_import_issues" ADD CONSTRAINT "fk_product_import_issues_2" FOREIGN KEY ("batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_import_rows" ADD CONSTRAINT "fk_product_import_rows_1" FOREIGN KEY ("batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_inventory_snapshots" ADD CONSTRAINT "fk_product_inventory_snapshots_1" FOREIGN KEY ("batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_inventory_snapshots" ADD CONSTRAINT "fk_product_inventory_snapshots_2" FOREIGN KEY ("sku_id") REFERENCES "app"."product_skus" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_listing_drafts" ADD CONSTRAINT "fk_product_listing_drafts_1" FOREIGN KEY ("product_sku_id") REFERENCES "app"."product_skus" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_listing_publish_records" ADD CONSTRAINT "fk_product_listing_publish_records_1" FOREIGN KEY ("listing_draft_id") REFERENCES "app"."product_listing_drafts" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_models" ADD CONSTRAINT "fk_product_models_1" FOREIGN KEY ("last_seen_batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_models" ADD CONSTRAINT "fk_product_models_2" FOREIGN KEY ("first_seen_batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_models" ADD CONSTRAINT "fk_product_models_3" FOREIGN KEY ("category_id") REFERENCES "app"."product_categories" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_package_rows" ADD CONSTRAINT "fk_product_package_rows_1" FOREIGN KEY ("latest_import_row_id") REFERENCES "app"."product_import_rows" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_package_rows" ADD CONSTRAINT "fk_product_package_rows_2" FOREIGN KEY ("latest_batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_package_rows" ADD CONSTRAINT "fk_product_package_rows_3" FOREIGN KEY ("import_batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_package_rows" ADD CONSTRAINT "fk_product_package_rows_4" FOREIGN KEY ("first_seen_batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_packaging_profiles" ADD CONSTRAINT "fk_product_packaging_profiles_1" FOREIGN KEY ("source_row_id") REFERENCES "app"."product_import_rows" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_packaging_profiles" ADD CONSTRAINT "fk_product_packaging_profiles_2" FOREIGN KEY ("sku_id") REFERENCES "app"."product_skus" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_sku_lifecycle" ADD CONSTRAINT "fk_product_sku_lifecycle_1" FOREIGN KEY ("source_batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_sku_lifecycle" ADD CONSTRAINT "fk_product_sku_lifecycle_2" FOREIGN KEY ("sku_id") REFERENCES "app"."product_skus" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_sku_lifecycle_events" ADD CONSTRAINT "fk_product_sku_lifecycle_events_1" FOREIGN KEY ("source_batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_sku_lifecycle_events" ADD CONSTRAINT "fk_product_sku_lifecycle_events_2" FOREIGN KEY ("sku_id") REFERENCES "app"."product_skus" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_skus" ADD CONSTRAINT "fk_product_skus_1" FOREIGN KEY ("last_seen_batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_skus" ADD CONSTRAINT "fk_product_skus_2" FOREIGN KEY ("first_seen_batch_id") REFERENCES "app"."product_import_batches" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_skus" ADD CONSTRAINT "fk_product_skus_3" FOREIGN KEY ("current_source_row_id") REFERENCES "app"."product_import_rows" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
+ALTER TABLE "app"."product_skus" ADD CONSTRAINT "fk_product_skus_4" FOREIGN KEY ("model_id") REFERENCES "app"."product_models" ("id") ON UPDATE NO ACTION ON DELETE SET NULL;
+
+ALTER TABLE "app"."product_skus" ADD CONSTRAINT "fk_product_skus_5" FOREIGN KEY ("category_id") REFERENCES "app"."product_categories" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT;
+
 ALTER TABLE "app"."scheduled_export_run_events" ADD CONSTRAINT "fk_scheduled_export_run_events_1" FOREIGN KEY ("run_id") REFERENCES "app"."scheduled_export_runs" ("id") ON UPDATE NO ACTION ON DELETE CASCADE;
 
 ALTER TABLE "app"."scheduled_export_runs" ADD CONSTRAINT "fk_scheduled_export_runs_1" FOREIGN KEY ("task_id") REFERENCES "app"."scheduled_export_tasks" ("id") ON UPDATE NO ACTION ON DELETE CASCADE;
@@ -401,6 +979,68 @@ CREATE INDEX "idx_operation_audit_action" ON "app"."operation_audit_events" ("ac
 CREATE INDEX "idx_operation_audit_module" ON "app"."operation_audit_events" ("module", "occurred_at" DESC);
 
 CREATE INDEX "idx_operation_audit_occurred_at" ON "app"."operation_audit_events" ("occurred_at" DESC);
+
+CREATE INDEX "idx_product_ai_contents_country_sku" ON "app"."product_ai_contents" ("country", "sku", "status", "updated_at" DESC);
+
+CREATE INDEX "idx_product_ai_contents_product_status" ON "app"."product_ai_contents" ("product_sku_id", "content_type", "status", "version" DESC);
+
+CREATE INDEX "idx_product_categories_parent" ON "app"."product_categories" ("parent_id", "status", "normalized_name");
+
+CREATE INDEX "idx_product_cost_snapshots_sku" ON "app"."product_cost_snapshots" ("sku_id", "created_at" DESC);
+
+CREATE INDEX "idx_product_override_events_sku" ON "app"."product_field_override_events" ("sku_id", "occurred_at" DESC);
+
+CREATE INDEX "idx_product_field_overrides_active" ON "app"."product_field_overrides" ("sku_id", "deleted_at", "field_code");
+
+CREATE INDEX "idx_product_images_sku" ON "app"."product_images" ("sku_id", "status", "is_primary" DESC, "sort_order", "created_at");
+
+CREATE INDEX "idx_product_import_batches_status_created" ON "app"."product_import_batches" ("status", "created_at" DESC);
+
+CREATE UNIQUE INDEX "idx_product_import_batches_file" ON "app"."product_import_batches" ("source_system", "file_sha256");
+
+CREATE INDEX "idx_product_import_field_changes_filter" ON "app"."product_import_field_changes" ("import_batch_id", "country_raw", "sku_code", "field_name");
+
+CREATE INDEX "idx_product_import_field_changes_batch" ON "app"."product_import_field_changes" ("import_batch_id", "source_row_number", "field_name");
+
+CREATE INDEX "idx_product_import_issues_batch" ON "app"."product_import_issues" ("batch_id", "severity", "status", "source_row_number");
+
+CREATE INDEX "idx_product_import_rows_source_identity" ON "app"."product_import_rows" ("batch_id", "source_row_key", "source_row_number");
+
+CREATE INDEX "idx_product_import_rows_product_key" ON "app"."product_import_rows" ("product_key", "batch_id");
+
+CREATE INDEX "idx_product_import_rows_source_sku" ON "app"."product_import_rows" ("source_sku");
+
+CREATE INDEX "idx_product_import_rows_batch_outcome" ON "app"."product_import_rows" ("batch_id", "outcome", "source_row_number");
+
+CREATE INDEX "idx_product_inventory_snapshots_sku" ON "app"."product_inventory_snapshots" ("sku_id", "captured_at" DESC);
+
+CREATE INDEX "idx_product_listing_drafts_target" ON "app"."product_listing_drafts" ("platform", "country", "shop_key", "status");
+
+CREATE INDEX "idx_product_listing_drafts_product" ON "app"."product_listing_drafts" ("product_sku_id", "status", "updated_at" DESC);
+
+CREATE UNIQUE INDEX "uq_product_listing_drafts_active_target" ON "app"."product_listing_drafts" ("product_sku_id", "platform", "country", "shop_key") WHERE deleted_at IS NULL;
+
+CREATE INDEX "idx_product_listing_publish_records_draft" ON "app"."product_listing_publish_records" ("listing_draft_id", "created_at" DESC);
+
+CREATE INDEX "idx_product_package_rows_latest_batch" ON "app"."product_package_rows" ("latest_batch_id", "latest_source_row_number");
+
+CREATE INDEX "idx_product_package_rows_product" ON "app"."product_package_rows" ("country_normalized", "sku_normalized", "warehouse_normalized", "row_occurrence");
+
+CREATE INDEX "idx_product_sku_lifecycle_status" ON "app"."product_sku_lifecycle" ("status_code", "updated_at" DESC);
+
+CREATE INDEX "idx_product_lifecycle_events_sku" ON "app"."product_sku_lifecycle_events" ("sku_id", "occurred_at" DESC);
+
+CREATE INDEX "idx_product_skus_deleted" ON "app"."product_skus" ("deleted_at", "country_raw", "sku_code_normalized");
+
+CREATE INDEX "idx_product_skus_sku_code" ON "app"."product_skus" ("sku_code_normalized", "country_raw");
+
+CREATE UNIQUE INDEX "idx_product_skus_country_sku" ON "app"."product_skus" ("source_system", "country_raw", "sku_code_normalized");
+
+CREATE INDEX "idx_product_skus_name" ON "app"."product_skus" ("source_product_name");
+
+CREATE INDEX "idx_product_skus_category" ON "app"."product_skus" ("category_id", "archived_at");
+
+CREATE INDEX "idx_product_skus_model" ON "app"."product_skus" ("model_id", "archived_at");
 
 CREATE INDEX "idx_run_events_run" ON "app"."scheduled_export_run_events" ("run_id", "id");
 

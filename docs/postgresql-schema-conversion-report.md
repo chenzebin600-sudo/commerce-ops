@@ -5,13 +5,13 @@ Date: 2026-07-20
 ## Source
 
 - SQLite version: 3.51.2
-- Consistent snapshot size: 520192 bytes
+- Consistent snapshot size: 260440064 bytes
 - Snapshot integrity: ok
-- Tables: 15
-- Columns: 222
-- Rows: 636
-- Raw SQLite indexes: 45
-- Foreign keys: 14
+- Tables: 36
+- Columns: 579
+- Rows: 167307
+- Raw SQLite indexes: 108
+- Foreign keys: 53
 
 ## Type conversion rules
 
@@ -33,7 +33,7 @@ Date: 2026-07-20
 - SQLite CHECK expressions are preserved; boolean 0/1 checks are translated to false/true.
 - Foreign-key actions (RESTRICT, CASCADE, SET NULL, NO ACTION) are preserved.
 - Explicit and partial indexes are recreated after data loading.
-- Expected PostgreSQL indexes: 47. SQLite reports 45; the difference is PostgreSQL physical PK indexes for two former rowid identity tables.
+- Expected PostgreSQL indexes: 110. SQLite reports 108; the difference is PostgreSQL physical PK indexes for two former rowid identity tables.
 
 ## Per-table conversion
 
@@ -48,7 +48,28 @@ Date: 2026-07-20
 | `mabang_account_profiles` | 10 | boolean:1, text:5, timestamp:3, uuid:1 | 0 | 0 | 0 |
 | `mabang_filter_option_cache` | 11 | identity:1, text:8, timestamp:1, uuid:1 | 0 | 1 | 0 |
 | `managed_files` | 16 | bigint:1, json:1, text:6, timestamp:4, uuid:4 | 2 | 2 | 5 |
-| `operation_audit_events` | 21 | integer:2, json:1, text:11, timestamp:2, uuid:5 | 4 | 0 | 0 |
+| `operation_audit_events` | 21 | integer:2, json:1, text:12, timestamp:2, uuid:4 | 4 | 0 | 0 |
+| `product_ai_contents` | 19 | integer:1, json:2, text:10, timestamp:4, uuid:2 | 2 | 1 | 2 |
+| `product_categories` | 13 | integer:1, text:5, timestamp:3, uuid:4 | 1 | 3 | 2 |
+| `product_cost_snapshots` | 14 | numeric:8, text:2, timestamp:1, uuid:3 | 1 | 2 | 1 |
+| `product_detail_preferences` | 7 | integer:1, json:1, text:3, timestamp:2 | 0 | 0 | 1 |
+| `product_field_override_events` | 8 | json:2, text:3, timestamp:1, uuid:2 | 1 | 1 | 0 |
+| `product_field_overrides` | 9 | integer:1, json:1, text:3, timestamp:3, uuid:1 | 1 | 1 | 1 |
+| `product_images` | 16 | bigint:1, integer:2, text:8, timestamp:3, uuid:2 | 1 | 1 | 4 |
+| `product_import_batches` | 30 | integer:12, json:3, text:10, timestamp:4, uuid:1 | 2 | 0 | 13 |
+| `product_import_field_changes` | 19 | integer:2, json:2, text:8, timestamp:3, uuid:4 | 2 | 3 | 2 |
+| `product_import_files` | 5 | text:1, timestamp:1, uuid:3 | 0 | 2 | 1 |
+| `product_import_issues` | 14 | integer:1, json:2, text:6, timestamp:2, uuid:3 | 1 | 2 | 2 |
+| `product_import_rows` | 20 | integer:2, json:4, text:8, timestamp:2, uuid:4 | 4 | 1 | 3 |
+| `product_inventory_snapshots` | 7 | numeric:1, text:2, timestamp:1, uuid:3 | 1 | 2 | 0 |
+| `product_listing_drafts` | 36 | integer:1, json:10, text:20, timestamp:3, uuid:2 | 3 | 1 | 3 |
+| `product_listing_publish_records` | 13 | json:2, text:7, timestamp:2, uuid:2 | 1 | 1 | 1 |
+| `product_models` | 12 | integer:1, text:4, timestamp:3, uuid:4 | 0 | 3 | 2 |
+| `product_package_rows` | 57 | integer:4, json:38, text:8, timestamp:2, uuid:5 | 2 | 4 | 4 |
+| `product_packaging_profiles` | 11 | integer:1, numeric:5, text:2, timestamp:1, uuid:2 | 0 | 2 | 0 |
+| `product_sku_lifecycle` | 11 | integer:1, text:6, timestamp:2, uuid:2 | 1 | 2 | 3 |
+| `product_sku_lifecycle_events` | 10 | text:6, timestamp:1, uuid:3 | 1 | 2 | 2 |
+| `product_skus` | 26 | integer:1, text:14, timestamp:5, uuid:6 | 6 | 5 | 1 |
 | `scheduled_export_run_events` | 11 | identity:1, integer:2, text:4, timestamp:3, uuid:1 | 1 | 1 | 0 |
 | `scheduled_export_runs` | 21 | date:2, integer:4, json:1, text:6, timestamp:5, uuid:3 | 2 | 1 | 0 |
 | `scheduled_export_tasks` | 24 | boolean:3, integer:1, json:3, text:9, timestamp:5, uuid:3 | 2 | 2 | 2 |
