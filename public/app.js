@@ -6,7 +6,7 @@ import {
 } from "./auth-client.mjs";
 import { createAdFrameBridge } from "./ad-frame-bridge.mjs";
 import { createAuditPage } from "./audit-page.mjs";
-import { createProductCenterPage } from "./product-center-page.mjs";
+import { createProductCenterPage } from "./product-center-page.mjs?v=20260721-ui-delete-ai-1";
 import { createExcelHtmlRenderer } from "/excel-cell-policy.mjs";
 
 let currentReport = null;

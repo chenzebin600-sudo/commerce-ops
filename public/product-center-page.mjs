@@ -40,6 +40,8 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     loaded: false,
     issuePage: 1,
     issueTotalPages: 1,
+    reminderPage: 1,
+    reminderTotalPages: 1,
     changePage: 1,
     changeTotalPages: 1,
     rowPage: 1,
@@ -51,8 +53,17 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     productFields: [],
     visibleProductFields: [],
     currentProduct: null,
+    pendingDeleteProduct: null,
+    capabilities: {},
+    aiStatus: { configured: false },
+    aiGenerated: null,
+    aiAbortController: null,
     imageObjectUrls: new Set(),
   };
+
+  function can(permission) {
+    return Boolean(state.capabilities?.[permission]);
+  }
 
   function setView(view) {
     state.activeView = new Set(["catalog", "upload", "history"]).has(view) ? view : "catalog";
@@ -77,6 +88,16 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       </tr>`).join("")}</tbody></table>` : '<p class="product-empty">暂无字段映射。</p>';
   }
 
+  function issueTable(issues) {
+    return issues.length ? `<table class="product-center-table">
+      <thead><tr><th>级别</th><th>行号</th><th>问题</th><th>建议</th></tr></thead>
+      <tbody>${issues.map((item) => `<tr>
+        <td><span class="product-severity ${esc(item.severity)}">${esc({ blocker: "阻断", reminder: "提醒", information: "信息" }[item.severity])}</span></td>
+        <td>${esc(item.sourceRowNumber || "批次")}</td><td><strong>${esc(item.message)}</strong><small>${esc(item.code)}</small></td>
+        <td>${esc(item.suggestion || "-")}</td>
+      </tr>`).join("")}</tbody></table>` : '<p class="product-empty">未发现相关数据质量问题。</p>';
+  }
+
   function renderIssues(result) {
     const issues = result?.issues || [];
     state.issuePage = Number(result?.page || 1);
@@ -84,13 +105,17 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     byId("productIssuesPrevBtn").disabled = state.issuePage <= 1;
     byId("productIssuesNextBtn").disabled = state.issuePage >= state.issueTotalPages;
     byId("productIssuesPageStatus").textContent = `第 ${state.issuePage} / ${state.issueTotalPages} 页 · ${Number(result?.total || 0)} 项`;
-    byId("productIssueTable").innerHTML = issues.length ? `<table class="product-center-table">
-      <thead><tr><th>级别</th><th>行号</th><th>问题</th><th>建议</th></tr></thead>
-      <tbody>${issues.map((item) => `<tr>
-        <td><span class="product-severity ${esc(item.severity)}">${esc({ blocker: "阻断", reminder: "提醒", information: "信息" }[item.severity])}</span></td>
-        <td>${esc(item.sourceRowNumber || "批次")}</td><td><strong>${esc(item.message)}</strong><small>${esc(item.code)}</small></td>
-        <td>${esc(item.suggestion || "-")}</td>
-      </tr>`).join("")}</tbody></table>` : '<p class="product-empty">未发现数据质量问题。</p>';
+    byId("productIssueTable").innerHTML = issueTable(issues);
+  }
+
+  function renderReminders(result) {
+    const issues = result?.issues || [];
+    state.reminderPage = Number(result?.page || 1);
+    state.reminderTotalPages = Math.max(1, Number(result?.totalPages || 1));
+    byId("productRemindersPrevBtn").disabled = state.reminderPage <= 1;
+    byId("productRemindersNextBtn").disabled = state.reminderPage >= state.reminderTotalPages;
+    byId("productRemindersPageStatus").textContent = `第 ${state.reminderPage} / ${state.reminderTotalPages} 页 · ${Number(result?.total || 0)} 项`;
+    byId("productReminderTable").innerHTML = issueTable(issues);
   }
 
   function formatSourceValue(value) {
@@ -146,16 +171,32 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     }
     panel.hidden = false;
     byId("productBatchTitle").textContent = `批次 ${batch.id.slice(0, 8)}`;
-    byId("productBatchMeta").textContent = `${STATUS_LABELS[batch.status] || batch.status} · ${formatDate(batch.createdAt)} · 文件 ${batch.fileHashShort || "-"}`;
+    byId("productBatchMeta").textContent = `${STATUS_LABELS[batch.status] || batch.status} · ${formatDate(batch.createdAt)}`;
     const values = [
-      ["源行", batch.validationSummary?.sourceRowCount ?? batch.rowCount], ["计划写入", batch.willWriteCount], ["新增", batch.newCount], ["变化", batch.updatedCount],
-      ["无变化", batch.unchangedCount], ["未匹配", batch.unmatchedCount], ["阻断", batch.blockerCount], ["信息", batch.informationCount],
+      ["文件名称", detail.file?.sourceFilename || "-"], ["工作表", batch.validationSummary?.sheetName || "-"],
+      ["源数据总行数", batch.validationSummary?.sourceRowCount ?? batch.rowCount], ["可导入行数", batch.willWriteCount],
+      ["新增", batch.newCount], ["更新", batch.updatedCount], ["无变化", batch.unchangedCount],
+      ["字段变化", batch.validationSummary?.fieldChangeCount ?? detail.changes?.total ?? 0],
+      ["信息提醒", Number(batch.reminderCount || 0) + Number(batch.informationCount || 0)], ["阻断", batch.blockerCount],
+      ["文件 SHA-256", batch.fileSha256 || batch.fileHashShort || "-"],
+      ["解析耗时", batch.validationSummary?.parseDurationMs == null ? "-" : `${formatNumber(batch.validationSummary.parseDurationMs)} ms`],
     ];
     byId("productBatchSummary").innerHTML = values.map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
     renderMapping(batch.mapping);
     renderChanges(detail.changes);
-    renderIssues(detail.issues);
     renderRows(detail.rows);
+    byId("productChangesCount").textContent = `${batch.validationSummary?.fieldChangeCount ?? detail.changes?.total ?? 0} 项`;
+    byId("productBlockerCount").textContent = `${batch.blockerCount || 0} 项`;
+    byId("productReminderCount").textContent = `${Number(batch.reminderCount || 0) + Number(batch.informationCount || 0)} 项`;
+    byId("productBlockerDetails").hidden = Number(batch.blockerCount || 0) === 0;
+    byId("productBlockerDetails").open = Number(batch.blockerCount || 0) > 0;
+    byId("productChangesDetails").open = false;
+    byId("productReminderDetails").open = false;
+    byId("productTechnicalDetails").open = false;
+    byId("productImportDecision").className = `product-import-decision ${batch.blockerCount > 0 ? "blocked" : "ready"}`;
+    byId("productImportDecision").innerHTML = batch.blockerCount > 0
+      ? `<strong>暂时无法导入</strong><span>发现 ${esc(batch.blockerCount)} 个阻断问题，请展开错误明细处理。</span>`
+      : "<strong>可以导入</strong><span>未发现阻断问题；请核对摘要和字段变化后确认。</span>";
     const confirmArea = byId("productImportConfirmation");
     confirmArea.hidden = batch.status !== "preview_ready";
     const applyButton = byId("applyProductImportBtn");
@@ -168,14 +209,23 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
   async function loadDetail(batchId) {
     const data = await responseJson(await authorizedFetch(`/api/product-center/imports/${encodeURIComponent(batchId)}`));
     renderDetail(data.detail);
+    if (data.detail?.batch?.blockerCount) await loadIssuePage(1);
+    if (Number(data.detail?.batch?.reminderCount || 0) + Number(data.detail?.batch?.informationCount || 0)) await loadReminderPage(1);
     setView("upload");
   }
 
   async function loadIssuePage(page) {
     const batchId = state.activeDetail?.batch?.id;
     if (!batchId) return;
-    const data = await responseJson(await authorizedFetch(`/api/product-center/imports/${encodeURIComponent(batchId)}/issues?page=${page}&page_size=100`));
+    const data = await responseJson(await authorizedFetch(`/api/product-center/imports/${encodeURIComponent(batchId)}/issues?page=${page}&page_size=100&severity=blocker`));
     renderIssues(data);
+  }
+
+  async function loadReminderPage(page) {
+    const batchId = state.activeDetail?.batch?.id;
+    if (!batchId) return;
+    const data = await responseJson(await authorizedFetch(`/api/product-center/imports/${encodeURIComponent(batchId)}/issues?page=${page}&page_size=100&severity=non_blocking`));
+    renderReminders(data);
   }
 
   async function loadChangePage(page = 1) {
@@ -233,6 +283,16 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     state.catalogFiltersLoaded = true;
   }
 
+  async function loadCapabilities() {
+    const [capabilities, aiStatus] = await Promise.all([
+      responseJson(await authorizedFetch("/api/product-center/capabilities")),
+      responseJson(await authorizedFetch("/api/product-center/ai/status")),
+    ]);
+    state.capabilities = capabilities.permissions || {};
+    state.aiStatus = aiStatus;
+    byId("productDeletedFilterField").hidden = !can("product.restore");
+  }
+
   function catalogQuery() {
     const params = new URLSearchParams({
       page: String(state.catalogPage),
@@ -245,6 +305,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       ["category_l1", byId("productCatalogCategoryL1").value],
       ["lifecycle_status", byId("productCatalogLifecycle").value],
       ["country", byId("productCatalogCountry").value],
+      ["deleted", byId("productCatalogDeleted").value],
     ];
     fields.forEach(([key, value]) => { if (value) params.set(key, value); });
     return params;
@@ -273,9 +334,14 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
         <td><strong>${esc(product.sku)}</strong><small class="product-name-cell">${esc(product.productName)}</small></td>
         <td><strong>${esc(product.country)}</strong><small>${esc(product.mainSku || "无主 SKU")}</small></td>
         <td><strong>${esc([product.categoryL1, product.categoryL2].filter(Boolean).join(" / "))}</strong><small>${esc(product.salesSpec)}</small></td>
-        <td><span class="product-status lifecycle-${esc(String(product.lifecycleStatus || "unknown").toLowerCase())}">${esc(LIFECYCLE_LABELS[product.lifecycleStatus] || product.sourceStatus)}</span><small>${product.operationalEligible ? "运营池" : "仅历史查询"}</small></td>
+        <td><span class="product-status ${product.deletedAt ? "deleted" : `lifecycle-${esc(String(product.lifecycleStatus || "unknown").toLowerCase())}`}">${product.deletedAt ? "已删除" : esc(LIFECYCLE_LABELS[product.lifecycleStatus] || product.sourceStatus)}</span><small>${product.deletedAt ? esc(formatDate(product.deletedAt)) : product.operationalEligible ? "运营池" : "仅历史查询"}</small></td>
         <td>${esc(formatDate(product.updatedAt))}<small>${esc(product.sourcePeriod || "-")}</small></td>
-        <td><div class="table-actions"><button class="button-tertiary" type="button" data-product-id="${esc(product.id)}">详情</button><button class="button-tertiary" type="button" data-product-edit-id="${esc(product.id)}">编辑</button></div></td>
+        <td><div class="table-actions">
+          ${can("product.view") ? `<button class="button-tertiary" type="button" data-product-id="${esc(product.id)}">详情</button>` : ""}
+          ${can("product.edit") && !product.deletedAt ? `<button class="button-tertiary" type="button" data-product-edit-id="${esc(product.id)}">编辑</button>` : ""}
+          ${can("product.delete") && !product.deletedAt ? `<button class="button-danger-text" type="button" data-product-delete-id="${esc(product.id)}">删除</button>` : ""}
+          ${can("product.restore") && product.deletedAt ? `<button class="button-tertiary" type="button" data-product-restore-id="${esc(product.id)}">恢复</button>` : ""}
+        </div></td>
       </tr>`).join("")}</tbody></table>` : '<p class="product-empty">没有符合条件的产品。导入并入库产品包后会显示在这里。</p>';
     hydrateImages(byId("productCatalogTable"));
   }
@@ -297,6 +363,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
 
   async function loadCatalog({ resetPage = false } = {}) {
     if (resetPage) state.catalogPage = 1;
+    if (!Object.keys(state.capabilities).length) await loadCapabilities();
     await loadCatalogFilters();
     const data = await responseJson(await authorizedFetch(`/api/product-center/products?${catalogQuery()}`));
     renderCatalog(data);
@@ -331,6 +398,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     state.visibleProductFields = product.visibleFields || state.visibleProductFields;
     byId("productDrawerTitle").textContent = product.productName || product.sku;
     byId("productDrawerMeta").textContent = `${product.country || "-"} · ${product.sku} · ${LIFECYCLE_LABELS[product.lifecycleStatus] || product.sourceStatus}`;
+    byId("editProductBtn").hidden = !can("product.edit") || Boolean(product.deletedAt);
     const visible = new Set(state.visibleProductFields);
     const sections = [...groupedFields(state.productFields.filter((field) => visible.has(field.code))).entries()].map(([label, fields]) => `
       <section><h3>${esc(label)}</h3><div class="product-drawer-grid">${fields.map((field) => `<div>
@@ -339,6 +407,9 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       </div>`).join("")}</div></section>`).join("");
     byId("productDrawerContent").innerHTML = `${sections}
       <section><h3>产品图片</h3>${renderProductImages(product)}</section>
+      <section><h3>仓库明细</h3>${product.inventories?.length ? `<div class="product-inventory-list">${product.inventories.map((item) => `<div><strong>${esc(item.warehouse)}</strong><span>库存 ${esc(formatNumber(item.stock))}</span><small>${esc(item.plannedWarehouse || "无计划仓")}</small></div>`).join("")}</div>` : '<p class="product-empty">暂无仓库记录。</p>'}</section>
+      <section><h3>人工修改记录</h3>${product.overrideEvents?.length ? `<div class="product-change-history">${product.overrideEvents.map((event) => `<div><strong>${esc(event.fieldCode)}</strong><span>原值：${esc(displayFieldValue(event.previousValue))}</span><span>人工值：${esc(displayFieldValue(event.nextValue))}</span><small>${esc(event.operatorLabel)} · ${esc(formatDate(event.occurredAt))}</small></div>`).join("")}</div>` : '<p class="product-empty">暂无人工修改。</p>'}</section>
+      <section><h3>已确认 AI 内容</h3>${renderConfirmedAiContent(product.confirmedAiContent)}</section>
       <section><h3>来源与记录</h3><div class="product-drawer-grid">
         <div><span>来源文件</span><strong>${esc(product.sourceFilename)}</strong></div>
         <div><span>来源行</span><strong>${esc(product.sourceRowNumber)}</strong></div>
@@ -346,8 +417,21 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
         <div><span>更新时间</span><strong>${esc(formatDate(product.updatedAt))}</strong></div>
         <div><span>运营池</span><strong>${product.operationalEligible ? "可进入" : "仅历史查询"}</strong></div>
         <div><span>人工变更</span><strong>${esc(product.overrideEvents?.length || 0)} 条</strong></div>
+        <div><span>删除状态</span><strong>${product.deletedAt ? `已删除 · ${esc(formatDate(product.deletedAt))}` : "正常"}</strong></div>
       </div></section>`;
     hydrateImages(byId("productDrawerContent"));
+  }
+
+  function renderConfirmedAiContent(content) {
+    const value = content?.outputContent;
+    if (!value) return '<p class="product-empty">暂无已确认的 AI 内容。</p>';
+    return `<div class="product-ai-readonly">
+      <p>${esc(value.product_summary)}</p>
+      <h4>核心卖点</h4><ul>${(value.selling_points || []).map((item) => `<li><strong>${esc(item.title)}</strong> ${esc(item.description)}<small>依据：${esc(item.source_field)}</small></li>`).join("")}</ul>
+      <h4>使用场景</h4><ul>${(value.usage_scenarios || []).map((item) => `<li><strong>${esc(item.scene)}</strong> ${esc(item.user)} · ${esc(item.benefit)}</li>`).join("")}</ul>
+      ${(value.risk_notes || []).length ? `<h4>待确认</h4><ul>${value.risk_notes.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}
+      <small>版本 ${esc(content.version)} · ${esc(content.model)} · ${esc(formatDate(content.confirmedAt))}</small>
+    </div>`;
   }
 
   async function fetchProduct(id) {
@@ -387,12 +471,28 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     state.currentProduct = product;
     byId("productEditTitle").textContent = `编辑 ${product.sku}`;
     const editableFields = (product.fields || []).filter((field) => field.editable);
-    byId("productEditFields").innerHTML = editableFields.map((field) => `<label class="field-block">
-      <span>${esc(field.label)} <small class="product-field-source">人工维护</small></span>
-      <input name="${esc(field.code)}" data-field-type="${esc(field.type)}" value="${esc(product.fieldValues?.[field.code] ?? "")}" ${field.type === "number" || field.type === "integer" ? 'inputmode="decimal"' : ""} />
-    </label>`).join("");
+    byId("productEditFields").innerHTML = editableFields.map((field) => {
+      const hasOverride = product.manualOverrides && Object.hasOwn(product.manualOverrides, field.code);
+      const current = product.fieldValues?.[field.code] ?? "";
+      return `<div class="product-override-field"><label class="field-block">
+        <span>${esc(field.label)} <small class="product-field-source">${hasOverride ? "人工维护" : "中台来源"}</small></span>
+        <input name="${esc(field.code)}" data-field-type="${esc(field.type)}" data-initial-value="${esc(current)}" value="${esc(current)}" ${field.type === "number" || field.type === "integer" ? 'inputmode="decimal"' : ""} />
+        <small>中台原值：${esc(displayFieldValue(product.sourceFieldValues?.[field.code]))}</small>
+      </label>${hasOverride ? `<label class="product-clear-override"><input type="checkbox" data-clear-override="${esc(field.code)}" /> 清除人工覆盖，恢复中台值</label>` : ""}</div>`;
+    }).join("");
     byId("productImageList").innerHTML = renderProductImages(product, { editable: true });
     hydrateImages(byId("productImageList"));
+    byId("productAiCountry").value = product.country || "";
+    state.aiGenerated = product.confirmedAiContent ? {
+      outputContent: product.confirmedAiContent.outputContent,
+      inputContext: product.confirmedAiContent.inputContext,
+      provider: product.confirmedAiContent.provider,
+      model: product.confirmedAiContent.model,
+      promptVersion: product.confirmedAiContent.promptVersion,
+    } : null;
+    renderAiConfiguration();
+    renderAiEditor(state.aiGenerated?.outputContent || null);
+    switchEditTab("info");
   }
 
   async function openProductEditor(id = state.currentProduct?.id) {
@@ -407,9 +507,14 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     const product = state.currentProduct;
     if (!product) return;
     const fields = {};
-    for (const input of byId("productEditFields").querySelectorAll("[name]")) fields[input.name] = input.value.trim() || null;
+    const clearFields = [...byId("productEditFields").querySelectorAll("[data-clear-override]:checked")].map((input) => input.dataset.clearOverride);
+    for (const input of byId("productEditFields").querySelectorAll("[name]")) {
+      if (clearFields.includes(input.name)) continue;
+      if (input.value !== input.dataset.initialValue) fields[input.name] = input.value.trim() || null;
+    }
+    if (!Object.keys(fields).length && !clearFields.length) return onStatus("没有需要保存的产品信息修改。", "error");
     await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(product.id)}`, {
-      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ fields }),
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ fields, clearFields }),
     }));
     byId("productEditDialog").close();
     await openProductDetail(product.id);
@@ -447,6 +552,219 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     renderEditDialog(await fetchProduct(product.id));
     await loadCatalog();
     onStatus("图片已从产品展示中移除。", "success");
+  }
+
+  function switchEditTab(tab) {
+    const selected = new Set(["info", "images", "ai"]).has(tab) ? tab : "info";
+    documentObject.querySelectorAll("[data-product-edit-tab]").forEach((button) => button.classList.toggle("active", button.dataset.productEditTab === selected));
+    byId("productEditInfoPanel").hidden = selected !== "info";
+    byId("productEditImagesPanel").hidden = selected !== "images";
+    byId("productEditAiPanel").hidden = selected !== "ai";
+    byId("saveProductEditBtn").hidden = selected !== "info";
+  }
+
+  function renderAiConfiguration() {
+    const configured = Boolean(state.aiStatus.configured);
+    byId("productAiConfigurationNotice").className = `product-ai-notice ${configured ? "configured" : "unconfigured"}`;
+    byId("productAiConfigurationNotice").textContent = configured
+      ? `DeepSeek 已配置 · ${state.aiStatus.model || "deepseek-v4"} · ${state.aiStatus.promptVersion || "-"}`
+      : "尚未配置 DeepSeek API Key，请联系管理员完成配置。";
+    byId("generateProductAiBtn").disabled = !configured || !can("product.ai.generate");
+    byId("showProductAiHistoryBtn").hidden = !can("product.ai.view_history");
+  }
+
+  function aiListEditor(title, listName, items, keys) {
+    return `<section><h3>${esc(title)}</h3><div class="product-ai-items">${(items || []).map((item, index) => `<div class="product-ai-item">
+      ${keys.map(([key, label]) => `<label><span>${esc(label)}</span><textarea rows="2" data-ai-list="${esc(listName)}" data-ai-index="${index}" data-ai-key="${esc(key)}">${esc(item?.[key] || "")}</textarea></label>`).join("")}
+      <button class="button-tertiary" type="button" data-copy-ai-item="${esc(listName)}" data-copy-ai-index="${index}">复制本条</button>
+    </div>`).join("")}</div></section>`;
+  }
+
+  function renderAiEditor(content) {
+    const root = byId("productAiResult");
+    const actions = byId("productAiSaveActions");
+    if (!content) {
+      root.innerHTML = '<p class="product-empty">尚未生成内容。生成结果只保存在当前页面，点击保存草稿或确认采用后才会写入数据库。</p>';
+      actions.hidden = true;
+      byId("copyProductAiBtn").disabled = true;
+      return;
+    }
+    root.innerHTML = `<label class="field-block"><span>产品一句话总结</span><textarea id="productAiSummary" rows="2">${esc(content.product_summary)}</textarea></label>
+      <div class="product-ai-simple-lists">
+        <label class="field-block"><span>目标用户（每行一项）</span><textarea id="productAiTargetUsersResult" rows="4">${esc((content.target_users || []).join("\n"))}</textarea></label>
+        <label class="field-block"><span>用户痛点（每行一项）</span><textarea id="productAiPainPointsResult" rows="4">${esc((content.user_pain_points || []).join("\n"))}</textarea></label>
+      </div>
+      ${aiListEditor("核心卖点", "selling_points", content.selling_points, [["title", "标题"], ["description", "说明"], ["source_field", "事实依据"]])}
+      ${aiListEditor("使用场景", "usage_scenarios", content.usage_scenarios, [["scene", "场景"], ["user", "适用人群"], ["benefit", "场景价值"]])}
+      ${aiListEditor("特征与收益", "feature_benefit_map", content.feature_benefit_map, [["feature", "产品特征"], ["benefit", "用户收益"]])}
+      <label class="field-block"><span>风险与待确认项（每行一项）</span><textarea id="productAiRiskNotes" rows="4">${esc((content.risk_notes || []).join("\n"))}</textarea></label>`;
+    actions.hidden = false;
+    byId("confirmProductAiBtn").hidden = !can("product.ai.confirm");
+    byId("saveProductAiDraftBtn").hidden = !can("product.ai.generate");
+    byId("copyProductAiBtn").disabled = false;
+    byId("generateProductAiBtn").textContent = "重新生成";
+  }
+
+  function lines(id) {
+    return byId(id).value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+  }
+
+  function collectAiContent() {
+    const grouped = { selling_points: [], usage_scenarios: [], feature_benefit_map: [] };
+    for (const input of byId("productAiResult").querySelectorAll("[data-ai-list]")) {
+      const list = grouped[input.dataset.aiList];
+      const index = Number(input.dataset.aiIndex);
+      list[index] ||= {};
+      list[index][input.dataset.aiKey] = input.value.trim();
+    }
+    return {
+      product_summary: byId("productAiSummary").value.trim(),
+      target_users: lines("productAiTargetUsersResult"),
+      user_pain_points: lines("productAiPainPointsResult"),
+      selling_points: grouped.selling_points,
+      usage_scenarios: grouped.usage_scenarios,
+      feature_benefit_map: grouped.feature_benefit_map,
+      risk_notes: lines("productAiRiskNotes"),
+    };
+  }
+
+  function aiRequestOptions() {
+    return {
+      targetPlatform: byId("productAiPlatform").value,
+      targetCountry: byId("productAiCountry").value.trim(),
+      outputLanguage: byId("productAiLanguage").value,
+      targetUsers: byId("productAiTargetUsers").value.trim(),
+      productPositioning: byId("productAiPositioning").value.trim(),
+      contentStyle: byId("productAiStyle").value.trim(),
+      sellingPointCount: Number(byId("productAiSellingPointCount").value),
+      scenarioCount: Number(byId("productAiScenarioCount").value),
+      specialRequirements: byId("productAiSpecialRequirements").value.trim(),
+      forbiddenContent: byId("productAiForbiddenContent").value.trim(),
+    };
+  }
+
+  async function generateProductAi() {
+    if (!state.currentProduct || !state.aiStatus.configured) return;
+    const button = byId("generateProductAiBtn");
+    const previous = state.aiGenerated;
+    state.aiAbortController = new AbortController();
+    button.disabled = true;
+    button.textContent = "正在生成…";
+    byId("cancelProductAiBtn").hidden = false;
+    try {
+      const data = await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(state.currentProduct.id)}/ai/generate`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(aiRequestOptions()), signal: state.aiAbortController.signal,
+      }));
+      state.aiGenerated = data.result;
+      renderAiEditor(data.result.outputContent);
+      onStatus("AI 内容已生成，尚未保存。", "success");
+    } catch (error) {
+      state.aiGenerated = previous;
+      if (error?.name !== "AbortError") onStatus(error.message, "error");
+    } finally {
+      state.aiAbortController = null;
+      button.disabled = !state.aiStatus.configured || !can("product.ai.generate");
+      button.textContent = state.aiGenerated ? "重新生成" : "生成内容";
+      byId("cancelProductAiBtn").hidden = true;
+    }
+  }
+
+  async function saveProductAi(status) {
+    const product = state.currentProduct;
+    if (!product || !state.aiGenerated) return;
+    const outputContent = collectAiContent();
+    const data = await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(product.id)}/ai/contents`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+        ...state.aiGenerated, outputContent, status,
+      }),
+    }));
+    state.aiGenerated = { ...state.aiGenerated, outputContent };
+    if (status === "confirmed") state.currentProduct.confirmedAiContent = data.content;
+    onStatus(status === "confirmed" ? "AI 内容已确认采用。" : "AI 内容草稿已保存。", "success");
+  }
+
+  function aiContentText(content) {
+    return [content.product_summary,
+      "\n目标用户\n" + (content.target_users || []).join("\n"),
+      "\n用户痛点\n" + (content.user_pain_points || []).join("\n"),
+      "\n核心卖点\n" + (content.selling_points || []).map((item) => `${item.title}：${item.description}（依据：${item.source_field}）`).join("\n"),
+      "\n使用场景\n" + (content.usage_scenarios || []).map((item) => `${item.scene}：${item.user}，${item.benefit}`).join("\n"),
+      "\n风险提示\n" + (content.risk_notes || []).join("\n")].join("\n");
+  }
+
+  async function copyText(value) {
+    const clipboard = documentObject.defaultView?.navigator?.clipboard;
+    if (clipboard?.writeText) await clipboard.writeText(value);
+    else {
+      const textarea = documentObject.createElement("textarea");
+      textarea.value = value;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      documentObject.body.append(textarea);
+      textarea.select();
+      documentObject.execCommand("copy");
+      textarea.remove();
+    }
+    onStatus("内容已复制。", "success");
+  }
+
+  async function showAiHistory() {
+    const product = state.currentProduct;
+    if (!product) return;
+    const data = await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(product.id)}/ai/contents?page=1&page_size=100`));
+    byId("productAiHistoryList").innerHTML = data.contents?.length ? data.contents.map((content) => `<article>
+      <header><strong>版本 ${esc(content.version)}</strong><span class="product-status ${esc(content.status)}">${esc({ draft: "草稿", confirmed: "已采用", archived: "历史" }[content.status] || content.status)}</span></header>
+      <p>${esc(content.outputContent?.product_summary)}</p><small>${esc(content.model)} · ${esc(content.promptVersion)} · ${esc(formatDate(content.createdAt))}</small>
+      ${content.status === "draft" && can("product.ai.confirm") ? `<button type="button" data-confirm-ai-version="${esc(content.id)}">确认采用此版本</button>` : ""}
+    </article>`).join("") : '<p class="product-empty">暂无 AI 内容历史。</p>';
+    byId("productAiHistoryDialog").showModal();
+  }
+
+  async function confirmAiVersion(contentId) {
+    const product = state.currentProduct;
+    const data = await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(product.id)}/ai/contents/${encodeURIComponent(contentId)}/confirm`, { method: "POST" }));
+    state.currentProduct.confirmedAiContent = data.content;
+    await showAiHistory();
+    onStatus("历史草稿已确认采用。", "success");
+  }
+
+  function renderDeleteSummary(product) {
+    const warehouseCount = new Set((product.inventories || []).map((item) => item.warehouse).filter(Boolean)).size;
+    byId("productDeleteSummary").innerHTML = `<dl>
+      <div><dt>中文名称</dt><dd>${esc(product.productName)}</dd></div><div><dt>SKU</dt><dd>${esc(product.sku)}</dd></div>
+      <div><dt>国家</dt><dd>${esc(product.country)}</dd></div><div><dt>一级品类</dt><dd>${esc(product.categoryL1)}</dd></div>
+      <div><dt>二级品类</dt><dd>${esc(product.categoryL2)}</dd></div><div><dt>关联仓库</dt><dd>${warehouseCount} 个</dd></div>
+      <div><dt>关联图片</dt><dd>${esc(product.images?.length || 0)} 张</dd></div><div><dt>人工修改</dt><dd>${product.manualOverrideCount || Object.keys(product.manualOverrides || {}).length ? "有" : "无"}</dd></div>
+      <div><dt>AI 生成内容</dt><dd>${product.aiContentCount || product.confirmedAiContent ? "有" : "无"}</dd></div>
+    </dl><p>删除后，该产品将不再出现在正常产品查询结果中。历史产品包导入数据和导入批次记录不会被删除。</p>`;
+  }
+
+  async function openDeleteDialog(productId) {
+    const product = await fetchProduct(productId);
+    state.pendingDeleteProduct = product;
+    byId("productDeleteReason").value = "";
+    renderDeleteSummary(product);
+    byId("productDeleteDialog").showModal();
+  }
+
+  async function deleteProduct(event) {
+    event.preventDefault();
+    const product = state.pendingDeleteProduct;
+    if (!product) return;
+    await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(product.id)}`, {
+      method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: byId("productDeleteReason").value.trim() }),
+    }));
+    byId("productDeleteDialog").close();
+    state.pendingDeleteProduct = null;
+    await loadCatalog();
+    onStatus(`已删除 ${product.country} · ${product.sku}，历史记录仍保留。`, "success");
+  }
+
+  async function restoreProduct(productId) {
+    await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(productId)}/restore`, { method: "POST" }));
+    await loadCatalog();
+    onStatus("产品已恢复。", "success");
   }
 
   async function apply() {
@@ -493,6 +811,8 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       });
       const data = await responseJson(response);
       renderDetail(data.detail);
+      if (data.detail?.batch?.blockerCount) await loadIssuePage(1);
+      if (Number(data.detail?.batch?.reminderCount || 0) + Number(data.detail?.batch?.informationCount || 0)) await loadReminderPage(1);
       await loadHistory();
       const message = data.revalidated ? "原批次已按最新规则重新校验。" : data.reused ? "该文件已存在，已打开原导入批次。" : "产品包解析完成，已生成逐行差异预览。";
       onStatus(data.detail?.batch?.blockerCount ? `${message} 请先处理真实阻断问题。` : `${message} 请确认后入库。`, data.detail?.batch?.blockerCount ? "error" : "success");
@@ -514,6 +834,8 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       const response = await authorizedFetch(`/api/product-center/imports/${encodeURIComponent(batch.id)}/revalidate`, { method: "POST" });
       const data = await responseJson(response);
       renderDetail(data.detail);
+      if (data.detail?.batch?.blockerCount) await loadIssuePage(1);
+      if (Number(data.detail?.batch?.reminderCount || 0) + Number(data.detail?.batch?.informationCount || 0)) await loadReminderPage(1);
       onStatus(data.detail.batch.blockerCount ? "重新校验完成，仍有真实阻断问题。" : "重新校验完成，请检查差异后确认入库。", data.detail.batch.blockerCount ? "error" : "success");
       await loadHistory();
     } catch (error) {
@@ -535,6 +857,8 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     });
     byId("productIssuesPrevBtn").addEventListener("click", () => loadIssuePage(state.issuePage - 1).catch((error) => onStatus(error.message, "error")));
     byId("productIssuesNextBtn").addEventListener("click", () => loadIssuePage(state.issuePage + 1).catch((error) => onStatus(error.message, "error")));
+    byId("productRemindersPrevBtn").addEventListener("click", () => loadReminderPage(state.reminderPage - 1).catch((error) => onStatus(error.message, "error")));
+    byId("productRemindersNextBtn").addEventListener("click", () => loadReminderPage(state.reminderPage + 1).catch((error) => onStatus(error.message, "error")));
     byId("productChangesPrevBtn").addEventListener("click", () => loadChangePage(state.changePage - 1).catch((error) => onStatus(error.message, "error")));
     byId("productChangesNextBtn").addEventListener("click", () => loadChangePage(state.changePage + 1).catch((error) => onStatus(error.message, "error")));
     byId("productChangeFilters").addEventListener("submit", (event) => {
@@ -568,6 +892,16 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       loadCatalog().catch((error) => onStatus(error.message, "error"));
     });
     byId("productCatalogTable").addEventListener("click", (event) => {
+      const deleteButton = event.target.closest("[data-product-delete-id]");
+      if (deleteButton) {
+        openDeleteDialog(deleteButton.dataset.productDeleteId).catch((error) => onStatus(error.message, "error"));
+        return;
+      }
+      const restoreButton = event.target.closest("[data-product-restore-id]");
+      if (restoreButton) {
+        restoreProduct(restoreButton.dataset.productRestoreId).catch((error) => onStatus(error.message, "error"));
+        return;
+      }
       const editButton = event.target.closest("[data-product-edit-id]");
       if (editButton) {
         openProductEditor(editButton.dataset.productEditId).catch((error) => onStatus(error.message, "error"));
@@ -580,12 +914,32 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     byId("editProductBtn").addEventListener("click", () => openProductEditor().catch((error) => onStatus(error.message, "error")));
     byId("productDetailFieldsForm").addEventListener("submit", (event) => saveFieldSettings(event).catch((error) => onStatus(error.message, "error")));
     byId("productEditForm").addEventListener("submit", (event) => saveProductEdit(event).catch((error) => onStatus(error.message, "error")));
+    documentObject.querySelectorAll("[data-product-edit-tab]").forEach((button) => button.addEventListener("click", () => switchEditTab(button.dataset.productEditTab)));
     byId("uploadProductImagesBtn").addEventListener("click", () => uploadProductImages().catch((error) => onStatus(error.message, "error")));
     byId("productImageList").addEventListener("click", (event) => {
       const button = event.target.closest("[data-delete-product-image]");
       if (button) deleteProductImage(button.dataset.deleteProductImage).catch((error) => onStatus(error.message, "error"));
     });
     byId("closeProductDrawerBtn").addEventListener("click", () => byId("productCatalogDrawer").close());
+    byId("productDeleteForm").addEventListener("submit", (event) => deleteProduct(event).catch((error) => onStatus(error.message, "error")));
+    byId("generateProductAiBtn").addEventListener("click", () => generateProductAi().catch((error) => onStatus(error.message, "error")));
+    byId("cancelProductAiBtn").addEventListener("click", () => state.aiAbortController?.abort());
+    byId("saveProductAiDraftBtn").addEventListener("click", () => saveProductAi("draft").catch((error) => onStatus(error.message, "error")));
+    byId("confirmProductAiBtn").addEventListener("click", () => saveProductAi("confirmed").catch((error) => onStatus(error.message, "error")));
+    byId("copyProductAiBtn").addEventListener("click", () => copyText(aiContentText(collectAiContent())).catch((error) => onStatus(error.message, "error")));
+    byId("showProductAiHistoryBtn").addEventListener("click", () => showAiHistory().catch((error) => onStatus(error.message, "error")));
+    byId("closeProductAiHistoryBtn").addEventListener("click", () => byId("productAiHistoryDialog").close());
+    byId("productAiHistoryList").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-confirm-ai-version]");
+      if (button) confirmAiVersion(button.dataset.confirmAiVersion).catch((error) => onStatus(error.message, "error"));
+    });
+    byId("productAiResult").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-copy-ai-item]");
+      if (!button) return;
+      const content = collectAiContent();
+      const item = content[button.dataset.copyAiItem]?.[Number(button.dataset.copyAiIndex)];
+      copyText(Object.values(item || {}).join("\n")).catch((error) => onStatus(error.message, "error"));
+    });
   }
 
   return Object.freeze({ initialize, load: () => loadCatalog(), loadDetail, setView, state });

@@ -14,7 +14,7 @@ test("product center exposes upload, history, mapping, quality and confirmation 
     "productDetailFieldsDialog", "productEditDialog", "productImageFiles", "configureProductFieldsBtn", "editProductBtn",
   ]) assert.match(html, new RegExp(`id=["']${id}["']`));
   assert.match(html, /国家 \+ SKU \+ 仓库 \+ 出现序号/);
-  assert.match(html, /字段差异预览/);
+  assert.match(html, /字段变化明细/);
 });
 
 test("product center uses the authenticated current-origin API and never stores access tokens", async () => {

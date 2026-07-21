@@ -43,6 +43,7 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 | `product_field_override_events` | 0 | product change history | `id` | SKU `RESTRICT`; immutable manual-edit trail |
 | `product_detail_preferences` | 0 | product view configuration | `scope_key` | one global visible-field definition per scope |
 | `product_images` | 0 | product image metadata | `id` | SKU `RESTRICT`; unique safe relative path, physical bytes remain in file storage |
+| `product_ai_contents` | 0 | confirmed/draft product AI content versions | `id` | SKU `RESTRICT`; unique product, content type and version |
 
 ## Type conversion details
 
@@ -50,7 +51,7 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 
 Convert `at_mobiles_json`, `schedule_config_json`, `payment_date_config_json`, `filters_json`, `log_summary_json`, `metadata_json`, `scopes_json`, `summary_json`, `scope_errors_json`, `categories_json`, product import payload JSON, mapping JSON, validation JSON and issue value JSON to `jsonb`. Validate every source value with `json_valid` before export. Replace the current `LIKE` lookup against `export_files.metadata_json` with a JSONB containment predicate and an expression/index chosen from real query plans.
 
-Product field override values and detail-field preferences are also JSON text and must become `jsonb`. Product identity is now the normalized pair `country_raw + sku_code_normalized`; PostgreSQL must preserve the corresponding composite uniqueness instead of reverting to a globally unique raw SKU.
+Product field override values, detail-field preferences, and product AI input/output documents are also JSON text and must become `jsonb`. Product identity is now the normalized pair `country_raw + sku_code_normalized`; PostgreSQL must preserve the corresponding composite uniqueness instead of reverting to a globally unique raw SKU. Product soft-delete columns on `product_skus` remain nullable timestamps and bounded actor/reason text.
 
 ### Date and timezone
 
@@ -109,7 +110,7 @@ During dual-write, disable PostgreSQL writes and continue from SQLite. After cut
 
 ## Data not yet persisted as formal facts
 
-The current database does **not** contain normalized Mabang orders, order items, inventory snapshots, competitor snapshots, keyword search results, normalized advertising metrics, or AI analysis results. Those require separately reviewed schemas after PostgreSQL is stable. Existing Excel, browser extraction, and in-memory responses must not be presented as if these facts were already joined or historically queryable.
+The current database does **not** contain normalized Mabang orders, order items, operational inventory snapshots, competitor snapshots, keyword search results, or normalized advertising metrics. Product AI content versions are now persisted in `product_ai_contents`; other AI analysis results remain outside the formal business schema. Existing Excel, browser extraction, and in-memory responses must not be presented as if these facts were already joined or historically queryable.
 
 ## F0 entry criteria
 

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="Lazada、Shopee、TikTok Shop 竞品分析、关键词研究、订单采集与广告分析工作台" />
     <title>跨境电商 AI 运营工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260715-mabang-inventory-scheduler-1" />
+    <link rel="stylesheet" href="/styles.css?v=20260721-product-center-ui-ai-1" />
   </head>
   <body>
     <section id="authGate" class="auth-gate" aria-labelledby="authTitle" hidden>
@@ -252,6 +252,10 @@
                   <span>国家</span>
                   <select id="productCatalogCountry"><option value="">全部国家</option></select>
                 </label>
+                <label id="productDeletedFilterField" class="field-block" hidden>
+                  <span>记录状态</span>
+                  <select id="productCatalogDeleted"><option value="active">正常产品</option><option value="deleted">已删除产品</option><option value="all">全部产品</option></select>
+                </label>
                 <button type="submit">查询</button>
                 <button id="resetProductCatalogBtn" class="button-tertiary" type="button">重置</button>
               </form>
@@ -291,13 +295,12 @@
                   </div>
                 </div>
                 <div id="productBatchSummary" class="product-summary-grid"></div>
+                <div id="productImportDecision" class="product-import-decision"></div>
 
-                <div class="product-detail-section">
-                  <div class="section-title-row compact"><div><h3>字段映射</h3><p>未知字段不会静默丢弃，确认后仅应用已映射字段。</p></div></div>
-                  <div id="productFieldMappingTable" class="table-wrap product-table-wrap"></div>
-                </div>
-                <div class="product-detail-section">
-                  <div class="section-title-row compact"><div><h3>字段差异预览</h3><p>只比较本次源文件与数据库中上一版源数据；人工覆盖值不会参与比较或被覆盖。</p></div></div>
+                <details id="productChangesDetails" class="product-detail-disclosure">
+                  <summary>查看字段变化 <span id="productChangesCount"></span></summary>
+                  <div class="product-detail-section">
+                  <div class="section-title-row compact"><div><h3>字段变化明细</h3><p>只比较本次源文件与数据库中上一版源数据；人工覆盖值不会参与比较或被覆盖。</p></div></div>
                   <form id="productChangeFilters" class="product-change-filters">
                     <label class="field-block"><span>国家</span><input id="productChangeCountryFilter" type="search" placeholder="例如 马来" /></label>
                     <label class="field-block"><span>SKU</span><input id="productChangeSkuFilter" type="search" placeholder="完整 SKU" /></label>
@@ -311,25 +314,47 @@
                     <span id="productChangesPageStatus">第 1 / 1 页</span>
                     <button id="productChangesNextBtn" class="button-tertiary" type="button">下一页</button>
                   </div>
-                </div>
-                <div class="product-detail-section">
-                  <div class="section-title-row compact"><div><h3>数据质量报告</h3><p>只有文件不可读、必需表头缺失或国家/SKU 为空会阻断；业务字段差异只作信息提示。</p></div></div>
+                  </div>
+                </details>
+                <details id="productBlockerDetails" class="product-detail-disclosure danger" hidden>
+                  <summary>查看阻断错误 <span id="productBlockerCount"></span></summary>
+                  <div class="product-detail-section">
+                  <div class="section-title-row compact"><div><h3>阻断错误</h3><p>必须处理后才能确认导入。</p></div></div>
                   <div id="productIssueTable" class="table-wrap product-table-wrap"></div>
                   <div class="product-detail-pager" aria-label="数据质量报告分页">
                     <button id="productIssuesPrevBtn" class="button-tertiary" type="button">上一页</button>
                     <span id="productIssuesPageStatus">第 1 / 1 页</span>
                     <button id="productIssuesNextBtn" class="button-tertiary" type="button">下一页</button>
                   </div>
-                </div>
-                <div class="product-detail-section">
-                  <div class="section-title-row compact"><div><h3>解析结果</h3><p>每页展示 100 行；原始字段仍完整保存在批次证据中。</p></div></div>
+                  </div>
+                </details>
+                <details id="productReminderDetails" class="product-detail-disclosure">
+                  <summary>查看提醒明细 <span id="productReminderCount"></span></summary>
+                  <div class="product-detail-section">
+                    <div id="productReminderTable" class="table-wrap product-table-wrap"></div>
+                    <div class="product-detail-pager" aria-label="提醒明细分页">
+                      <button id="productRemindersPrevBtn" class="button-tertiary" type="button">上一页</button>
+                      <span id="productRemindersPageStatus">第 1 / 1 页</span>
+                      <button id="productRemindersNextBtn" class="button-tertiary" type="button">下一页</button>
+                    </div>
+                  </div>
+                </details>
+                <details id="productTechnicalDetails" class="product-detail-disclosure technical">
+                  <summary>查看技术信息</summary>
+                  <div class="product-detail-section">
+                    <div class="section-title-row compact"><div><h3>字段映射</h3><p>未知字段不会静默丢弃，确认后仅应用已映射字段。</p></div></div>
+                    <div id="productFieldMappingTable" class="table-wrap product-table-wrap"></div>
+                  </div>
+                  <div class="product-detail-section">
+                  <div class="section-title-row compact"><div><h3>逐行解析记录</h3><p>每页展示 100 行；原始字段、类型与标准化值仍完整保存在批次证据中。</p></div></div>
                   <div id="productImportRowsTable" class="table-wrap product-table-wrap"></div>
                   <div class="product-detail-pager" aria-label="解析结果分页">
                     <button id="productRowsPrevBtn" class="button-tertiary" type="button">上一页</button>
                     <span id="productRowsPageStatus">第 1 / 1 页</span>
                     <button id="productRowsNextBtn" class="button-tertiary" type="button">下一页</button>
                   </div>
-                </div>
+                  </div>
+                </details>
                 <div id="productImportConfirmation" class="product-confirmation" hidden>
                   <div><strong>确认后将以单个数据库事务写入全部可写源行。</strong><span>人工覆盖、人工图片和历史批次不会被删除。</span></div>
                   <button id="applyProductImportBtn" type="button">确认正式入库</button>
@@ -371,14 +396,63 @@
           <dialog id="productEditDialog" class="product-center-dialog product-edit-dialog">
             <form id="productEditForm" method="dialog" class="product-dialog-shell">
               <header><div><h2 id="productEditTitle">编辑产品</h2><p>人工修改单独留痕，不覆盖公司中台事实字段。</p></div><button class="icon-text-button" value="cancel" aria-label="关闭">×</button></header>
-              <div id="productEditFields" class="product-edit-fields"></div>
-              <section class="product-image-editor">
+              <div class="product-edit-tabs" role="tablist" aria-label="产品编辑区域">
+                <button class="product-edit-tab active" type="button" data-product-edit-tab="info">产品信息</button>
+                <button class="product-edit-tab" type="button" data-product-edit-tab="images">产品图片</button>
+                <button class="product-edit-tab" type="button" data-product-edit-tab="ai">AI卖点与场景</button>
+              </div>
+              <section id="productEditInfoPanel" class="product-edit-panel">
+                <div id="productEditFields" class="product-edit-fields"></div>
+              </section>
+              <section id="productEditImagesPanel" class="product-edit-panel product-image-editor" hidden>
                 <div class="section-title-row compact"><div><h3>产品图片</h3><p>支持 JPG、PNG、WebP，单张不超过 10MB。</p></div></div>
                 <div class="product-image-upload-row"><input id="productImageFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple /><button id="uploadProductImagesBtn" class="button-tertiary" type="button">上传图片</button></div>
                 <div id="productImageList" class="product-image-list"></div>
               </section>
-              <footer><button class="button-tertiary" value="cancel">取消</button><button id="saveProductEditBtn" type="submit" value="default">保存修改</button></footer>
+              <section id="productEditAiPanel" class="product-edit-panel product-ai-panel" hidden>
+                <div id="productAiConfigurationNotice" class="product-ai-notice"></div>
+                <div class="product-ai-inputs">
+                  <label class="field-block"><span>目标平台</span><select id="productAiPlatform"><option>通用电商</option><option>Shopee</option><option>Lazada</option><option>TikTok Shop</option></select></label>
+                  <label class="field-block"><span>目标国家</span><input id="productAiCountry" type="text" /></label>
+                  <label class="field-block"><span>输出语言</span><select id="productAiLanguage"><option>中文</option><option>英文</option><option>泰语</option><option>马来语</option><option>印尼语</option><option>越南语</option><option>菲律宾英语</option></select></label>
+                  <label class="field-block"><span>目标用户</span><input id="productAiTargetUsers" type="text" /></label>
+                  <label class="field-block"><span>产品定位</span><input id="productAiPositioning" type="text" /></label>
+                  <label class="field-block"><span>内容风格</span><input id="productAiStyle" type="text" /></label>
+                  <label class="field-block"><span>卖点数量</span><input id="productAiSellingPointCount" type="number" min="1" max="10" value="5" /></label>
+                  <label class="field-block"><span>场景数量</span><input id="productAiScenarioCount" type="number" min="1" max="10" value="5" /></label>
+                  <label class="field-block product-ai-wide"><span>特殊要求</span><textarea id="productAiSpecialRequirements" rows="2"></textarea></label>
+                  <label class="field-block product-ai-wide"><span>禁止出现的内容</span><textarea id="productAiForbiddenContent" rows="2"></textarea></label>
+                </div>
+                <div class="product-ai-toolbar">
+                  <button id="generateProductAiBtn" type="button">生成内容</button>
+                  <button id="cancelProductAiBtn" class="button-tertiary" type="button" hidden>取消等待</button>
+                  <button id="copyProductAiBtn" class="button-tertiary" type="button" disabled>复制全部</button>
+                  <button id="showProductAiHistoryBtn" class="button-tertiary" type="button">查看历史版本</button>
+                </div>
+                <div id="productAiResult" class="product-ai-result"><p class="product-empty">尚未生成内容。生成结果只保存在当前页面，点击保存草稿或确认采用后才会写入数据库。</p></div>
+                <div id="productAiSaveActions" class="product-ai-save-actions" hidden>
+                  <button id="saveProductAiDraftBtn" class="button-tertiary" type="button">保存为草稿</button>
+                  <button id="confirmProductAiBtn" type="button">确认采用</button>
+                </div>
+              </section>
+              <footer><button class="button-tertiary" value="cancel">取消</button><button id="saveProductEditBtn" type="submit" value="default">保存产品信息</button></footer>
             </form>
+          </dialog>
+
+          <dialog id="productDeleteDialog" class="product-center-dialog product-delete-dialog">
+            <form id="productDeleteForm" method="dialog" class="product-dialog-shell">
+              <header><div><h2>确认删除该产品吗？</h2><p>仅隐藏当前国家 + SKU；历史导入、人工修改、图片和 AI 内容都会保留。</p></div><button class="icon-text-button" value="cancel" aria-label="关闭">×</button></header>
+              <div id="productDeleteSummary" class="product-delete-summary"></div>
+              <label class="field-block"><span>删除原因 <small>选填</small></span><textarea id="productDeleteReason" rows="3" maxlength="500"></textarea></label>
+              <footer><button class="button-tertiary" value="cancel">取消</button><button id="confirmProductDeleteBtn" class="button-danger" type="submit" value="default">确认删除</button></footer>
+            </form>
+          </dialog>
+
+          <dialog id="productAiHistoryDialog" class="product-center-dialog product-ai-history-dialog">
+            <div class="product-dialog-shell">
+              <header><div><h2>AI 内容历史版本</h2><p>历史版本只读；确认草稿后才会替换当前采用版本。</p></div><button id="closeProductAiHistoryBtn" class="icon-text-button" type="button" aria-label="关闭">×</button></header>
+              <div id="productAiHistoryList" class="product-ai-history-list"></div>
+            </div>
           </dialog>
         </section>
 
@@ -994,6 +1068,6 @@
         <div class="dialog-actions"><button class="button-secondary" type="button" data-close-dialog="runNowConfirmDialog">取消</button><button id="confirmRunNowBtn" type="button">确认执行</button></div>
       </dialog>
     </main>
-    <script type="module" src="/app.js?v=20260720-product-import-g1a2-1"></script>
+    <script type="module" src="/app.js?v=20260721-product-center-ui-ai-1"></script>
   </body>
 </html>

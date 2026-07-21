@@ -263,7 +263,7 @@ test("applied products are searchable and expose only real catalog facts", async
     assert.equal(catalog.products[0].sku, "CAT-001");
     assert.equal(catalog.products[0].lifecycleStatus, "CLEARANCE");
     assert.equal(catalog.products[0].image.status, "missing");
-    assert.equal(catalog.products[0].aiContentStatus, "not_integrated");
+    assert.equal(catalog.products[0].aiContentStatus, "not_generated");
     const detail = await context.dataAccess.repositories.productCatalog.get(catalog.products[0].id);
     assert.equal(detail.sourceFacts.product_name, "竹制收纳架");
     assert.equal(detail.packaging.itemNetWeightG, 1000);

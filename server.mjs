@@ -73,9 +73,11 @@ import { ProductImportService } from "./lib/product-center/product-import-servic
 import { ProductCatalogService } from "./lib/product-center/product-catalog-service.mjs";
 import { ProductImageService } from "./lib/product-center/product-image-service.mjs";
 import { createProductCenterApi } from "./lib/product-center/product-center-api.mjs";
+import { ProductAiContentService } from "./lib/product-center/product-ai-content-service.mjs";
+import { createProductAccessPolicy } from "./lib/product-center/product-access-policy.mjs";
 import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
-import { DeepSeekProvider } from "./lib/ai/providers/deepseek-provider.mjs";
+import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
 import { MODULE_IDS } from "./lib/contracts/module-ids.mjs";
 import { createIdentifier } from "./lib/contracts/identifiers.mjs";
 
@@ -261,6 +263,36 @@ const productImportService = new ProductImportService({
   parseTimeoutMs: Number(process.env.PRODUCT_IMPORT_PARSE_TIMEOUT_MS || 600000),
 });
 const productCatalogService = new ProductCatalogService({ repository: dataAccess.repositories.productCatalog });
+const productAccessPolicy = createProductAccessPolicy(process.env);
+const productAiApiKey = getDeepSeekApiKey();
+const productAiContentService = new ProductAiContentService({
+  repository: dataAccess.repositories.productAiContents,
+  configured: Boolean(productAiApiKey),
+  model: process.env.DEEPSEEK_MODEL || "deepseek-v4",
+  gateway: new AiGateway({
+    provider: new DeepSeekProvider({
+      apiKey: productAiApiKey,
+      endpoint: resolveDeepSeekEndpoint(process.env.DEEPSEEK_BASE_URL),
+    }),
+    logger: (entry) => auditService.recordSafely({
+      requestId: entry.requestId,
+      module: "ai",
+      action: "deepseek.call",
+      status: entry.success ? "success" : "failed",
+      durationMs: entry.durationMs,
+      errorStage: entry.success ? null : "deepseek",
+      errorCode: entry.errorCode,
+      metadata: {
+        provider: entry.provider,
+        moduleId: entry.moduleId,
+        operation: entry.operation,
+        model: entry.model,
+        durationMs: entry.durationMs,
+        success: entry.success,
+      },
+    }),
+  }),
+});
 const productImageService = new ProductImageService({
   repository: dataAccess.repositories.productCatalog,
   tempRoot: fileStorageConfig.tempRoot,
@@ -271,6 +303,8 @@ const handleProductCenterApi = createProductCenterApi({
   service: productImportService,
   catalogService: productCatalogService,
   imageService: productImageService,
+  aiContentService: productAiContentService,
+  accessPolicy: productAccessPolicy,
   maxUploadBytes: fileStorageConfig.maxUploadBytes,
 });
 auditService.recordSafely({
