@@ -283,9 +283,10 @@ test("36 image task schema contains task and per-image states", async () => {
   const source = await fs.readFile("migrations/012_product_listing_ai_content_images.sql", "utf8");
   for (const status of ["pending", "generating_prompt", "waiting_generation", "generating", "partially_completed", "completed", "failed", "cancelled"]) assert.match(source, new RegExp(`'${status}'`));
 });
-test("37 the workbench exposes all thirteen requested modules", async () => {
+test("37 the workbench preserves thirteen modules inside six workflow steps", async () => {
   const source = await html();
-  assert.equal([...source.matchAll(/data-workbench-anchor=/g)].length, 13);
+  assert.equal([...source.matchAll(/data-workbench-anchor=/g)].length, 6);
+  for (const id of ["workbenchProductInfo", "workbenchListingTarget", "workbenchPositioning", "workbenchTitle", "workbenchSubtitle", "workbenchDescription", "workbenchAi", "workbenchVariants", "workbenchMedia", "workbenchAiImages", "workbenchLogistics", "workbenchAttributes", "workbenchValidation"]) assert.match(source, new RegExp(`id=["']${id}["']`));
 });
 test("38 title limits and image model settings are centralized environment variables", async () => {
   const source = await fs.readFile(".env.example", "utf8");

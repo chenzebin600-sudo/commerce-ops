@@ -19,6 +19,42 @@ const AI_TYPE_LABELS = Object.freeze({
   listing_title: "商品标题", listing_subtitle: "商品副标题", listing_description: "商品描述",
   selling_points: "核心卖点", usage_scenarios: "使用场景", image_prompt: "图片方案与提示词", product_images: "AI 商品图片",
 });
+const WORKFLOW_STATE_LABELS = Object.freeze({
+  not_started: "未开始", incomplete: "待完善", ready: "可继续", generating: "生成中", generated: "AI 已生成",
+  manually_modified: "人工已改", stale: "需更新", completed: "已完成", blocked: "有阻断",
+});
+const AI_CONTENT_STATUS_LABELS = Object.freeze({
+  pending: "待人工确认", waiting: "待人工确认", not_generated: "未生成", generating_prompt: "生成中",
+  waiting_generation: "生成中", generating: "生成中", generated: "AI 已生成", completed: "AI 已生成",
+  confirmed: "已采用", adopted: "已采用", manually_modified: "已人工修改", stale: "上下文已变化",
+  failed: "生成失败", cancelled: "已取消",
+});
+const WORKFLOW_CHECK_GROUPS = Object.freeze({
+  product_facts: Object.freeze({ label: "产品事实", codes: ["SKU_REQUIRED"] }),
+  listing_strategy: Object.freeze({ label: "上架策略", codes: ["PLATFORM_REQUIRED", "SHOP_REQUIRED", "CATEGORY_REQUIRED"] }),
+  product_copy: Object.freeze({ label: "商品文案", codes: ["TITLE_REQUIRED", "AI_RISK_REVIEW"] }),
+  image_assets: Object.freeze({ label: "图片素材", codes: ["PRIMARY_IMAGE_REQUIRED"] }),
+  commerce_logistics: Object.freeze({ label: "交易与物流", codes: ["PRICE_REQUIRED", "WEIGHT_REQUIRED", "DIMENSIONS_REQUIRED", "REQUIRED_ATTRIBUTES"] }),
+  publication_checks: Object.freeze({ label: "其他检查", codes: [] }),
+});
+const LISTING_CHECK_TARGETS = Object.freeze({
+  TITLE_REQUIRED: "listingTitle", PLATFORM_REQUIRED: "listingPlatform", SHOP_REQUIRED: "listingShopName",
+  CATEGORY_REQUIRED: "listingCategoryName", PRIMARY_IMAGE_REQUIRED: "listingMediaList", SKU_REQUIRED: "productWorkbenchIdentityFacts",
+  PRICE_REQUIRED: "listingSalePrice", WEIGHT_REQUIRED: "listingWeightG", DIMENSIONS_REQUIRED: "listingLengthCm",
+  REQUIRED_ATTRIBUTES: "workbenchAttributes", AI_RISK_REVIEW: "workbenchAi",
+});
+
+export function groupPublicationChecks(checks = []) {
+  const matched = new Set();
+  const groups = Object.entries(WORKFLOW_CHECK_GROUPS).map(([key, definition]) => {
+    const items = checks.filter((item) => definition.codes.includes(item.code));
+    items.forEach((item) => matched.add(item));
+    return { key, label: definition.label, items };
+  });
+  const fallback = groups.find((group) => group.key === "publication_checks");
+  fallback.items = checks.filter((item) => !matched.has(item));
+  return groups.filter((group) => group.items.length);
+}
 
 function esc(value) {
   return String(value ?? "-")
@@ -89,6 +125,8 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     closeRequestPending: false,
     discardResolver: null,
     workbenchObserver: null,
+    confirmedSteps: new Set(),
+    aiActiveTypes: new Set(),
   };
 
   const LISTING_PLATFORM_LABELS = Object.freeze({
@@ -542,11 +580,21 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
 
   function renderProductFacts(product) {
     const fieldSource = (code) => Object.hasOwn(product.manualOverrides || {}, code) ? "人工修改" : "产品包";
+    const values = product.fieldValues || {};
+    const packaging = product.packaging || {};
+    const material = values.material || values.材质 || "-";
+    const color = values.color || values.颜色 || "-";
+    const dimensions = values.item_dimensions_raw || packaging.itemDimensions || "-";
+    const weight = packaging.itemGrossWeightG || packaging.itemNetWeightG || values.item_gross_weight_g || values.item_net_weight_g;
+    const carton = values.carton_dimensions_raw || [packaging.cartonLengthCm, packaging.cartonWidthCm, packaging.cartonHeightCm].filter(Boolean).join(" × ") || "-";
     byId("productWorkbenchIdentityFacts").innerHTML = [
-      fact("国家", product.country), fact("SKU", product.sku), fact("主 SKU", product.mainSku, fieldSource("main_sku_code")),
+      fact("商品名称", product.productName, fieldSource("product_name")), fact("SKU", product.sku), fact("主 SKU", product.mainSku, fieldSource("main_sku_code")),
       fact("款号", product.styleCode, fieldSource("style_code")), fact("款名", product.styleName, fieldSource("style_name")),
-      fact("商品名称", product.productName, fieldSource("product_name")), fact("一级类目", product.categoryL1, fieldSource("category_l1")),
-      fact("二级类目", product.categoryL2, fieldSource("category_l2")), fact("生命周期", LIFECYCLE_LABELS[product.lifecycleStatus] || product.lifecycleStatus),
+      fact("类目", [product.categoryL1, product.categoryL2].filter(Boolean).join(" / "), fieldSource("category_l1")),
+      fact("销售规格", product.salesSpec, fieldSource("sales_spec")), fact("材质", material, fieldSource("material")),
+      fact("颜色", color, fieldSource("color")), fact("产品尺寸", dimensions, fieldSource("item_dimensions_raw")),
+      fact("重量（g）", weight, fieldSource("item_gross_weight_g")), fact("包装信息", carton, fieldSource("carton_dimensions_raw")),
+      fact("生命周期", LIFECYCLE_LABELS[product.lifecycleStatus] || product.lifecycleStatus),
     ].join("");
     const totalStock = (product.inventories || []).reduce((sum, item) => sum + (Number(item.stock) || 0), 0);
     const latestCost = product.costHistory?.[0] || {};
@@ -638,6 +686,104 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     byId("productListingStatus").textContent = label;
   }
 
+  function hasValue(id) {
+    return Boolean(String(byId(id)?.value ?? "").trim());
+  }
+
+  function strategyIsReady() {
+    return ["listingPlatform", "listingCountrySite", "listingShopName", "listingCategoryName", "listingTargetUsers", "listingProductPositioning", "listingContentStyle"].every(hasValue);
+  }
+
+  function copyIsReady() {
+    return ["listingTitle", "listingDescription"].every(hasValue) && state.listingSellingPoints.length > 0 && state.listingUsageScenarios.length > 0;
+  }
+
+  function imagePlanPrerequisites() {
+    return strategyIsReady() && copyIsReady() && !state.aiContextStale;
+  }
+
+  function workflowStates() {
+    const validation = state.currentListingDraft?.validationResult || {};
+    const checks = validation.checks || [];
+    const strategyTypes = ["target_audience", "product_positioning", "content_style", "usage_scenarios"];
+    const copyTypes = ["listing_title", "listing_subtitle", "listing_description", "selling_points", "usage_scenarios"];
+    const anyActive = (types) => types.some((type) => state.aiActiveTypes.has(type));
+    const anyAdopted = (types) => types.some((type) => state.aiAdoptions[type]);
+    const anyManual = (types) => types.some((type) => state.aiManualModifiedTypes.has(type));
+    const imageStatus = state.imageGenerationTask?.status;
+    const productFacts = state.confirmedSteps.has("product_facts") ? "completed" : state.currentProduct ? "ready" : "not_started";
+    let listingStrategy = strategyIsReady() ? "ready" : "incomplete";
+    if (anyActive(strategyTypes)) listingStrategy = "generating";
+    else if (state.aiContextStale && anyAdopted(strategyTypes)) listingStrategy = "stale";
+    else if (anyManual(strategyTypes)) listingStrategy = "manually_modified";
+    else if (anyAdopted(strategyTypes)) listingStrategy = "generated";
+    let productCopy = copyIsReady() ? "ready" : "incomplete";
+    if (anyActive(copyTypes)) productCopy = "generating";
+    else if (state.aiContextStale && anyAdopted(copyTypes)) productCopy = "stale";
+    else if (anyManual(copyTypes)) productCopy = "manually_modified";
+    else if (anyAdopted(copyTypes)) productCopy = "generated";
+    let imageAssets = imagePlanPrerequisites() ? ((state.currentListingDraft?.media?.imageIds || []).length ? "ready" : "incomplete") : "blocked";
+    if (["pending", "generating_prompt", "waiting_generation", "generating"].includes(imageStatus)) imageAssets = "generating";
+    else if (state.aiContextStale && state.imageGenerationTask) imageAssets = "stale";
+    else if (imageStatus === "completed") imageAssets = "completed";
+    else if (state.imageGenerationTask) imageAssets = "generated";
+    const logisticsReady = Number(byId("listingSalePrice")?.value) > 0 && Number(byId("listingWeightG")?.value) > 0
+      && ["listingLengthCm", "listingWidthCm", "listingHeightCm"].every((id) => Number(byId(id)?.value) > 0);
+    const commerceLogistics = logisticsReady ? "ready" : "incomplete";
+    const publicationChecks = !checks.length ? "not_started" : validation.blockerCount ? "blocked" : "completed";
+    return { product_facts: productFacts, listing_strategy: listingStrategy, product_copy: productCopy, image_assets: imageAssets, commerce_logistics: commerceLogistics, publication_checks: publicationChecks };
+  }
+
+  function renderWorkbenchSummary() {
+    if (!state.currentProduct) return;
+    const target = LISTING_TARGETS[byId("listingCountrySite")?.value] || null;
+    const platform = LISTING_PLATFORM_LABELS[byId("listingPlatform")?.value] || "待选择";
+    const checks = state.currentListingDraft?.validationResult?.checks || [];
+    const readiness = checks.length ? Math.round(((state.currentListingDraft.validationResult.completedCount || 0) / checks.length) * 100) : 0;
+    byId("workbenchSummaryProduct").textContent = state.currentProduct.productName || "-";
+    byId("workbenchSummarySku").textContent = state.currentProduct.sku || "-";
+    byId("workbenchSummaryTarget").textContent = `${platform} / ${target?.countryName || "待选择"}`;
+    byId("workbenchSummaryShop").textContent = byId("listingShopName")?.value.trim() || "待填写";
+    byId("workbenchSummarySaved").textContent = state.currentListingDraft?.updatedAt ? formatDate(state.currentListingDraft.updatedAt) : "尚未保存";
+    const aiSummary = byId("workbenchSummaryAi");
+    const aiState = state.aiContextStale ? "stale" : Object.keys(state.aiAdoptions).length ? "generated" : "not_started";
+    aiSummary.className = `workflow-state ${aiState}`;
+    aiSummary.textContent = state.aiContextStale ? "上下文已变化" : Object.keys(state.aiAdoptions).length ? "已有采用内容" : "未生成";
+    byId("workbenchSummaryReadiness").textContent = `${readiness}%`;
+  }
+
+  function renderListingPreview() {
+    if (!state.currentProduct) return;
+    const target = LISTING_TARGETS[byId("listingCountrySite")?.value];
+    byId("listingPreviewTarget").textContent = `${LISTING_PLATFORM_LABELS[byId("listingPlatform")?.value] || "平台待选择"} · ${target?.countryName || "站点待选择"} · ${byId("listingShopName")?.value.trim() || "店铺待填写"}`;
+    byId("listingPreviewTitle").textContent = byId("listingTitle")?.value.trim() || "商品标题待填写";
+    byId("listingPreviewDescription").textContent = byId("listingDescription")?.value.trim() || "商品描述待填写";
+    byId("listingPreviewPrice").textContent = Number(byId("listingSalePrice")?.value) > 0 ? `销售价 ${byId("listingSalePrice").value}` : "销售价待填写";
+    const media = collectListingMedia();
+    const image = (state.currentProduct.images || []).find((item) => item.id === media.primaryImageId);
+    byId("listingPreviewImage").innerHTML = image
+      ? `<img alt="${esc(image.originalFilename || "商品主图")}" data-product-image-product="${esc(state.currentProduct.id)}" data-product-image-id="${esc(image.id)}" />`
+      : "暂无主图";
+    if (image) hydrateImages(byId("listingPreviewImage"));
+  }
+
+  function updateWorkflowState() {
+    if (!state.currentProduct) return;
+    const states = workflowStates();
+    for (const [step, status] of Object.entries(states)) {
+      documentObject.querySelectorAll(`[data-step-state="${step}"], [data-workflow-nav="${step}"] .workflow-state`).forEach((element) => {
+        element.className = `workflow-state ${status}`;
+        element.textContent = WORKFLOW_STATE_LABELS[status];
+      });
+      const section = documentObject.querySelector(`[data-workflow-step="${step}"]`);
+      if (section) section.dataset.workflowStatus = status;
+    }
+    const imagePlanButton = byId("generateImagePlanBtn");
+    if (imagePlanButton) imagePlanButton.disabled = !state.aiStatus.configured || !can("product.ai.generate") || !imagePlanPrerequisites();
+    renderWorkbenchSummary();
+    renderListingPreview();
+  }
+
   function setValue(id, value) {
     const element = byId(id);
     if (element) element.value = value ?? "";
@@ -689,11 +835,24 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
   function renderValidation(result = {}) {
     const checks = result.checks || [];
     const ready = Boolean(result.ready);
+    documentObject.querySelectorAll("[data-listing-field-error]").forEach((element) => element.remove());
+    documentObject.querySelectorAll('[aria-invalid="true"]').forEach((element) => element.removeAttribute("aria-invalid"));
+    for (const item of checks.filter((entry) => !entry.complete)) {
+      const target = byId(LISTING_CHECK_TARGETS[item.code]);
+      if (!target) continue;
+      target.setAttribute("aria-invalid", "true");
+      const field = target.closest?.(".field-block");
+      if (field) field.insertAdjacentHTML("beforeend", `<small class="listing-field-error" data-listing-field-error>${esc(item.message)}</small>`);
+    }
     byId("listingReadinessBadge").className = `listing-status ${checks.length ? (ready ? "ready" : "failed") : "draft"}`;
-    byId("listingReadinessBadge").textContent = checks.length ? (ready ? "可以发布" : `${result.blockerCount || 0} 项阻断`) : "尚未检查";
-    byId("listingValidationSummary").innerHTML = checks.length ? `<div class="validation-overview"><strong>${ready ? "发布前检查通过" : "仍需处理发布阻断项"}</strong><span>${result.completedCount || 0}/${checks.length} 项完成 · ${result.warningCount || 0} 项提醒</span></div>
-      <div class="validation-checks">${checks.map((item) => `<div class="${item.complete ? "passed" : item.severity}"><span>${item.complete ? "✓" : item.severity === "blocker" ? "!" : "·"}</span><div><strong>${esc(item.label)}</strong><small>${item.complete ? "已完成" : esc(item.message)}</small></div></div>`).join("")}</div>`
-      : '<p class="product-empty">点击“保存并检查”生成发布前检查结果。</p>';
+    byId("listingReadinessBadge").textContent = checks.length ? (ready ? "检查通过" : `${result.blockerCount || 0} 项阻断`) : "尚未检查";
+    const readiness = checks.length ? Math.round(((result.completedCount || 0) / checks.length) * 100) : 0;
+    const groups = groupPublicationChecks(checks);
+    const infoCount = checks.filter((item) => item.severity === "info" && !item.complete).length;
+    byId("listingValidationSummary").innerHTML = checks.length ? `<div class="validation-overview"><div><strong>${ready ? "发布前检查通过" : "仍需处理发布阻断项"}</strong><span>${result.blockerCount || 0} 阻断 · ${result.warningCount || 0} 提醒 · ${infoCount} 信息 · ${result.completedCount || 0} 已通过</span></div><b>${readiness}%</b></div>
+      <div class="validation-groups">${groups.map((group) => `<section><header><h5>${esc(group.label)}</h5><span>${group.items.filter((item) => item.complete).length}/${group.items.length}</span></header><div class="validation-checks">${group.items.map((item) => `<article class="${item.complete ? "passed" : item.severity}" data-check-code="${esc(item.code)}"><span>${item.complete ? "✓" : item.severity === "blocker" ? "!" : item.severity === "warning" ? "△" : "i"}</span><div><strong>${esc(item.label)}</strong><small>${item.complete ? "已完成" : esc(item.message)}</small>${item.complete ? "" : `<p>建议：${esc(item.message)}</p>`}</div>${item.complete ? "" : `<button class="button-tertiary" type="button" data-locate-listing-check="${esc(item.code)}">定位字段</button>`}</article>`).join("")}</div></section>`).join("")}</div>`
+      : '<p class="product-empty">点击“运行发布检查”生成报告。</p>';
+    updateWorkflowState();
   }
 
   function renderListingDraft(product, draft) {
@@ -756,6 +915,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     state.aiContextBaseline = adoptedSignatures.at(-1) || currentSignature;
     state.aiContextStale = adoptedSignatures.some((signature) => signature !== currentSignature);
     byId("listingAiStaleNotice").hidden = !state.aiContextStale;
+    updateWorkflowState();
   }
 
   function updateListingCounts() {
@@ -847,6 +1007,8 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     state.currentProduct = product;
     state.listingDrafts = drafts;
     state.dirtyScopes.clear();
+    state.confirmedSteps.clear();
+    state.aiActiveTypes.clear();
     byId("productEditTitle").textContent = product.productName || product.sku;
     byId("productWorkbenchMeta").textContent = `${product.country || "-"} · ${product.sku} · 产品包事实与平台草稿分层保存`;
     renderProductFacts(product);
@@ -857,12 +1019,22 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     state.aiCandidates = {};
     state.aiAdoptions = {};
     state.imageGenerationTask = null;
+    for (const id of ["aiPositioningCandidates", "aiTitleCandidates", "aiSubtitleCandidates", "aiDescriptionCandidates", "aiSellingScenarioCandidates"]) byId(id).innerHTML = "";
+    byId("adoptAllStrategyBtn").hidden = true;
     renderAiConfiguration();
     renderListingDraft(product, drafts[0] || defaultListingDraft(product));
     renderImageGeneration();
     loadImageGenerationTasks().catch((error) => onStatus(error.message, "error"));
+    documentObject.querySelectorAll("[data-workbench-section]").forEach((section, index) => {
+      section.classList.remove("collapsed");
+      section.classList.toggle("active-step", index === 0);
+      const toggle = section.querySelector("[data-toggle-workflow-step]");
+      if (toggle) toggle.textContent = "收起";
+    });
     byId("productWorkbenchScroll").scrollTop = 0;
     state.dirtyScopes.clear();
+    byId("productExtendedFacts").open = false;
+    updateWorkflowState();
   }
 
   async function loadListingDrafts(productId) {
@@ -903,10 +1075,10 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     return true;
   }
 
-  async function saveListingWorkbench(check = false) {
+  async function saveListingWorkbench(check = false, triggerButton = null) {
     const product = state.currentProduct;
     if (!product) return;
-    const button = check ? byId("saveAndCheckListingBtn") : byId("saveListingDraftBtn");
+    const button = triggerButton || (check ? byId("saveAndCheckListingBtn") : byId("saveListingDraftBtn"));
     button.disabled = true;
     let productChanged = false;
     try {
@@ -957,6 +1129,8 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     state.aiManualModifiedTypes.clear();
     state.aiContextBaseline = null;
     state.aiContextStale = false;
+    state.confirmedSteps.clear();
+    state.aiActiveTypes.clear();
     state.imageGenerationTask = null;
     state.currentProduct = null;
     byId("productDiscardDialog").open && byId("productDiscardDialog").close();
@@ -1044,7 +1218,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     const adoption = state.aiAdoptions[type];
     if (!adoption) return { label: "人工维护", className: "manual" };
     if (state.aiManualModifiedTypes.has(type)) return { label: "已人工修改", className: "manual" };
-    return { label: "AI 生成", className: "ai" };
+    return { label: "已采用", className: "ai" };
   }
 
   function renderAiSourceBadges() {
@@ -1077,8 +1251,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     const current = (title, type, items, fields) => `<section class="current-ai-content"><header><h4>${esc(title)}</h4><span class="content-source ${sourceBadge(type).className}">${sourceBadge(type).label}</span></header>
       <div class="product-ai-items">${items.length ? items.map((item, index) => `<div class="product-ai-item">${fields.map(([key, label]) => `<label><span>${esc(label)}</span><textarea rows="2" data-current-ai-list="${type}" data-current-ai-index="${index}" data-current-ai-key="${key}">${esc(item?.[key] || "")}</textarea></label>`).join("")}</div>`).join("") : '<p class="product-empty">尚未采用内容。</p>'}</div></section>`;
     byId("productAiResult").innerHTML = current("当前核心卖点", "selling_points", points, [["title", "标题"], ["description", "说明"], ["source_field", "事实依据"]])
-      + current("当前使用场景", "usage_scenarios", scenarios, [["scene", "场景"], ["user", "适用人群"], ["benefit", "场景价值"]])
-      + '<div id="aiSellingScenarioCandidates" class="listing-ai-candidates"></div>';
+      + current("当前使用场景", "usage_scenarios", scenarios, [["scene", "场景"], ["user", "适用人群"], ["benefit", "场景价值"]]);
   }
 
   function collectProductUiFacts() {
@@ -1143,23 +1316,36 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
   }
 
   function markAiContextStale() {
-    if (!Object.keys(state.aiAdoptions).length || !state.aiContextBaseline) return;
+    if ((!Object.keys(state.aiAdoptions).length && !state.imageGenerationTask) || !state.aiContextBaseline) return;
     state.aiContextStale = listingStaleSignature() !== state.aiContextBaseline;
     byId("listingAiStaleNotice").hidden = !state.aiContextStale;
+    if (state.aiContextStale) {
+      const affected = Object.keys(state.aiAdoptions).map((type) => AI_TYPE_LABELS[type] || type);
+      if (state.imageGenerationTask) affected.push("图片方案");
+      byId("listingAiStaleScope").textContent = `受影响：${affected.join("、") || "已采用的 AI 内容"}。旧内容保留，人工修改不会被覆盖。`;
+    }
+    updateWorkflowState();
   }
 
   function candidateCard(type, value, index, reason = "") {
     const dataName = type === "listing_title" ? "data-adopt-ai-title" : type === "listing_description" ? "data-adopt-ai-description" : "data-adopt-ai-candidate";
-    return `<article class="listing-ai-candidate"><div><span class="source-badge ai">AI 生成</span><strong>${esc(value)}</strong>${reason ? `<p>${esc(reason)}</p>` : ""}</div><button class="button-tertiary" type="button" ${dataName}="${index}" data-ai-type="${type}">采用此候选</button></article>`;
+    return `<article class="listing-ai-candidate"><div><span class="source-badge ai">待人工确认</span><strong>${esc(value)}</strong>${reason ? `<p>${esc(reason)}</p>` : ""}</div><button class="button-tertiary" type="button" ${dataName}="${index}" data-ai-type="${type}">采用此候选</button></article>`;
   }
 
   function renderGeneratedCandidates(types) {
     if (types.some((type) => ["target_audience", "product_positioning", "content_style"].includes(type))) {
-      byId("aiPositioningCandidates").innerHTML = types.filter((type) => state.aiCandidates[type]).map((type) => {
+      const strategyCards = types.filter((type) => ["target_audience", "product_positioning", "content_style"].includes(type) && state.aiCandidates[type]).map((type) => {
         const output = state.aiCandidates[type].output;
         const value = type === "target_audience" ? (output.target_users || []).join("\n") : output.text;
         return candidateCard(type, value, 0, output.reasoning_summary);
-      }).join("");
+      });
+      if (types.includes("usage_scenarios") && state.aiCandidates.usage_scenarios) {
+        const output = state.aiCandidates.usage_scenarios.output;
+        const value = (output.items || []).map((item) => `${item.scene}：${item.description}`).join("\n");
+        strategyCards.push(candidateCard("usage_scenarios", value, 0, "采用后同步到使用场景，并可继续人工调整"));
+      }
+      byId("aiPositioningCandidates").innerHTML = strategyCards.join("");
+      byId("adoptAllStrategyBtn").hidden = strategyCards.length === 0;
     }
     if (types.includes("listing_title")) {
       const output = state.aiCandidates.listing_title?.output;
@@ -1186,7 +1372,20 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
 
   async function generateListingAi(types, button) {
     if (!state.currentProduct || !state.aiStatus.configured) return;
+    const strategyRequest = types.some((type) => ["target_audience", "product_positioning", "content_style"].includes(type));
+    if (strategyRequest && (!hasValue("listingPlatform") || !hasValue("listingCountrySite"))) {
+      onStatus("请先选择平台和国家/站点，再生成上架策略。", "error");
+      locateWorkbenchTarget("listingPlatform");
+      return;
+    }
+    if (!strategyRequest && !strategyIsReady()) {
+      onStatus("请先完成上架目标、目标用户、产品定位和内容风格，再生成商品文案。", "error");
+      locateWorkbenchTarget("workflowListingStrategy", { focus: false });
+      return;
+    }
     state.aiAbortController = new AbortController();
+    state.aiActiveTypes = new Set(types);
+    updateWorkflowState();
     button.disabled = true;
     const originalLabel = button.textContent;
     button.textContent = "正在准备产品上下文…";
@@ -1214,9 +1413,11 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       if (error?.name !== "AbortError") onStatus(error.message, "error");
     } finally {
       state.aiAbortController = null;
+      state.aiActiveTypes.clear();
       button.disabled = !state.aiStatus.configured || !can("product.ai.generate");
       if (button.textContent === "正在准备产品上下文…") button.textContent = originalLabel;
       byId("cancelProductAiBtn").hidden = true;
+      updateWorkflowState();
     }
   }
 
@@ -1258,6 +1459,10 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ adoptedContent: { value, selectedCandidateIndex: index } }),
     }));
     applyAiValue(type, value);
+    if (type === "usage_scenarios" && Array.isArray(value)) {
+      setValue("listingPrimaryScenarios", value.map((item) => `${item.scene}${item.benefit ? `：${item.benefit}` : ""}`).join("\n"));
+      resizeAutoGrow(byId("listingPrimaryScenarios"));
+    }
     const contextSignature = listingStaleSignature();
     state.aiAdoptions[type] = { contentId: data.content.id, version: data.content.version, contextHash: data.content.contextHash, contextSignature, value };
     state.aiManualModifiedTypes.delete(type);
@@ -1266,7 +1471,30 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     byId("listingAiStaleNotice").hidden = true;
     renderAiSourceBadges();
     markDirty("listing");
+    updateWorkflowState();
     onStatus(`${AI_TYPE_LABELS[type]}候选已采用到当前上架草稿。`, "success");
+  }
+
+  async function adoptAllStrategyCandidates() {
+    const types = ["target_audience", "product_positioning", "content_style", "usage_scenarios"].filter((type) => state.aiCandidates[type]?.record);
+    for (const type of types) await adoptAiCandidate(type, 0);
+    byId("adoptAllStrategyBtn").hidden = true;
+    onStatus("上架策略建议已全部采用，仍可逐项人工调整。", "success");
+  }
+
+  function affectedAiTypes() {
+    return Object.keys(state.aiAdoptions).filter((type) => AI_TYPE_LABELS[type]);
+  }
+
+  async function previewAndRegenerateAffectedContent() {
+    const types = affectedAiTypes();
+    const labels = types.map((type) => AI_TYPE_LABELS[type] || type);
+    if (state.imageGenerationTask) labels.push("图片方案");
+    if (!labels.length) return;
+    const confirmed = documentObject.defaultView?.confirm?.(`将重新生成以下候选：${labels.join("、")}。\n\n当前已采用内容和人工修改会保留，只有明确采用新候选后才会变化。是否继续？`);
+    if (confirmed === false) return;
+    if (types.length) await generateListingAi(types, byId("regenerateAffectedContentBtn"));
+    if (state.imageGenerationTask && imagePlanPrerequisites()) await generateImagePlan();
   }
 
   function manualValueForType(type) {
@@ -1341,15 +1569,19 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     const notice = byId("imageAiConfigurationNotice");
     if (!notice) return;
     notice.className = `product-ai-notice ${status.configured ? "configured" : "unconfigured"}`;
-    notice.textContent = status.message || "尚未配置图片生成模型API，目前仅支持生成图片方案和提示词。";
-    byId("generateImagePlanBtn").disabled = !state.aiStatus.configured || !can("product.ai.generate");
+    const prerequisitesReady = imagePlanPrerequisites();
+    notice.textContent = !prerequisitesReady
+      ? "请先完成上架策略和商品文案，并处理已失效的 AI 上下文，再生成图片方案。"
+      : status.message || "尚未配置图片生成模型API，目前仅支持生成图片方案和提示词。";
+    byId("generateImagePlanBtn").disabled = !state.aiStatus.configured || !can("product.ai.generate") || !prerequisitesReady;
     byId("generateImageTaskBtn").disabled = !state.imageGenerationTask;
     byId("retryImageTaskBtn").disabled = !state.imageGenerationTask?.items?.some((item) => item.status === "failed");
     byId("cancelImageTaskBtn").disabled = !state.imageGenerationTask || ["completed", "failed", "cancelled"].includes(state.imageGenerationTask.status);
     const task = state.imageGenerationTask;
-    byId("imageGenerationTaskState").innerHTML = task ? `<strong>任务状态：${esc(task.status)}</strong><span>${esc(formatDate(task.updatedAt))}</span>` : "<span>尚未创建图片任务。</span>";
+    byId("imageGenerationTaskState").innerHTML = task ? `<strong>任务状态：${esc(AI_CONTENT_STATUS_LABELS[task.status] || task.status)}</strong><span>${esc(formatDate(task.updatedAt))}</span>` : "<span>尚未创建图片任务。</span>";
     const slots = task?.items || (status.template?.slots || []).map((slot, index) => ({ id: "", slotKey: slot.key, slotType: slot.type, slotIndex: index, label: slot.label, aspectRatio: slot.aspectRatio, prompt: "", status: "waiting" }));
-    byId("imageGenerationSlots").innerHTML = slots.map((item) => `<article class="image-generation-slot ${esc(item.status)}"><div class="image-slot-preview"><span>${item.slotType === "primary" ? "主图" : `副图 ${item.slotIndex}`}</span></div><div><strong>${esc(item.label)}</strong><small>${esc(item.aspectRatio)} · ${esc(item.status)}</small><textarea rows="4" readonly>${esc(item.prompt || "生成图片方案后显示提示词")}</textarea>${item.errorMessage ? `<p class="error-text">${esc(item.errorMessage)}</p>` : ""}<div class="image-slot-actions">${item.id ? `<button class="button-tertiary" type="button" data-regenerate-image-item="${esc(item.id)}">单张重新生成</button>` : ""}${item.status === "completed" ? `<button type="button" data-adopt-image-item="${esc(item.id)}">采用到上架素材</button>` : ""}</div></div></article>`).join("");
+    byId("imageGenerationSlots").innerHTML = slots.map((item) => `<article class="image-generation-slot ${esc(item.status)}"><div class="image-slot-preview"><span>${item.slotType === "primary" ? "主图" : `副图 ${item.slotIndex}`}</span></div><div><strong>${esc(item.label)}</strong><small>${esc(item.aspectRatio)} · ${esc(AI_CONTENT_STATUS_LABELS[item.status] || item.status)}</small><textarea rows="4" readonly>${esc(item.prompt || "生成图片方案后显示提示词")}</textarea>${item.errorMessage ? `<p class="error-text">${esc(item.errorMessage)}</p>` : ""}<div class="image-slot-actions">${item.id ? `<button class="button-tertiary" type="button" data-regenerate-image-item="${esc(item.id)}">单张重新生成</button>` : ""}${item.status === "completed" ? `<button type="button" data-adopt-image-item="${esc(item.id)}">采用到上架素材</button>` : ""}</div></div></article>`).join("");
+    updateWorkflowState();
   }
 
   async function loadImageGenerationTasks() {
@@ -1457,6 +1689,22 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     await responseJson(await authorizedFetch(`/api/product-center/products/${encodeURIComponent(productId)}/restore`, { method: "POST" }));
     await loadCatalog();
     onStatus("产品已恢复。", "success");
+  }
+
+  function locateWorkbenchTarget(targetId, { focus = true } = {}) {
+    const target = byId(targetId);
+    if (!target) return;
+    const disclosure = target.closest?.("details");
+    if (disclosure) disclosure.open = true;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.classList.add("field-locate-highlight");
+    if (focus && typeof target.focus === "function") target.focus({ preventScroll: true });
+    setTimeout(() => target.classList.remove("field-locate-highlight"), 2200);
+  }
+
+  function showListingPreview() {
+    renderListingPreview();
+    locateWorkbenchTarget("listingPlatformPreview", { focus: true });
   }
 
   async function apply() {
@@ -1610,6 +1858,15 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     }
     byId("saveListingDraftBtn").addEventListener("click", () => saveListingWorkbench(false).catch((error) => onStatus(error.message, "error")));
     byId("saveAndCheckListingBtn").addEventListener("click", () => saveListingWorkbench(true).catch((error) => onStatus(error.message, "error")));
+    byId("previewListingBtn").addEventListener("click", showListingPreview);
+    byId("saveCommerceInfoBtn").addEventListener("click", (event) => saveListingWorkbench(false, event.currentTarget).catch((error) => onStatus(error.message, "error")));
+    byId("runPublicationChecksBtn").addEventListener("click", (event) => saveListingWorkbench(true, event.currentTarget).catch((error) => onStatus(error.message, "error")));
+    byId("confirmProductFactsBtn").addEventListener("click", async () => {
+      await saveProductOverrides();
+      state.confirmedSteps.add("product_facts");
+      updateWorkflowState();
+      onStatus("产品事实已确认，可继续制定上架策略。", "success");
+    });
     byId("productEditDialog").addEventListener("cancel", (event) => {
       event.preventDefault();
       handleRequestClose("escape-key").catch((error) => onStatus(error.message, "error"));
@@ -1631,21 +1888,33 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       else markDirty("listing");
       updateListingCounts();
       markAiContextStale();
+      updateWorkflowState();
     });
     byId("productEditForm").addEventListener("change", (event) => {
       if (event.target.id === "productImageFiles") return;
       if (event.target.closest("#productEditFields")) markDirty("product");
       else markDirty("listing");
       markAiContextStale();
+      updateWorkflowState();
     });
     documentObject.querySelectorAll("[data-workbench-anchor]").forEach((button) => button.addEventListener("click", () => {
-      byId(button.dataset.workbenchAnchor)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const target = byId(button.dataset.workbenchAnchor);
+      target?.classList.remove("collapsed");
+      const toggle = target?.querySelector("[data-toggle-workflow-step]");
+      if (toggle) toggle.textContent = "收起";
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
+    documentObject.querySelectorAll("[data-toggle-workflow-step]").forEach((button) => button.addEventListener("click", () => {
+      const section = byId(button.dataset.toggleWorkflowStep);
+      section?.classList.toggle("collapsed");
+      button.textContent = section?.classList.contains("collapsed") ? "展开" : "收起";
     }));
     byId("productWorkbenchScroll").addEventListener("scroll", () => {
       const scrollRoot = byId("productWorkbenchScroll");
       const sections = [...documentObject.querySelectorAll("[data-workbench-section]")];
       const active = sections.reduce((current, section) => section.offsetTop <= scrollRoot.scrollTop + 150 ? section : current, sections[0]);
       documentObject.querySelectorAll("[data-workbench-anchor]").forEach((button) => button.classList.toggle("active", button.dataset.workbenchAnchor === active?.id));
+      sections.forEach((section) => section.classList.toggle("active-step", section === active));
     });
     byId("listingDraftSelector").addEventListener("click", (event) => {
       const draftButton = event.target.closest("[data-listing-draft-id]");
@@ -1717,6 +1986,13 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     byId("productAiHistoryList").addEventListener("click", (event) => {
       const button = event.target.closest("[data-restore-ai-version]");
       if (button) restoreAiVersion(button.dataset.restoreAiVersion).catch((error) => onStatus(error.message, "error"));
+    });
+    byId("adoptAllStrategyBtn").addEventListener("click", () => adoptAllStrategyCandidates().catch((error) => onStatus(error.message, "error")));
+    byId("regenerateAffectedContentBtn").addEventListener("click", () => previewAndRegenerateAffectedContent().catch((error) => onStatus(error.message, "error")));
+    byId("listingValidationSummary").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-locate-listing-check]");
+      if (!button) return;
+      locateWorkbenchTarget(LISTING_CHECK_TARGETS[button.dataset.locateListingCheck] || "workflowPublicationChecks");
     });
     byId("productEditForm").addEventListener("click", (event) => {
       const generate = event.target.closest("[data-generate-ai-types]");
