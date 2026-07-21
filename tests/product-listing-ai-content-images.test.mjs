@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
 import {
   buildListingAiContext,
   LISTING_AI_CONTENT_TYPES,
@@ -293,4 +296,95 @@ test("40 image result actions require explicit user controls", async () => {
   const source = `${await html()}\n${await ui()}`;
   assert.match(source, /采用到上架素材/);
   assert.match(source, /data-regenerate-image-item/);
+});
+
+test("41 migration 012 upgrades 011 additively and is skipped after it is recorded", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "product-listing-migration-012-"));
+  const migrationsDir = path.join(root, "migrations");
+  const databasePath = path.join(root, "commerce.sqlite");
+  const projectMigrations = path.resolve("migrations");
+  await fs.mkdir(migrationsDir, { recursive: true });
+
+  try {
+    const migrationFiles = (await fs.readdir(projectMigrations)).filter((name) => name.endsWith(".sql")).sort();
+    for (const filename of migrationFiles.filter((name) => name < "012_")) {
+      await fs.copyFile(path.join(projectMigrations, filename), path.join(migrationsDir, filename));
+    }
+
+    const before = openCommerceDataAccess({ rootDir: path.resolve("."), databasePath, migrationsDir });
+    const db = before.provider.connection;
+    const now = "2026-07-21T08:00:00.000Z";
+    try {
+      db.prepare(`INSERT INTO product_import_batches (
+        id, source_system, file_sha256, status, operator_label, created_at, updated_at, applied_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run("batch-012", "company_product_center", "b".repeat(64), "applied", "fixture", now, now, now);
+      db.prepare(`INSERT INTO product_categories (
+        id, parent_key, level, source_system, source_name, normalized_name, status,
+        first_seen_batch_id, last_seen_batch_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        "category-012", "ROOT", 1, "company_product_center", "家纺", "家纺", "active", "batch-012", "batch-012", now, now,
+      );
+      db.prepare(`INSERT INTO product_import_rows (
+        id, batch_id, source_row_number, source_sku, row_sha256, raw_payload_json,
+        normalized_payload_json, validation_codes_json, outcome, target_sku_id,
+        applied_at, created_at, source_country_raw, product_key, product_sha256
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        "row-012", "batch-012", 2, "SKU-012", "r".repeat(64), "{}", "{}", "[]", "new",
+        "product-012", now, now, "马来西亚", "马来西亚|SKU-012", "p".repeat(64),
+      );
+      db.prepare(`INSERT INTO product_skus (
+        id, source_system, source_sku, normalized_sku, category_id, source_product_name,
+        source_sales_spec, source_status_raw, current_source_row_id, first_seen_batch_id,
+        last_seen_batch_id, revision, created_at, updated_at, country_raw, sku_code_normalized
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        "product-012", "company_product_center", "SKU-012", "马来西亚|SKU-012", "category-012",
+        "迁移前产品", "150x200cm", "正常销售", "row-012", "batch-012", "batch-012", 3, now, now, "马来西亚", "SKU-012",
+      );
+      db.prepare(`INSERT INTO product_listing_drafts (
+        id, product_sku_id, country, sku, platform, shop_key, title, content_language,
+        created_by, updated_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        "draft-012", "product-012", "马来西亚", "SKU-012", "shopee", "shop-012", "迁移前标题", "中文",
+        "fixture", "fixture", now, now,
+      );
+      db.prepare(`INSERT INTO product_ai_contents (
+        id, product_sku_id, country, sku, provider, model, content_type, input_context_json,
+        output_content_json, prompt_version, status, version, created_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        "content-012", "product-012", "马来西亚", "SKU-012", "deepseek", "deepseek-chat", "listing_title",
+        "{}", '{"titles":[{"text":"迁移前候选"}]}', "v1", "draft", 1, "fixture", now, now,
+      );
+    } finally {
+      before.close();
+    }
+
+    await fs.copyFile(
+      path.join(projectMigrations, "012_product_listing_ai_content_images.sql"),
+      path.join(migrationsDir, "012_product_listing_ai_content_images.sql"),
+    );
+    const after = openCommerceDataAccess({ rootDir: path.resolve("."), databasePath, migrationsDir });
+    try {
+      const upgraded = after.provider.connection;
+      assert.deepEqual(
+        { ...upgraded.prepare("SELECT source_product_name, source_sales_spec, revision FROM product_skus WHERE id = ?").get("product-012") },
+        { source_product_name: "迁移前产品", source_sales_spec: "150x200cm", revision: 3 },
+      );
+      assert.deepEqual(
+        { ...upgraded.prepare("SELECT title, revision FROM product_listing_drafts WHERE id = ?").get("draft-012") },
+        { title: "迁移前标题", revision: 1 },
+      );
+      assert.equal(upgraded.prepare("SELECT output_content_json FROM product_ai_contents WHERE id = ?").get("content-012").output_content_json, '{"titles":[{"text":"迁移前候选"}]}');
+      assert.equal(upgraded.prepare("SELECT count(*) AS total FROM product_image_generation_tasks").get().total, 0);
+      assert.equal(upgraded.prepare("SELECT count(*) AS total FROM product_image_generation_items").get().total, 0);
+      assert.equal(upgraded.prepare("SELECT count(*) AS total FROM schema_migrations WHERE version = ?").get("012_product_listing_ai_content_images.sql").total, 1);
+      assert.deepEqual(after.repositories.scheduler.migrate(), []);
+      assert.equal(upgraded.prepare("SELECT count(*) AS total FROM schema_migrations WHERE version = ?").get("012_product_listing_ai_content_images.sql").total, 1);
+      assert.equal(upgraded.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
+      assert.deepEqual(upgraded.prepare("PRAGMA foreign_key_check").all(), []);
+    } finally {
+      after.close();
+    }
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
