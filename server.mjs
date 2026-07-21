@@ -79,6 +79,9 @@ import { createProductAccessPolicy } from "./lib/product-center/product-access-p
 import { resolveImageGenerationConfig } from "./lib/product-center/image-generation-config.mjs";
 import { createImageGenerationProvider } from "./lib/product-center/image-generation-provider.mjs";
 import { ProductImageGenerationService } from "./lib/product-center/product-image-generation-service.mjs";
+import { GrowthRadarService } from "./lib/growth-radar/growth-radar-service.mjs";
+import { createGrowthRadarApi } from "./lib/growth-radar/growth-radar-api.mjs";
+import { createGrowthRadarAccessPolicy } from "./lib/growth-radar/growth-radar-access-policy.mjs";
 import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
 import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
@@ -89,6 +92,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 const excelCellPolicyModulePath = path.join(__dirname, "lib", "security", "excel-cell-policy.mjs");
 const productPackageParserPath = path.join(__dirname, "scripts", "product-package-parser.py");
+const growthRadarParserPath = path.join(__dirname, "scripts", "growth-radar-parser.py");
 loadLocalEnv(__dirname);
 const runtimeConfig = resolveRuntimeConfig({ bootstrapRoot: __dirname, env: process.env });
 const runtimeEnv = { ...process.env, ...runtimeEnvironment(runtimeConfig) };
@@ -325,6 +329,20 @@ const handleProductCenterApi = createProductCenterApi({
   imageGenerationService: productImageGenerationService,
   listingService: productListingService,
   accessPolicy: productAccessPolicy,
+  maxUploadBytes: fileStorageConfig.maxUploadBytes,
+});
+const growthRadarAccessPolicy = createGrowthRadarAccessPolicy(process.env);
+const growthRadarService = new GrowthRadarService({
+  repository: dataAccess.repositories.growthRadar,
+  pythonExecutable: productPackagePython.executable || runtimeConfig.pythonExecutable || "python",
+  parserScript: growthRadarParserPath,
+  fileStorageConfig,
+  maxRows: Number(process.env.GROWTH_RADAR_IMPORT_MAX_ROWS || 200000),
+  parseTimeoutMs: Number(process.env.GROWTH_RADAR_IMPORT_PARSE_TIMEOUT_MS || 600000),
+});
+const handleGrowthRadarApi = createGrowthRadarApi({
+  service: growthRadarService,
+  accessPolicy: growthRadarAccessPolicy,
   maxUploadBytes: fileStorageConfig.maxUploadBytes,
 });
 auditService.recordSafely({
@@ -2222,6 +2240,9 @@ async function handleApi(req, res, url) {
 
   const auditHandled = await handleAuditApi(req, res, url);
   if (auditHandled) return true;
+
+  const growthRadarHandled = await handleGrowthRadarApi(req, res, url);
+  if (growthRadarHandled) return true;
 
   const productCenterHandled = await handleProductCenterApi(req, res, url);
   if (productCenterHandled) return true;

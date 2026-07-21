@@ -48,6 +48,20 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 | `product_listing_publish_records` | 0 | future platform publication history | `id` | listing draft `RESTRICT`; no platform calls are active in this release |
 | `product_image_generation_tasks` | 0 | AI image plan and generation task history | `id` | SKU `RESTRICT`, listing draft `SET NULL`; prompt/context snapshots retained |
 | `product_image_generation_items` | 0 | per-slot AI image generation state | `id` | task `CASCADE`; unique task plus slot key |
+| `growth_source_batches` | 0 | growth source evidence | `id` | export file `RESTRICT`; unique source type plus idempotency key |
+| `growth_order_raw_rows` | 0 | privacy-minimized order source rows | `id` | batch `RESTRICT`; unique batch plus source row |
+| `growth_order_headers` | 0 | canonical order facts | `id` | shop/batches `RESTRICT`; unique versioned business key |
+| `growth_order_lines` | 0 | canonical order line facts | `id` | order/batches/product `RESTRICT`; unique versioned technical line key |
+| `growth_shops` | 0 | stable shop master data | `id` | unique internal shop code |
+| `growth_shop_source_mappings` | 0 | shop identity mapping | `id` | shop/batches `RESTRICT`; unique source, platform and normalized shop name |
+| `product_identity_mappings` | 0 | country and SKU identity mapping | `id` | product/batches `RESTRICT`; unique source, platform, country and SKU |
+| `growth_mapping_issues` | 0 | identity quality queue | `id` | batch/raw row `RESTRICT`; unique issue key |
+| `growth_inventory_raw_rows` | 0 | inventory source rows | `id` | batch `RESTRICT`; unique batch plus source row |
+| `growth_inventory_snapshots` | 0 | inventory snapshot framework | `id` | batch/product `RESTRICT`; unique batch plus source row |
+| `growth_data_quality_issues` | 0 | growth data quality | `id` | batch `RESTRICT`; unique issue key |
+| `growth_mapping_events` | 0 | mapping business history | `id` | indexed mapping type, mapping ID and occurrence time |
+| `growth_shop_sku_observations` | 0 | historical observed facts | `id` | shop/product/batches `RESTRICT`; unique observation key |
+| `growth_shop_sku_coverage_snapshots` | 0 | reserved current-online facts | `id` | shop/product `RESTRICT`; unique shop, product, source and observation time |
 
 ## Type conversion details
 
@@ -58,6 +72,8 @@ Convert `at_mobiles_json`, `schedule_config_json`, `payment_date_config_json`, `
 Product field override values, detail-field preferences, and product AI input/output documents are also JSON text and must become `jsonb`. Product identity is now the normalized pair `country_raw + sku_code_normalized`; PostgreSQL must preserve the corresponding composite uniqueness instead of reverting to a globally unique raw SKU. Product soft-delete columns on `product_skus` remain nullable timestamps and bounded actor/reason text.
 
 Listing search keywords, selling points, usage scenarios, platform attributes, variants, pricing, media, logistics, compliance, validation results, AI adoption metadata, AI image context/prompt plans, and future publication request/response payloads are JSON text in SQLite and must become validated `jsonb`. The active listing identity is the partial unique key `(product_sku_id, platform, country, shop_key) WHERE deleted_at IS NULL`.
+
+Growth radar source scope/header/redaction documents, raw row values/types, mapping candidates, quality context, shop category scope, and mapping event snapshots are also JSON text and must become validated `jsonb`. Preserve the explicit `historical_observed` and reserved `current_online` semantic checks during conversion.
 
 ### Date and timezone
 
@@ -96,7 +112,7 @@ Runtime-only dialect operations are now located under `lib/data/sqlite`; `script
 ## Migration sequence
 
 1. Freeze schema changes and create a verified SQLite backup plus file manifest.
-2. Build PostgreSQL migrations from the seven SQLite migrations, preserving keys, checks, indexes, and delete behavior.
+2. Build PostgreSQL migrations from the thirteen SQLite migrations, preserving keys, checks, indexes, and delete behavior.
 3. Create PostgreSQL adapters behind the existing Provider/Repository contracts; keep SQLite as the active provider.
 4. Import reference/config tables: accounts and DingTalk configs, preserving encrypted bytes.
 5. Import task/run/event history, then export/file and lifecycle relationships in FK order.
