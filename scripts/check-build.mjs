@@ -10,6 +10,7 @@ for (const file of [
   "public/growth-radar-page.mjs",
   "public/auth-client.mjs",
   "public/ad-frame-bridge.mjs",
+  "public/mabang-images-page.mjs",
   "lib/app-access.mjs",
   "lib/ad-service-proxy.mjs",
   "lib/security/network-policy.mjs",
@@ -33,6 +34,13 @@ for (const file of [
   "lib/mabang-scheduler/executor.mjs",
   "lib/mabang-scheduler/service.mjs",
   "lib/mabang-scheduler/task-state.mjs",
+  "lib/mabang-images/access-policy.mjs",
+  "lib/mabang-images/api.mjs",
+  "lib/mabang-images/browser-session.mjs",
+  "lib/mabang-images/extraction.mjs",
+  "lib/mabang-images/image-assets.mjs",
+  "lib/mabang-images/repository.mjs",
+  "lib/mabang-images/service.mjs",
   "server.mjs",
   "scheduler.mjs",
   "scripts/cleanup-audit.mjs",
@@ -48,6 +56,8 @@ const app = readFileSync(path.join(rootDir, "public", "app.js"), "utf8");
 const referencedIds = [...new Set([...app.matchAll(/\$\("([^"]+)"\)/g)].map((match) => match[1]))];
 const auditPage = readFileSync(path.join(rootDir, "public", "audit-page.mjs"), "utf8");
 referencedIds.push(...[...auditPage.matchAll(/byId\("([^"]+)"\)/g)].map((match) => match[1]));
+const mabangImagesPage = readFileSync(path.join(rootDir, "public", "mabang-images-page.mjs"), "utf8");
+referencedIds.push(...[...mabangImagesPage.matchAll(/el\("([^"]+)"\)/g)].map((match) => match[1]));
 const dynamicIds = new Set(["retryExtractBtn"]);
 const missingIds = [...new Set(referencedIds)].filter((id) => !ids.includes(id) && !dynamicIds.has(id));
 if (missingIds.length) throw new Error(`JavaScript references missing HTML ids: ${missingIds.join(", ")}`);

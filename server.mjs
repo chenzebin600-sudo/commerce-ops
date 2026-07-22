@@ -87,6 +87,11 @@ import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
 import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
 import { MODULE_IDS } from "./lib/contracts/module-ids.mjs";
 import { createIdentifier } from "./lib/contracts/identifiers.mjs";
+import { MabangInventoryBrowserSession } from "./lib/mabang-images/browser-session.mjs";
+import { MabangImageAssetService } from "./lib/mabang-images/image-assets.mjs";
+import { MabangSkuImageCollectorService } from "./lib/mabang-images/service.mjs";
+import { createMabangImageAccessPolicy } from "./lib/mabang-images/access-policy.mjs";
+import { createMabangImageApi } from "./lib/mabang-images/api.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -344,6 +349,41 @@ const handleGrowthRadarApi = createGrowthRadarApi({
   service: growthRadarService,
   accessPolicy: growthRadarAccessPolicy,
   maxUploadBytes: fileStorageConfig.maxUploadBytes,
+});
+const mabangImageRoot = path.join(fileStorageConfig.storageRoot, "product-media");
+const mabangImageAssetService = new MabangImageAssetService({
+  repository: dataAccess.repositories.mabangImages,
+  tempRoot: fileStorageConfig.tempRoot,
+  imageRoot: mabangImageRoot,
+  maxBytes: Number(process.env.MABANG_IMAGE_MAX_BYTES || 10 * 1024 * 1024),
+});
+const mabangImageService = new MabangSkuImageCollectorService({
+  repository: dataAccess.repositories.mabangImages,
+  assetService: mabangImageAssetService,
+  accountRepository: dataAccess.repositories.accounts,
+  browserFactory: async () => new MabangInventoryBrowserSession({
+    targetProvider: getChromeTargets,
+    connectCdp,
+    maxPages: Number(process.env.MABANG_IMAGE_SAFE_MAX_PAGES || 10000),
+  }),
+  concurrency: Number(process.env.MABANG_IMAGE_DOWNLOAD_CONCURRENCY || 4),
+  retryAttempts: Number(process.env.MABANG_IMAGE_RETRY_ATTEMPTS || 4),
+  maxPages: Number(process.env.MABANG_IMAGE_SAFE_MAX_PAGES || 10000),
+  audit: async ({ action, actor, metadata }) => auditService.recordSafely({
+    module: "mabang",
+    action,
+    status: "success",
+    actorType: actor,
+    metadata,
+  }),
+});
+await mabangImageService.recoverInterruptedBatches();
+const handleMabangImageApi = createMabangImageApi({
+  service: mabangImageService,
+  repository: dataAccess.repositories.mabangImages,
+  accountRepository: dataAccess.repositories.accounts,
+  imageRoot: mabangImageRoot,
+  accessPolicy: createMabangImageAccessPolicy(process.env),
 });
 auditService.recordSafely({
   module: "file",
@@ -2244,6 +2284,9 @@ async function handleApi(req, res, url) {
   const growthRadarHandled = await handleGrowthRadarApi(req, res, url);
   if (growthRadarHandled) return true;
 
+  const mabangImageHandled = await handleMabangImageApi(req, res, url);
+  if (mabangImageHandled) return true;
+
   const productCenterHandled = await handleProductCenterApi(req, res, url);
   if (productCenterHandled) return true;
 
@@ -2739,11 +2782,13 @@ let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  const forceExit = setTimeout(() => process.exit(0), 3000);
+  forceExit.unref();
+  await mabangImageService.shutdown({ timeoutMs: 2000 });
   await adServiceManager.stop();
   if (ownedChromeChild && ownedChromeChild.exitCode == null && !ownedChromeChild.killed) ownedChromeChild.kill();
   dataAccess.close();
   server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 3000).unref();
 }
 
 process.on("SIGINT", shutdown);

@@ -8,6 +8,7 @@ import { createAdFrameBridge } from "./ad-frame-bridge.mjs";
 import { createAuditPage } from "./audit-page.mjs";
 import { createProductCenterPage } from "./product-center-page.mjs?v=20260721-ui-delete-ai-1";
 import { createGrowthRadarPage } from "./growth-radar-page.mjs?v=20260722-g1b2-1";
+import { createMabangImagesPage } from "./mabang-images-page.mjs?v=20260722-mabang-images-2";
 import { createExcelHtmlRenderer } from "/excel-cell-policy.mjs";
 
 let currentReport = null;
@@ -24,6 +25,7 @@ let adsFrameBridge = null;
 let auditPage = null;
 let productCenterPage = null;
 let growthRadarPage = null;
+let mabangImagesPage = null;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
@@ -166,6 +168,7 @@ productCenterPage = createProductCenterPage({ authorizedFetch, onStatus: setStat
 productCenterPage.initialize();
 growthRadarPage = createGrowthRadarPage({ authorizedFetch, onStatus: setStatus });
 growthRadarPage.initialize();
+mabangImagesPage = createMabangImagesPage({ authorizedFetch, apiJson, setStatus });
 adsFrameBridge = createAdFrameBridge({
   windowObject: window,
   frame: $("adsFrame"),
@@ -214,6 +217,10 @@ const PAGE_META = {
   mabang: {
     title: "马帮数据",
     subtitle: "按账号权限获取订单和库存明细，在线预览并导出标准 Excel。",
+  },
+  "mabang-images": {
+    title: "马帮 SKU 图片",
+    subtitle: "从库存查询采集 SKU 图片，写入统一文件层，并以建议素材关联产品中心。",
   },
   ads: {
     title: "Lazada 广告分析",
@@ -333,6 +340,7 @@ function switchPage(page, { skipProductClose = false } = {}) {
   if (page === "keyword" && currentReport?.discovery) renderReport(currentReport);
   if (page === "mabang" && currentMabangView !== "scheduled" && currentMabangTask) renderMabangResult(currentMabangTask);
   if (page === "mabang" && currentMabangView === "scheduled") refreshScheduledData({ quiet: true }).catch(() => {});
+  if (page === "mabang-images") mabangImagesPage?.load().catch((error) => setStatus(error.message, "error"));
   if (page === "ads") loadAdsAnalyzer();
   if (page === "audit") auditPage.load();
   if (page === "products") productCenterPage.load().catch((error) => setStatus(error.message, "error"));
