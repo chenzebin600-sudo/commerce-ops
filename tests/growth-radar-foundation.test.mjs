@@ -452,11 +452,11 @@ test("G1A deterministic growth radar foundation", async (t) => {
       assert.equal(describeAuditRequest("POST", "/api/growth-radar/shops/shop-id/revoke").action, "growth_radar.shop.confirmation_revoked");
     });
 
-    await t.test("42 frontend exposes exactly eight G1A data views", async () => {
+    await t.test("42 frontend exposes exactly eight G1B data views", async () => {
       const source = await fs.readFile(path.join(projectRoot, "public", "growth-radar-page.mjs"), "utf8");
       assert.equal((source.match(/^  \["[^"]+", "[^"]+"\],$/gm) || []).length, 8);
-      assert.match(source, /当前在线未实现/);
-      assert.match(source, /先执行无写入预览/);
+      assert.match(source, /无权威数据源，不显示为 0/);
+      assert.match(source, /生成只读预览/);
     });
 
     await t.test("43 migration and repository preserve provider-neutral placeholders", async () => {
