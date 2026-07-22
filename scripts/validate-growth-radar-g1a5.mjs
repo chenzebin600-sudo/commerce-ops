@@ -114,6 +114,8 @@ async function main() {
       FROM growth_sku_warehouse_sales_metrics`)).rows[0];
     const scopeStatuses = await provider.query("SELECT DISTINCT source_scope_status FROM growth_source_batches ORDER BY source_scope_status");
     const shopState = (await service.summary());
+    const currentOnlineCoverageRows = await scalar(provider, `SELECT COUNT(*) AS value
+      FROM growth_shop_sku_coverage_snapshots WHERE coverage_semantic='current_online'`);
 
     assert.equal(await scalar(provider, "SELECT COUNT(*) AS value FROM growth_order_raw_rows"), 2659);
     assert.equal(await scalar(provider, "SELECT COUNT(*) AS value FROM growth_inventory_raw_rows"), 1440);
@@ -130,6 +132,7 @@ async function main() {
     assert.equal(Number(metricStatus.prediction_rows), 1438);
     assert.equal(Number(metricStatus.own_sales_quantity_7d), 2434);
     assert.deepEqual(scopeStatuses.rows.map((row) => row.source_scope_status), ["unconfirmed"]);
+    assert.equal(currentOnlineCoverageRows, 0);
 
     process.stdout.write(`${JSON.stringify({
       validation: "passed",
@@ -179,6 +182,7 @@ async function main() {
         unresolved: shopState.unresolvedShopMappings,
         associationBlockedByMapping: false,
       },
+      coverage: { currentOnlineRows: currentOnlineCoverageRows, historicalOrdersPromoted: false },
       prohibitedSemantics: { companySalesColumns: 0, orderPlusInventorySalesMetric: false },
     }, null, 2)}\n`);
   } finally {

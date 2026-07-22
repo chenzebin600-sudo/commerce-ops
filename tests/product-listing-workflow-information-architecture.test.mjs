@@ -124,13 +124,19 @@ test("17 current listing, AI history and image task APIs remain wired", async ()
   for (const route of ["/listing-drafts", "/ai/listing/generate", "/ai/contents", "/ai/images/tasks"]) assert.match(source, new RegExp(route.replaceAll("/", "\\/")));
 });
 
-test("18 information architecture refactor does not introduce migration 013", async () => {
+test("18 growth radar migration 013 stays isolated from listing persistence", async () => {
   const files = await fs.readdir("migrations");
-  assert.equal(files.some((name) => /^013_/.test(name)), false);
+  const migration013 = files.find((name) => /^013_/.test(name));
+  assert.equal(migration013, "013_deterministic_growth_radar_foundation.sql");
+  const source = await fs.readFile(`migrations/${migration013}`, "utf8");
+  assert.doesNotMatch(source, /product_listing_drafts|product_ai_contents|product_images|product_image_generation/i);
 });
 
-test("19 mainline workflow files do not include growth radar work", async () => {
-  const source = `${await html()}\n${await ui()}\n${await css()}`;
+test("19 listing workflow scope does not include growth radar work", async () => {
+  const markup = await html();
+  const productPage = markup.slice(markup.indexOf('<section id="page-products"'), markup.indexOf('<section id="page-growth-radar"'));
+  assert.notEqual(productPage, "");
+  const source = `${productPage}\n${await ui()}\n${await css()}`;
   assert.doesNotMatch(source, /growth[-_ ]radar|增长雷达/i);
 });
 
