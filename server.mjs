@@ -365,6 +365,7 @@ const mabangImageService = new MabangSkuImageCollectorService({
     targetProvider: getChromeTargets,
     connectCdp,
     maxPages: Number(process.env.MABANG_IMAGE_SAFE_MAX_PAGES || 10000),
+    preferredTargetId: process.env.MABANG_IMAGE_TARGET_ID || null,
   }),
   concurrency: Number(process.env.MABANG_IMAGE_DOWNLOAD_CONCURRENCY || 4),
   retryAttempts: Number(process.env.MABANG_IMAGE_RETRY_ATTEMPTS || 4),

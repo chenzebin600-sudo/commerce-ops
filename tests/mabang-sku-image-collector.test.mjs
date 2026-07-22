@@ -6,6 +6,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
 import {
+  analyzeInventoryHtmlPayload,
   analyzeInventoryPayload,
   deduplicateDiscoveryRows,
   filenameSkuFromUrl,
@@ -310,6 +311,113 @@ test("27. 启动采集同时要求采集或重试权限以及产品关联权限"
   const source = await fs.readFile(path.join(projectRoot, "lib", "mabang-images", "api.mjs"), "utf8");
   assert.match(source, /body\.mode === "retry_failed" \? "mabang_images\.retry" : "mabang_images\.collect"/);
   assert.match(source, /accessPolicy\.assert\("mabang_images\.link"\)/);
+});
+
+test("28. 真实库存 XHR 返回 HTML 行时识别接口分页与图片来源", () => {
+  const result = analyzeInventoryHtmlPayload({
+    success: true,
+    message: '<li><ul><li><img src="https://stock-cos.mabangerp.com/dynamic/A_1.jpg"></li><li><a class="shopStock">A</a></li></ul></li>',
+  }, {
+    request: {
+      url: "https://tenant.mabangerp.com/index.php?mod=warehouse.inventorydetail",
+      method: "POST",
+      postData: "page=1&rowsPerPage=50&warehouseId=dynamic",
+    },
+    transport: "xhr",
+  });
+  assert.equal(result.htmlField, "message");
+  assert.equal(result.profile.pageParameter.path, "page");
+  assert.equal(result.profile.pageSizeParameter.path, "rowsPerPage");
+  assert.equal(result.profile.hasImages, true);
+  assert.equal(result.profile.rowsPath, "message");
+});
+
+test("29. 图片通过当前 CDP Browser Context 的 Network 资源通道下载", async () => {
+  const image = png(7, 9);
+  let read = false;
+  const session = new MabangInventoryBrowserSession({ targetProvider: async () => [], connectCdp: async () => null });
+  session.topFrameId = "inventory";
+  session.cdp = {
+    send: async (method) => {
+      if (method === "Network.loadNetworkResource") return { result: { resource: {
+        success: true, httpStatusCode: 200, stream: "stream-1", url: "https://stock-cos.mabangerp.com/dynamic/A_1.png",
+        headers: { "content-type": "image/png" },
+      } } };
+      if (method === "IO.read") {
+        if (read) return { result: { data: "", eof: true, base64Encoded: false } };
+        read = true;
+        return { result: { data: image.toString("base64"), eof: true, base64Encoded: true } };
+      }
+      return { result: {} };
+    },
+  };
+  const result = await session.fetchImage("https://stock-cos.mabangerp.com/dynamic/A_1.png");
+  assert.equal(result.status, 200);
+  assert.equal(result.contentType, "image/png");
+  assert.deepEqual(result.buffer, image);
+});
+
+test("30. CDP 网络错误按指数退避规则重试", async () => {
+  let calls = 0;
+  const waits = [];
+  let update;
+  const service = new MabangSkuImageCollectorService({
+    repository: {
+      updateDiscovery: async (_id, value) => { update = value; },
+      linkAssetToMatchingProducts: async () => [],
+    },
+    assetService: { store: async () => ({ duplicate: false, asset: { id: "asset" } }) },
+    browserFactory: async () => ({}),
+    wait: async (ms) => waits.push(ms),
+    retryAttempts: 4,
+  });
+  const browser = { fetchImage: async () => {
+    calls += 1;
+    if (calls < 3) throw Object.assign(new Error("network"), { code: "IMAGE_NETWORK_ERROR" });
+    return { status: 200, contentType: "image/png", buffer: png() };
+  } };
+  await service.downloadOne({ id: "batch", createdBy: "tester" }, {
+    id: "row", sourceSku: "A", sourceImageUrl: "https://stock-cos.mabangerp.com/dynamic/A_1.png",
+  }, browser);
+  assert.equal(calls, 3);
+  assert.deepEqual(waits, [500, 1000]);
+  assert.equal(update.downloadStatus, "downloaded");
+});
+
+test("31. 并发相同 SHA-256 只落一个物理文件和一个素材记录", async (t) => {
+  const context = await fixture();
+  t.after(() => context.access.close());
+  const service = new MabangImageAssetService({
+    repository: context.repository,
+    tempRoot: path.join(context.root, "temp"),
+    imageRoot: path.join(context.root, "media"),
+  });
+  const [first, second] = await Promise.all([
+    service.store({ buffer: png(8, 9), contentType: "image/png", sourceUrl: "https://stock-cos.mabangerp.com/dynamic/A_1.png" }),
+    service.store({ buffer: png(8, 9), contentType: "image/png", sourceUrl: "https://stock-cos.mabangerp.com/dynamic/B_2.png" }),
+  ]);
+  assert.equal(first.asset.id, second.asset.id);
+  assert.deepEqual([first.duplicate, second.duplicate].sort(), [false, true]);
+  assert.equal((await context.access.provider.query("SELECT count(*) total FROM product_media_assets")).rows[0].total, 1);
+});
+
+test("32. 素材记录存在但物理文件缺失时由相同 SHA 内容安全修复", async (t) => {
+  const context = await fixture();
+  t.after(() => context.access.close());
+  const imageRoot = path.join(context.root, "media");
+  const service = new MabangImageAssetService({
+    repository: context.repository,
+    tempRoot: path.join(context.root, "temp"),
+    imageRoot,
+  });
+  const source = { buffer: png(10, 11), contentType: "image/png", sourceUrl: "https://stock-cos.mabangerp.com/dynamic/A_1.png" };
+  const first = await service.store(source);
+  const storedPath = path.join(imageRoot, ...first.asset.relativePath.split("/"));
+  await fs.unlink(storedPath);
+  const repaired = await service.store(source);
+  assert.equal(repaired.asset.id, first.asset.id);
+  assert.equal(repaired.duplicate, true);
+  assert.equal((await fs.stat(storedPath)).size, source.buffer.length);
 });
 
 async function createAsset(context) {

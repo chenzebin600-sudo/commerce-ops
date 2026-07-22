@@ -1,10 +1,10 @@
 # 支线 B：马帮 SKU 图片采集与产品中心素材同步设计审计
 
-> 状态：设计审计完成并据此实现，2026-07-22 重新审计迁移状态
+> 状态：设计审计、实现、最新主线同步与真实登录会话小范围验收完成（2026-07-22）
 > 分支：`codex/mabang-sku-image-collector`
 > 永久工作树：主项目同级目录 `commerce-ops-mabang-sku-images`
-> 基线：`master@6faa078`
-> 隔离约束：不修改支线 A `feature/deterministic-product-growth-radar`，不修改 `product_package_rows`。
+> 基线：`master@e2fef3c46d286a87a422ca733737dae28d15a835`（含迁移 013、014）
+> 隔离约束：不修改增长雷达、Listing 或 `product_package_rows`，不创建迁移 016。
 
 ## 1. 结论
 
@@ -15,7 +15,7 @@
 采集链路固定为：
 
 1. 在当前已登录 Chrome 页面中监听库存查询的 Fetch/XHR/GraphQL/初始化 JSON。
-2. 若响应含 SKU 与图片字段，在同一页面执行上下文内使用 `fetch(..., credentials: "include")` 分页请求；Cookie/Token 仅由浏览器携带，不导出到应用日志或数据库。
+2. 若响应含 SKU 与图片字段，在同一页面执行上下文内使用 `fetch(..., credentials: "include")` 分页请求；图片二进制通过当前 CDP Browser Context 的 `Network.loadNetworkResource` 读取。Cookie/Token 仅由浏览器携带，不导出到应用日志或数据库。
 3. 若接口没有图片字段，进入库存表格所在 frame，等待加载、定位真实滚动容器、滚动触发懒加载，再逐行提取。
 4. 最后仅把 `stock-cos.mabangerp.com` 的真实图片响应与同一行 SKU 交叉关联；绝不根据 SKU 构造 URL。
 
@@ -43,13 +43,9 @@
 - 导航前执行域名、DNS、重定向和私网地址校验；
 - `mabangerp.com` 已在 Chrome 导航允许域中。
 
-当前审计时 `127.0.0.1:9222` 未启动，默认 `storage/chrome-user-data` 为空，用户 Chrome 扩展连接也未能建立；因此没有可验证的已登录库存页面。正式数据库有 2 个启用的马帮账号配置，但当前进程未获得 `APP_ENCRYPTION_KEY`，本次审计没有也不能解密账号密码。
+初次只读审计时没有可用登录页面，因此没有用历史常量冒充真实接口。后续真实会话验收已连接 `127.0.0.1:9222`，发现两个已登录且表格可读的库存查询 page target，并只选择其中一个执行采集，未同时控制两个页面。
 
-因此网络接口字段分为三类：
-
-- **已验证项目能力**：CDP target、Network/Runtime 事件、持久 Chrome profile、域名安全策略。
-- **历史实现线索**：库存页可能为 iframe；存在查询、分页信息、汇总、Excel 导出等请求。
-- **必须在首次实际运行动态确认**：请求 URL/方法/参数、页码与每页数量字段、总条数字段、SKU/图片/仓库/商品名称字段。
+真实接口是同源 `POST /index.php?mod=<脱敏库存模块>` XHR。请求体动态识别出 `page` 与 `rowsPerPage`；响应为 JSON 包装，其中库存行位于一个 HTML 字符串字段。行内 `.shopStock` 是 SKU 主身份，图片来自同一行 `<img>`，仓库和商品名称从同一行语义节点读取。页面显示总计 1,440 行，默认 50 行/页，支持的最大页大小为 500；没有发现 GraphQL。完整企业子域、请求值、Cookie、Token、授权头和响应正文均未持久化。
 
 首次连接成功后只持久化以下脱敏接口画像：
 
@@ -198,7 +194,7 @@ storage/product-media/mabang/<sha256前2位>/<sha256>.<实际扩展名>
 - 同一行出现 http(s) 图片 URL 时优先级最高；
 - 能同时识别总数、页码、每页数量、仓库和商品名时提高置信度。
 
-复用请求时只在内存保存当前请求的 URL、method、body 和必要请求头（包括页面原请求可能需要的授权值）；任何头值都不持久化。实际分页调用在页面执行上下文中执行 `fetch`，设置 `credentials: "include"`，由浏览器携带 Cookie。不得使用 Node `fetch`、Python `requests` 或新建未认证会话下载马帮资源。
+复用请求时只在内存保存当前请求的 URL、method、body 和必要请求头（包括页面原请求可能需要的授权值）；任何头值都不持久化。实际分页调用在页面执行上下文中执行 `fetch`，设置 `credentials: "include"`，由浏览器携带 Cookie。真实响应的库存数组不是 JSON 数组而是 JSON 字符串字段中的 HTML；采集器在当前页面的 `DOMParser` 中解析该字段，再按行建立 SKU/图片映射。不得使用 Node `fetch`、Python `requests` 或新建未认证会话下载马帮资源。
 
 每页大小优先读取页面分页器支持的 option 最大值；没有可验证 option 时保留接口当前值，不猜测“最大值”。页码/页大小字段通过首个真实请求的参数和值动态识别。
 
@@ -227,6 +223,7 @@ storage/product-media/mabang/<sha256前2位>/<sha256>.<实际扩展名>
 - 并发默认 4，强制限制在 3–5；
 - 单图默认最多 4 次，使用 500ms 起步、上限 8s 的指数退避；
 - 403、429、5xx、超时可重试；404 记录缺失，不无限重试；
+- 使用当前 CDP Browser Context 的 `Network.loadNetworkResource`，设置 `includeCredentials=true`；仅在旧版 CDP 不支持该方法时回退页面上下文 `fetch`；
 - 跟随浏览器允许的重定向，但最终 URL 仍需在 `mabangerp.com`/其真实图片域安全范围内；
 - 校验 HTTP 200、Content-Type、JPEG/PNG/WebP 文件头、非空、最大尺寸、可读取宽高；
 - 校验通过后计算 SHA-256；已存在 SHA 时删除临时文件并复用 asset；
@@ -331,15 +328,15 @@ SQLite 验证在临时数据库应用全部迁移后执行 `PRAGMA foreign_key_c
 
 | 项目 | 结果 |
 | --- | --- |
-| 支线 B 基线最高迁移 | 012（`master@6faa078`，保持不含支线 A 实现） |
-| 当前主线最高迁移 | 014（含支线 A 的 013/014） |
-| 支线 A 最高迁移 | 014（独立工作树，状态干净，未修改） |
-| 旧会话工作树最高迁移 | 012（detached，未修改） |
-| 支线 B 迁移编号 | 015（为主线/支线 A 的 013/014 预留） |
-| 正式 SQLite | 只读 `integrity_check=ok`、`foreign_key_check=0`，54 张业务表，最高迁移 014；未写入支线 B 测试数据 |
+| 支线 B 当前基准 | 最新主线 `e2fef3c`，完整包含 013/014 |
+| 当前主线最高迁移 | 014（增长雷达基础与关联） |
+| 支线 B 迁移编号 | 015（仅图片采集五张表）；016 仍预留且未创建 |
+| 正式 SQLite | 最高迁移仍为 014；试跑使用官方在线备份的独立副本，正式库没有 015 表或试跑记录 |
 | 现有统一文件层 | 可复用路径安全、临时文件、原子移动、SHA-256；`export_files` 不适合图片 |
 | 现有产品图片 | 人工上传兼容层；不能直接满足共享资源/建议主图 |
 | 现有产品 SKU 身份 | 国家内唯一；跨国家使用 `sku_code_normalized` |
 | 现有浏览器能力 | 持久 profile + 原生 CDP + 网络安全策略 |
-| 本次真实接口审计 | 因无已登录 CDP/Chrome 会话未获得；禁止用历史常量冒充真实结果 |
-| 实现策略 | 首次运行动态探测、脱敏持久化接口画像、接口优先、DOM/COS 兜底 |
+| 本次真实接口审计 | 已完成：真实 XHR 返回 JSON 包装的 HTML 库存行，接口优先采集 |
+| 实现策略 | 动态探测、脱敏接口画像、XHR HTML 行优先、DOM/COS 兜底、Browser Context 图片下载 |
+
+真实会话的详细指标、暂停恢复、失败重试、抽样核对、正式库隔离证据和截图见 `docs/mabang-sku-image-collector-real-session-validation.md`。
