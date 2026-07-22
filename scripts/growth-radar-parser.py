@@ -9,6 +9,7 @@ import sys
 from decimal import Decimal, InvalidOperation
 
 from openpyxl import load_workbook
+from excel_cell_policy import is_unsafe_excel_text
 
 
 ORDER_SHEET_HINTS = ("订单明细", "订单")
@@ -301,10 +302,12 @@ def parse_workbook(filename, domain, max_rows):
                     continue
                 cell = cells[index] if index < len(cells) else None
                 cell_type = value_type(cell) if cell is not None else "null"
-                if cell_type == "formula":
+                if cell_type == "formula" or (cell is not None and is_unsafe_excel_text(cell.value)):
                     formula_count += 1
                     formula_fields.append(headers[index])
                     raw_values[key] = None
+                    if cell_type != "formula":
+                        cell_type = "formula_risk"
                 else:
                     raw_values[key] = json_value(cell.value) if cell is not None else None
                 raw_types[key] = cell_type
