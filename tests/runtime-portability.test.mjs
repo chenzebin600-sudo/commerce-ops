@@ -200,6 +200,7 @@ test("a healthy externally-started service is never claimed or stopped", async (
 test("portable path scanner has one centralized and narrowly scoped exception registry", () => {
   const exceptions = JSON.parse(fs.readFileSync(new URL("../config/portable-path-exceptions.json", import.meta.url), "utf8"));
   assert.deepEqual(exceptions.map((item) => item.prefix).sort(), [
+    "docs/growth-radar-g1b-three-stash-audit.md",
     "docs/product-query-center-DESIGN.md",
     "docs/product-query-center-production-analysis.md",
     "tests/",

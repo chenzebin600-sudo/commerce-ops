@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { loadLocalEnv } from "../lib/env.mjs";
-import { resolveRuntimeConfig } from "../lib/runtime-config.mjs";
+import { inspectRuntimeIsolation, resolveRuntimeConfig } from "../lib/runtime-config.mjs";
 import { resolvePythonRuntime } from "../lib/python-runtime.mjs";
 import { resolveChromeRuntime } from "../lib/chrome-runtime.mjs";
 
@@ -14,6 +14,10 @@ const rows = [];
 const add = (level, name, detail) => rows.push({ level, name, detail });
 
 let config;
+const isolation = inspectRuntimeIsolation({ bootstrapRoot, env: process.env });
+for (const item of isolation.checks) {
+  add(item.ok ? "OK" : "ERROR", `isolation ${item.id}`, item.detail);
+}
 try {
   config = resolveRuntimeConfig({ bootstrapRoot, env: process.env });
   add("OK", "runtime configuration", "resolved");
@@ -32,6 +36,9 @@ if (existsSync(packagePath)) {
 }
 
 if (config) {
+  add("OK", "runtime profile", config.runtimeProfile);
+  add("OK", "SQLite path", path.relative(config.appRoot, config.databasePath) || path.basename(config.databasePath));
+  add("OK", "storage path", path.relative(config.appRoot, config.storageRoot) || ".");
   const python = resolvePythonRuntime({
     appRoot: config.appRoot,
     env: { ...process.env, PYTHON_EXECUTABLE: config.pythonExecutable, PYTHON_VENV_DIR: config.pythonVenvDir },
@@ -67,7 +74,7 @@ if (config) {
     : "loopback mode");
   const tokenReady = Boolean(process.env.AD_SERVICE_INTERNAL_TOKEN) || existsSync(config.adServiceTokenFile);
   add(tokenReady ? "OK" : "WARNING", "advertising internal token", tokenReady ? "configured" : "will be generated on first managed start");
-  for (const [name, host, port] of [["main port", process.env.APP_HOST || "127.0.0.1", Number(process.env.APP_PORT || 3101)], ["advertising port", config.adServiceHost, config.adServicePort]]) {
+  for (const [name, host, port] of [["main port", config.appHost, config.appPort], ["advertising port", config.adServiceHost, config.adServicePort]]) {
     const occupied = await portOpen(host, port);
     add(occupied ? "WARNING" : "OK", name, occupied ? "already in use" : "available");
   }

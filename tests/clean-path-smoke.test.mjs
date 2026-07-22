@@ -53,10 +53,12 @@ test("a clean neutral directory starts without reading the formal runtime", { ti
   const port = await freePort();
   const adPort = await freePort();
   const dataRoot = path.join(sandbox, "runtime");
+  await fs.mkdir(dataRoot, { recursive: true });
   const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "server.mjs"], {
     cwd: appRoot,
     env: {
       ...process.env,
+      COMMERCE_OPS_RUNTIME_PROFILE: "test",
       APP_ROOT: appRoot,
       DATA_ROOT: dataRoot,
       STORAGE_ROOT: dataRoot,
