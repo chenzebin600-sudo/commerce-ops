@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.growth-radar-g1b.example
 .firecrawl/
 *.key
 *.pem

@@ -10,5 +10,9 @@
   {
     "prefix": "docs/product-query-center-production-analysis.md",
     "reason": "Local production-analysis evidence intentionally records source and screenshot paths."
+  },
+  {
+    "prefix": "docs/growth-radar-g1b-three-stash-audit.md",
+    "reason": "The local G1B forensic audit intentionally records exact database and worktree evidence paths."
   }
 ]

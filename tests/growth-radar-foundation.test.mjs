@@ -153,9 +153,9 @@ test("G1A deterministic growth radar foundation", async (t) => {
   try {
     await seedProducts(dataAccess.provider);
 
-    await t.test("01 default policy exposes all six permissions", () => {
+    await t.test("01 default policy exposes all nine permissions", () => {
       const policy = createGrowthRadarAccessPolicy();
-      assert.equal(GROWTH_RADAR_PERMISSIONS.length, 6);
+      assert.equal(GROWTH_RADAR_PERMISSIONS.length, 9);
       assert.equal(GROWTH_RADAR_PERMISSIONS.every((permission) => policy.has(permission)), true);
     });
 
@@ -198,10 +198,11 @@ test("G1A deterministic growth radar foundation", async (t) => {
     await t.test("12 order preview retains the cancelled order count", () => assert.equal(orderPreview.summary.cancelledOrders, 1));
     await t.test("13 order preview detects two source shops", () => assert.equal(orderPreview.summary.sourceShopCount, 2));
     await t.test("14 order line amount remains unavailable", () => assert.equal(orderPreview.summary.lineAmountStatus, "unavailable"));
-    await t.test("15 current-online coverage is explicitly not implemented", () => assert.equal(orderPreview.summary.currentOnlineStatus, "not_implemented"));
+    await t.test("15 current-online coverage is explicitly unavailable", () => assert.equal(orderPreview.summary.currentOnlineStatus, "unavailable"));
 
     await t.test("16 apply creates one auditable source batch", async () => {
-      orderApplied = await service.applyPreview("mabang_order", { previewId: orderPreview.previewId, idempotencyKey: ORDER_SHA }, { actorLabel: "test_actor" });
+      orderApplied = await service.applyPreview("mabang_order", { previewId: orderPreview.previewId, idempotencyKey: ORDER_SHA },
+        { actorLabel: "test_actor", confirmationGranted: true });
       assert.equal(orderApplied.reused, false);
       assert.equal(orderApplied.batch.status, "applied");
     });
@@ -248,7 +249,8 @@ test("G1A deterministic growth radar foundation", async (t) => {
     await t.test("24b unavailable refund data never becomes a metric", () => assert.equal(orderPreview.summary.refundDataStatus, "unavailable"));
 
     await t.test("25 same domain and idempotency key never duplicate facts", async () => {
-      const repeated = await service.applyPreview("mabang_order", { previewId: orderPreview.previewId, idempotencyKey: ORDER_SHA });
+      const repeated = await service.applyPreview("mabang_order", { previewId: orderPreview.previewId, idempotencyKey: ORDER_SHA },
+        { actorLabel: "test_actor", confirmationGranted: true });
       assert.equal(repeated.reused, true);
       assert.equal((await service.summary()).batches, 1);
     });
@@ -261,7 +263,8 @@ test("G1A deterministic growth radar foundation", async (t) => {
       changed.normalized.effectiveStatus = "valid";
       const preview = await service.previewFile("mabang_order", { filename: "orders-second.xlsx", sourceFilename: "orders-second.xlsx",
         sourceSha256: ORDER_SHA_2, sourceScope: { dateFrom: "2026-07-09", dateTo: "2026-07-15" } });
-      await service.applyPreview("mabang_order", { previewId: preview.previewId, idempotencyKey: ORDER_SHA_2 });
+      await service.applyPreview("mabang_order", { previewId: preview.previewId, idempotencyKey: ORDER_SHA_2 },
+        { actorLabel: "test_actor", confirmationGranted: true });
       const summary = await service.summary();
       assert.equal(summary.orderHeaders, 3);
       assert.equal(summary.orderLines, 4);
@@ -273,7 +276,7 @@ test("G1A deterministic growth radar foundation", async (t) => {
 
     await t.test("26 rejected source rows emit stable data-quality issues", async () => {
       const issues = await service.listQualityIssues({ status: "open" });
-      const issue = issues.issues.find((item) => item.code === "MISSING_ORDER_ID");
+      const issue = issues.issues.find((item) => item.code === "missing_order_id");
       assert.equal(Boolean(issue), true);
       assert.equal(issue.sourceContext.sourceRowNumber, 6);
     });
@@ -288,7 +291,7 @@ test("G1A deterministic growth radar foundation", async (t) => {
     await t.test("27 unresolved shop mappings are created without guessing", async () => {
       const mappings = await service.listShopMappings({ unresolved: true });
       assert.equal(mappings.total, 2);
-      assert.equal(mappings.mappings.every((item) => item.internalShopId === null), true);
+      assert.equal(mappings.mappings.every((item) => item.internalShopId !== null && item.confirmationStatus === "pending"), true);
     });
 
     await t.test("28 invalid shop master data is rejected", async () => {
@@ -299,6 +302,7 @@ test("G1A deterministic growth radar foundation", async (t) => {
       thaiShop = await service.createShop({ internalShopCode: "th-laz-001", displayName: "Thai Home", platform: "Lazada", countryCode: "th", countryName: "泰国" });
       assert.equal(thaiShop.internalShopCode, "TH-LAZ-001");
       assert.equal(thaiShop.countryCode, "TH");
+      assert.equal(thaiShop.confirmationStatus, "pending");
     });
 
     await t.test("30 confirming a shop mapping writes a business audit event", async () => {
@@ -308,6 +312,8 @@ test("G1A deterministic growth radar foundation", async (t) => {
       assert.equal(result.mapping.mappingStatus, "manually_confirmed");
       assert.equal(result.history[0].action, "confirmed");
       assert.equal(result.history[0].requestId, "request-shop-confirm");
+      const scope = await service.confirmShopScope(thaiShop.id, { actorLabel: "operator", requestId: "request-scope-confirm" });
+      assert.equal(scope.shop.confirmationStatus, "confirmed");
     });
 
     await t.test("31 shop confirmation backfills order country", async () => {
@@ -352,7 +358,8 @@ test("G1A deterministic growth radar foundation", async (t) => {
     });
 
     await t.test("37 inventory apply stores raw row and snapshot framework", async () => {
-      const applied = await service.applyPreview("mabang_inventory", { previewId: stateInventoryPreview.previewId, idempotencyKey: INVENTORY_SHA });
+      const applied = await service.applyPreview("mabang_inventory", { previewId: stateInventoryPreview.previewId, idempotencyKey: INVENTORY_SHA },
+        { actorLabel: "test_actor", confirmationGranted: true });
       assert.equal(applied.reused, false);
       const summary = await service.summary();
       assert.equal(summary.inventoryRawRows, 1);
@@ -367,9 +374,9 @@ test("G1A deterministic growth radar foundation", async (t) => {
       assert.equal(result.rows[0].days_of_supply_status, "unavailable");
     });
 
-    await t.test("38a source scope remains unconfirmed for both source domains", async () => {
+    await t.test("38a applied source scope is confirmed for both source domains", async () => {
       const result = await dataAccess.provider.query("SELECT DISTINCT source_scope_status FROM growth_source_batches ORDER BY source_scope_status");
-      assert.deepEqual(result.rows.map((row) => row.source_scope_status), ["unconfirmed"]);
+      assert.deepEqual(result.rows.map((row) => row.source_scope_status), ["confirmed"]);
     });
 
     await t.test("38b order lines persist the normalized source warehouse", async () => {
@@ -386,7 +393,7 @@ test("G1A deterministic growth radar foundation", async (t) => {
       assert.equal(row.normalized_warehouse_name, "WH-A");
       assert.deepEqual([Number(row.source_visible_sales_7d), Number(row.source_visible_sales_28d),
         Number(row.source_visible_sales_42d), Number(row.source_predicted_daily_sales)], [5, 18, 25, 0.5]);
-      assert.equal(row.source_scope_status, "unconfirmed");
+      assert.equal(row.source_scope_status, "confirmed");
     });
 
     await t.test("38c1 inventory grain accepts another warehouse and rejects a duplicate SKU warehouse", async () => {
@@ -441,13 +448,15 @@ test("G1A deterministic growth radar foundation", async (t) => {
     await t.test("41 growth radar import and mapping requests have stable audit actions", () => {
       assert.equal(describeAuditRequest("POST", "/api/growth-radar/import/orders/apply").action, "growth_radar.order.applied");
       assert.equal(describeAuditRequest("POST", "/api/growth-radar/mappings/products/revoke").action, "growth_radar.product_mapping.revoked");
+      assert.equal(describeAuditRequest("POST", "/api/growth-radar/shops/shop-id/confirm").action, "growth_radar.shop.confirmed");
+      assert.equal(describeAuditRequest("POST", "/api/growth-radar/shops/shop-id/revoke").action, "growth_radar.shop.confirmation_revoked");
     });
 
-    await t.test("42 frontend exposes exactly eight G1A data views", async () => {
+    await t.test("42 frontend exposes exactly eight G1B data views", async () => {
       const source = await fs.readFile(path.join(projectRoot, "public", "growth-radar-page.mjs"), "utf8");
       assert.equal((source.match(/^  \["[^"]+", "[^"]+"\],$/gm) || []).length, 8);
-      assert.match(source, /当前在线未实现/);
-      assert.match(source, /先执行无写入预览/);
+      assert.match(source, /无权威数据源，不显示为 0/);
+      assert.match(source, /生成只读预览/);
     });
 
     await t.test("43 migration and repository preserve provider-neutral placeholders", async () => {

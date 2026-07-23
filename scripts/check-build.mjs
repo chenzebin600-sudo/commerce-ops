@@ -7,6 +7,7 @@ const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 for (const file of [
   "public/app.js",
   "public/audit-page.mjs",
+  "public/growth-radar-page.mjs",
   "public/auth-client.mjs",
   "public/ad-frame-bridge.mjs",
   "lib/app-access.mjs",

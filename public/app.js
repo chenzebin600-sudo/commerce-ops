@@ -7,7 +7,7 @@ import {
 import { createAdFrameBridge } from "./ad-frame-bridge.mjs";
 import { createAuditPage } from "./audit-page.mjs";
 import { createProductCenterPage } from "./product-center-page.mjs?v=20260721-ui-delete-ai-1";
-import { createGrowthRadarPage } from "./growth-radar-page.mjs?v=20260721-g1a-1";
+import { createGrowthRadarPage } from "./growth-radar-page.mjs?v=20260722-g1b2-1";
 import { createExcelHtmlRenderer } from "/excel-cell-policy.mjs";
 
 let currentReport = null;
@@ -229,7 +229,7 @@ const PAGE_META = {
   },
   "growth-radar": {
     title: "确定性货盘增长雷达",
-    subtitle: "校准订单事实、店铺身份与 SKU 映射；当前节点仅建立可审计的数据底座。",
+    subtitle: "管理订单、库存、店铺范围与来源语义；当前节点不提供机会评分或店铺推荐。",
   },
 };
 
