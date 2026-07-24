@@ -89,7 +89,7 @@ import { MODULE_IDS } from "./lib/contracts/module-ids.mjs";
 import { createIdentifier } from "./lib/contracts/identifiers.mjs";
 import { MabangInventoryBrowserSession } from "./lib/mabang-images/browser-session.mjs";
 import { MabangImageAssetService } from "./lib/mabang-images/image-assets.mjs";
-import { MabangSkuImageCollectorService } from "./lib/mabang-images/service.mjs";
+import { createMabangImageAuditRecord, MabangSkuImageCollectorService } from "./lib/mabang-images/service.mjs";
 import { createMabangImageAccessPolicy } from "./lib/mabang-images/access-policy.mjs";
 import { createMabangImageApi } from "./lib/mabang-images/api.mjs";
 
@@ -370,13 +370,7 @@ const mabangImageService = new MabangSkuImageCollectorService({
   concurrency: Number(process.env.MABANG_IMAGE_DOWNLOAD_CONCURRENCY || 4),
   retryAttempts: Number(process.env.MABANG_IMAGE_RETRY_ATTEMPTS || 4),
   maxPages: Number(process.env.MABANG_IMAGE_SAFE_MAX_PAGES || 10000),
-  audit: async ({ action, actor, metadata }) => auditService.recordSafely({
-    module: "mabang",
-    action,
-    status: "success",
-    actorType: actor,
-    metadata,
-  }),
+  audit: async (event) => auditService.recordSafely(createMabangImageAuditRecord(event)),
 });
 await mabangImageService.recoverInterruptedBatches();
 const handleMabangImageApi = createMabangImageApi({

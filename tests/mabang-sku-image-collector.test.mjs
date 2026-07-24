@@ -17,7 +17,7 @@ import {
 } from "../lib/mabang-images/extraction.mjs";
 import { MabangInventoryBrowserSession, requestForPage, selectInventoryCapture } from "../lib/mabang-images/browser-session.mjs";
 import { inspectImageBuffer, MabangImageAssetService } from "../lib/mabang-images/image-assets.mjs";
-import { MabangSkuImageCollectorService } from "../lib/mabang-images/service.mjs";
+import { createMabangImageAuditRecord, MabangSkuImageCollectorService } from "../lib/mabang-images/service.mjs";
 import { redactAuditText, sanitizeAuditMetadata } from "../lib/security/audit-service.mjs";
 
 const projectRoot = path.resolve(".");
@@ -461,9 +461,79 @@ test("33. 当前分支完整迁移链可从 001 执行至 015 且新增表初始
   }
 });
 
+test("34. 成功采集审计事件显式记录 success 状态", async () => {
+  const { service, records } = collectorAuditHarness();
+  await service.run("batch-success");
+  const completed = records.find((record) => record.action === "mabang_images.collect_completed");
+  assert.deepEqual(
+    { action: completed?.action, status: completed?.status },
+    { action: "mabang_images.collect_completed", status: "success" },
+  );
+});
+
+test("35. 失败采集审计事件显式记录 failed 状态", async () => {
+  const { service, records } = collectorAuditHarness({ failOpen: true });
+  await assert.rejects(() => service.run("batch-failed"), { code: "MABANG_TEST_OPEN_FAILED" });
+  const failed = records.find((record) => record.action === "mabang_images.collect_failed");
+  assert.deepEqual(
+    { action: failed?.action, status: failed?.status },
+    { action: "mabang_images.collect_failed", status: "failed" },
+  );
+});
+
 async function createAsset(context) {
   const service = new MabangImageAssetService({ repository: context.repository, tempRoot: path.join(context.root, "temp"), imageRoot: path.join(context.root, "media") });
   return (await service.store({ buffer: png(), contentType: "image/png", sourceUrl: "https://stock-cos.mabangerp.com/AB-1_1.png" })).asset;
+}
+
+function collectorAuditHarness({ failOpen = false } = {}) {
+  const records = [];
+  let batch = {
+    id: failOpen ? "batch-failed" : "batch-success",
+    accountId: "account",
+    mode: "full_initial",
+    status: "pending",
+    currentPage: 0,
+    totalPages: 1,
+    createdBy: "tester",
+    startedAt: null,
+    discoveredSkus: 0,
+    downloadedImages: 0,
+    duplicateImages: 0,
+    failedImages: 0,
+    linkedProducts: 0,
+  };
+  const repository = {
+    getBatch: async () => ({ ...batch }),
+    updateBatch: async (_id, changes) => {
+      batch = { ...batch, ...changes };
+      return { ...batch };
+    },
+    latestCheckpoint: async () => null,
+    upsertCheckpoint: async () => {},
+    saveDiscoveries: async () => {},
+    discoveriesForPage: async () => [],
+    recomputeBatchCounters: async () => ({ ...batch }),
+  };
+  const browser = {
+    open: async () => {
+      if (failOpen) {
+        const error = new Error("controlled open failure");
+        error.code = "MABANG_TEST_OPEN_FAILED";
+        throw error;
+      }
+      return { interfaceProfile: {}, totalPages: 1 };
+    },
+    page: async () => ({ rows: [], currentPage: 1, totalPages: 1, hasNext: false, strategy: "interface" }),
+    close: async () => {},
+  };
+  const service = new MabangSkuImageCollectorService({
+    repository,
+    assetService: {},
+    browserFactory: async () => browser,
+    audit: async (event) => records.push(createMabangImageAuditRecord(event)),
+  });
+  return { service, records };
 }
 
 async function retryHarness(statuses) {
