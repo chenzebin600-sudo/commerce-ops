@@ -64,6 +64,11 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 | `growth_mapping_events` | 0 | mapping business history | `id` | indexed mapping type, mapping ID and occurrence time |
 | `growth_shop_sku_observations` | 0 | historical observed facts | `id` | shop/product/batches `RESTRICT`; unique observation key |
 | `growth_shop_sku_coverage_snapshots` | 0 | reserved current-online facts | `id` | shop/product `RESTRICT`; unique shop, product, source and observation time |
+| `mabang_sku_image_batches` | 0 | manually triggered Mabang image collection history | `id` | account and optional source batch `RESTRICT`; resumable mode/status counters |
+| `mabang_sku_image_checkpoints` | 0 | per-page image collection checkpoints | `id` | batch `CASCADE`; unique batch plus page number |
+| `mabang_sku_image_discoveries` | 0 | SKU/image discovery evidence and download state | `id` | batch `CASCADE`, asset `SET NULL`; row SKU remains authoritative |
+| `product_media_assets` | 0 | shared product image metadata | `id` | unique SHA-256 and relative path; physical bytes remain in file storage |
+| `product_media_links` | 0 | cross-country SKU-to-asset suggestions and confirmations | `id` | asset/product `RESTRICT`; unique asset plus product |
 
 ## Type conversion details
 
@@ -77,6 +82,8 @@ Listing search keywords, selling points, usage scenarios, platform attributes, v
 
 Growth radar source scope/header/redaction documents, raw row values/types, mapping candidates, quality context, shop category scope, and mapping event snapshots are also JSON text and must become validated `jsonb`. Preserve the explicit `historical_observed` and reserved `current_online` semantic checks during conversion.
 
+Mabang image collection interface profiles are redacted JSON text and must become `jsonb`. The image resource layer stores only metadata and a safe relative path in the database; image bytes remain in the unified file layer. Preserve the unique SHA-256 constraint and the `(asset_id, product_id)` link identity.
+
 ### Date and timezone
 
 Convert `*_at`, `lease_until`, and file-created/modified timestamps to `timestamptz`. Convert `payment_start_date` and `payment_end_date` to `date`. Keep `scheduled_export_tasks.timezone` as an IANA timezone string. Parse all existing ISO values as UTC; do not infer a timezone for malformed or timezone-free historical text without a reconciliation exception.
@@ -85,9 +92,13 @@ Convert `*_at`, `lease_until`, and file-created/modified timestamps to `timestam
 
 Convert account/DingTalk/task flags, lifecycle `truncated`, `suggest_quarantine`, and `suggest_cleanup` from checked 0/1 integers to `boolean`. Reconcile with `value IN (0,1)` before import.
 
+Migration 015 introduces no new persisted boolean flag. If a PostgreSQL adapter later derives boolean state from image batch, discovery, asset, or link statuses, it must keep the status columns authoritative and must not silently collapse their multi-state semantics.
+
 ### Enums and checks
 
 Keep current status/type checks as PostgreSQL `CHECK` constraints in the first migration. Native enums can wait until values stabilize. Preserve length checks for deletion actor/reason and 64-character SHA-256 checks.
+
+For migration 015, convert collection and asset timestamps to `timestamptz`, byte counts to `bigint`, and the redacted interface profile to `jsonb`. Preserve the checkpoint `(batch_id, page_number)`, discovery row identity, asset SHA-256, safe relative path, storage file ID, and asset/product link uniqueness. Recreate `CASCADE`, `SET NULL`, and `RESTRICT` foreign-key behavior explicitly; do not store image binary content in SQLite or PostgreSQL.
 
 ## SQLite dialect inventory
 
@@ -114,7 +125,7 @@ Runtime-only dialect operations are now located under `lib/data/sqlite`; `script
 ## Migration sequence
 
 1. Freeze schema changes and create a verified SQLite backup plus file manifest.
-2. Build PostgreSQL migrations from the fourteen SQLite migrations, preserving keys, checks, indexes, and delete behavior.
+2. Build PostgreSQL migrations from the fifteen SQLite migrations, preserving keys, checks, indexes, and delete behavior.
 3. Create PostgreSQL adapters behind the existing Provider/Repository contracts; keep SQLite as the active provider.
 4. Import reference/config tables: accounts and DingTalk configs, preserving encrypted bytes.
 5. Import task/run/event history, then export/file and lifecycle relationships in FK order.

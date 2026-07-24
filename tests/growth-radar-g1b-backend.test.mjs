@@ -479,13 +479,19 @@ test("G1B1 shop scope and source confirmation backend", async (t) => {
       assert.equal(after, packageRowsBefore);
     });
 
-    await t.test("35 migration set remains exactly 001 through 014", async () => {
+    await t.test("35 G1B migration baseline remains complete from 001 through 014", async () => {
       const migrations = (await fs.readdir(path.join(projectRoot, "migrations"))).filter((name) => /^\d{3}_.+\.sql$/.test(name)).sort();
-      assert.equal(migrations.length, 14);
-      assert.match(migrations.at(-1), /^014_/);
+      const baselineMigrations = migrations.filter((name) => Number.parseInt(name.slice(0, 3), 10) <= 14);
+      assert.deepEqual(
+        baselineMigrations.map((name) => Number.parseInt(name.slice(0, 3), 10)),
+        Array.from({ length: 14 }, (_, index) => index + 1),
+      );
+      assert.equal(baselineMigrations.at(-1), "014_deterministic_growth_radar_scope_and_linkage.sql");
       const applied = await dataAccess.provider.query("SELECT version FROM schema_migrations ORDER BY version");
-      assert.equal(applied.rows.length, 14);
-      assert.match(applied.rows.at(-1).version, /^014_/);
+      const appliedBaseline = applied.rows
+        .map((row) => row.version)
+        .filter((name) => Number.parseInt(name.slice(0, 3), 10) <= 14);
+      assert.deepEqual(appliedBaseline, baselineMigrations);
     });
 
     await t.test("36 A2 profile accepts only its isolated development database", async () => {

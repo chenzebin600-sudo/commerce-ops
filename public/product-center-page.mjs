@@ -466,6 +466,26 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     </div>`).join("")}</div>`;
   }
 
+  function renderMabangProductImages(product) {
+    if (!product.mabangImages?.length) return '<p class="product-empty">暂无马帮来源图片。</p>';
+    return `<div class="product-image-list">${product.mabangImages.map((image) => `<div class="product-image-item mabang-linked-image">
+      <img alt="${esc(image.originalFilename)}" data-mabang-image-asset="${esc(image.assetId)}" />
+      <span class="source-badge central">马帮 · ${image.mediaRole === "primary" ? "正式主图" : image.mediaRole === "suggested_primary" ? "建议主图" : "图库"}</span>
+    </div>`).join("")}</div>`;
+  }
+
+  async function hydrateMabangImages(root) {
+    await Promise.all([...root.querySelectorAll("img[data-mabang-image-asset]")].map(async (image) => {
+      try {
+        const response = await authorizedFetch(`/api/mabang-images/assets/${encodeURIComponent(image.dataset.mabangImageAsset)}/content`);
+        if (!response.ok) throw new Error("马帮图片加载失败");
+        const objectUrl = URL.createObjectURL(await response.blob());
+        image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+        image.src = objectUrl;
+      } catch { image.classList.add("image-unavailable"); }
+    }));
+  }
+
   function renderProductDetail(product) {
     state.currentProduct = product;
     state.productFields = product.fields || state.productFields;
@@ -480,7 +500,8 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
         <strong>${esc(displayFieldValue(product.fieldValues?.[field.code]))}</strong>
       </div>`).join("")}</div></section>`).join("");
     byId("productDrawerContent").innerHTML = `${sections}
-      <section><h3>产品图片</h3>${renderProductImages(product)}</section>
+      <section><h3>用户上传图片</h3>${renderProductImages(product)}</section>
+      <section><h3>马帮来源素材</h3>${renderMabangProductImages(product)}</section>
       <section><h3>仓库明细</h3>${product.inventories?.length ? `<div class="product-inventory-list">${product.inventories.map((item) => `<div><strong>${esc(item.warehouse)}</strong><span>库存 ${esc(formatNumber(item.stock))}</span><small>${esc(item.plannedWarehouse || "无计划仓")}</small></div>`).join("")}</div>` : '<p class="product-empty">暂无仓库记录。</p>'}</section>
       <section><h3>人工修改记录</h3>${product.overrideEvents?.length ? `<div class="product-change-history">${product.overrideEvents.map((event) => `<div><strong>${esc(event.fieldCode)}</strong><span>原值：${esc(displayFieldValue(event.previousValue))}</span><span>人工值：${esc(displayFieldValue(event.nextValue))}</span><small>${esc(event.operatorLabel)} · ${esc(formatDate(event.occurredAt))}</small></div>`).join("")}</div>` : '<p class="product-empty">暂无人工修改。</p>'}</section>
       <section><h3>已确认 AI 内容</h3>${renderConfirmedAiContent(product.confirmedAiContent)}</section>
@@ -494,6 +515,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
         <div><span>删除状态</span><strong>${product.deletedAt ? `已删除 · ${esc(formatDate(product.deletedAt))}` : "正常"}</strong></div>
       </div></section>`;
     hydrateImages(byId("productDrawerContent"));
+    hydrateMabangImages(byId("productDrawerContent"));
   }
 
   function renderConfirmedAiContent(content) {

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="Lazada、Shopee、TikTok Shop 竞品分析、关键词研究、订单采集与广告分析工作台" />
     <title>跨境电商 AI 运营工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260721-product-listing-ai-2" />
+    <link rel="stylesheet" href="/styles.css?v=20260722-mabang-images-2" />
     <link rel="stylesheet" href="/growth-radar.css?v=20260722-g1b2-1" />
   </head>
   <body>
@@ -59,6 +59,10 @@
             <button class="tab-button" type="button" data-page="mabang" aria-controls="page-mabang">
               <span class="nav-monogram" aria-hidden="true">M</span>
               <span>马帮数据</span>
+            </button>
+            <button class="tab-button" type="button" data-page="mabang-images" aria-controls="page-mabang-images">
+              <span class="nav-monogram" aria-hidden="true">I</span>
+              <span>马帮 SKU 图片</span>
             </button>
             <button class="tab-button" type="button" data-page="ads" aria-controls="page-ads">
               <span class="nav-monogram" aria-hidden="true">A</span>
@@ -907,6 +911,80 @@
           </section>
         </section>
 
+        <section id="page-mabang-images" class="page-section" hidden>
+          <section class="panel mabang-images-panel">
+            <div class="panel-heading mabang-images-heading">
+              <div>
+                <span class="page-context">MABANG ASSET SYNC</span>
+                <h2>马帮 SKU 图片采集</h2>
+                <p>复用已登录的马帮浏览器会话，从库存查询发现图片并关联同 SKU 的产品记录。</p>
+              </div>
+              <span class="status-badge neutral">仅手动运行 · 无每日定时</span>
+            </div>
+
+            <div class="mabang-images-notice" role="note">
+              <strong>该任务可能运行较长时间，但可以暂停和恢复。</strong>
+              <span>图片保存在统一文件层；不会修改产品包原始数据，也不会自动覆盖人工主图。</span>
+            </div>
+
+            <div class="mabang-images-commandbar">
+              <label class="field-block">
+                <span>马帮账号</span>
+                <select id="mabangImageAccount"><option value="">正在读取账号…</option></select>
+              </label>
+              <div class="mabang-images-actions" aria-label="采集操作">
+                <button id="mabangImageFullBtn" type="button">开始首次全量采集</button>
+                <button id="mabangImageMissingBtn" class="button-secondary" type="button">补采缺失图片</button>
+                <button id="mabangImageRetryBtn" class="button-tertiary" type="button" disabled>重试失败图片</button>
+              </div>
+            </div>
+
+            <section id="mabangImageProgressPanel" class="mabang-image-progress" aria-live="polite">
+              <div class="mabang-image-progress-head">
+                <div><span>当前任务</span><strong id="mabangImageBatchTitle">暂无任务</strong></div>
+                <div class="mabang-image-run-actions">
+                  <button id="mabangImagePauseBtn" class="button-tertiary" type="button" disabled>暂停</button>
+                  <button id="mabangImageResumeBtn" class="button-secondary" type="button" disabled>继续</button>
+                </div>
+              </div>
+              <div class="mabang-image-progress-track" aria-hidden="true"><span id="mabangImageProgressBar"></span></div>
+              <div class="mabang-image-metrics">
+                <div><span>当前页</span><strong id="mabangImageCurrentPage">—</strong></div>
+                <div><span>总页数</span><strong id="mabangImageTotalPages">—</strong></div>
+                <div><span>已发现 SKU</span><strong id="mabangImageDiscovered">0</strong></div>
+                <div><span>已下载图片</span><strong id="mabangImageDownloaded">0</strong></div>
+                <div><span>缺失图片</span><strong id="mabangImageMissing">0</strong></div>
+                <div><span>下载失败</span><strong id="mabangImageFailed">0</strong></div>
+                <div><span>重复图片</span><strong id="mabangImageDuplicate">0</strong></div>
+                <div><span>SKU 文件名不一致</span><strong id="mabangImageMismatch">0</strong></div>
+                <div><span>关联产品</span><strong id="mabangImageLinked">0</strong></div>
+              </div>
+            </section>
+
+            <div class="mabang-images-grid">
+              <section class="mabang-images-section">
+                <div class="section-title-row compact"><div><h3>采集批次</h3><p>选择批次查看发现记录和失败原因。</p></div><button id="mabangImageRefreshBtn" class="button-tertiary" type="button">刷新</button></div>
+                <div id="mabangImageBatchTable" class="table-wrap"></div>
+              </section>
+              <section class="mabang-images-section">
+                <div class="section-title-row compact">
+                  <div><h3>SKU 图片明细</h3><p id="mabangImageDiscoveryHint">请先选择一个采集批次。</p></div>
+                  <label class="compact-select"><span>状态</span><select id="mabangImageDiscoveryStatus"><option value="">全部</option><option value="failed">下载失败</option><option value="missing">缺失图片</option><option value="downloaded">已下载</option><option value="duplicate">重复图片</option><option value="skipped">已跳过</option></select></label>
+                </div>
+                <div id="mabangImageDiscoveryTable" class="table-wrap"></div>
+              </section>
+            </div>
+          </section>
+
+          <dialog id="mabangImageProductsDialog" class="management-dialog management-dialog-wide" aria-labelledby="mabangImageProductsTitle">
+            <div class="dialog-heading">
+              <div><span class="page-context">SKU ASSET LINKS</span><h2 id="mabangImageProductsTitle">关联产品</h2><p>建议主图只有确认后才成为正式主图；人工主图始终受到保护。</p></div>
+              <button class="dialog-close" type="button" data-close-dialog="mabangImageProductsDialog" aria-label="关闭">×</button>
+            </div>
+            <div id="mabangImageProductsContent"></div>
+          </dialog>
+        </section>
+
         <section id="page-ads" class="page-section" hidden>
           <section class="panel ads-panel">
             <div class="panel-heading ads-head">
@@ -1247,6 +1325,6 @@
         <div class="dialog-actions"><button class="button-secondary" type="button" data-close-dialog="runNowConfirmDialog">取消</button><button id="confirmRunNowBtn" type="button">确认执行</button></div>
       </dialog>
     </main>
-    <script type="module" src="/app.js?v=20260721-product-listing-workbench-1"></script>
+    <script type="module" src="/app.js?v=20260722-mabang-images-2"></script>
   </body>
 </html>

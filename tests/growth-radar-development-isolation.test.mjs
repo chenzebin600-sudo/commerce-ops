@@ -155,10 +155,29 @@ test("a legal A2 profile can apply migrations 001 through 014 to its isolated da
   let dataAccess;
   try {
     const config = resolveRuntimeConfig({ bootstrapRoot: context.root, env: context.env });
-    dataAccess = openCommerceDataAccess({ rootDir: projectRoot, databasePath: config.databasePath });
+    const migrationNames = (await fs.readdir(path.join(projectRoot, "migrations")))
+      .filter((name) => /^\d{3}_.+\.sql$/.test(name) && Number.parseInt(name.slice(0, 3), 10) <= 14)
+      .sort();
+    assert.deepEqual(
+      migrationNames.map((name) => Number.parseInt(name.slice(0, 3), 10)),
+      Array.from({ length: 14 }, (_, index) => index + 1),
+    );
+    assert.equal(migrationNames.at(-1), "014_deterministic_growth_radar_scope_and_linkage.sql");
+
+    const baselineMigrationsDir = path.join(context.root, "migrations-g1b-baseline");
+    await fs.mkdir(baselineMigrationsDir, { recursive: true });
+    await Promise.all(migrationNames.map((name) => fs.copyFile(
+      path.join(projectRoot, "migrations", name),
+      path.join(baselineMigrationsDir, name),
+    )));
+
+    dataAccess = openCommerceDataAccess({
+      rootDir: projectRoot,
+      databasePath: config.databasePath,
+      migrationsDir: baselineMigrationsDir,
+    });
     const rows = await dataAccess.provider.query("SELECT version FROM schema_migrations ORDER BY version");
-    assert.equal(rows.rows.length, 14);
-    assert.equal(rows.rows.at(-1).version, "014_deterministic_growth_radar_scope_and_linkage.sql");
+    assert.deepEqual(rows.rows.map((row) => row.version), migrationNames);
   } finally {
     dataAccess?.close();
     await fs.rm(context.root, { recursive: true, force: true });
