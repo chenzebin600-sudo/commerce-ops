@@ -420,6 +420,47 @@ test("32. 素材记录存在但物理文件缺失时由相同 SHA 内容安全�
   assert.equal((await fs.stat(storedPath)).size, source.buffer.length);
 });
 
+test("33. 当前分支完整迁移链可从 001 执行至 015 且新增表初始为空", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mabang-image-migration-chain-"));
+  const databasePath = path.join(root, "migration-chain.sqlite");
+  let access;
+  try {
+    const migrationNames = (await fs.readdir(path.join(projectRoot, "migrations")))
+      .filter((name) => /^\d{3}_.+\.sql$/.test(name))
+      .sort();
+    assert.deepEqual(
+      migrationNames.map((name) => Number.parseInt(name.slice(0, 3), 10)),
+      Array.from({ length: 15 }, (_, index) => index + 1),
+    );
+    assert.equal(migrationNames.at(-1), "015_mabang_sku_image_collector.sql");
+
+    access = openCommerceDataAccess({ rootDir: projectRoot, databasePath });
+    const applied = await access.provider.query("SELECT version FROM schema_migrations ORDER BY version");
+    assert.deepEqual(applied.rows.map((row) => row.version), migrationNames);
+    assert.equal((await access.provider.query("PRAGMA integrity_check")).rows[0].integrity_check, "ok");
+    assert.equal((await access.provider.query("PRAGMA foreign_key_check")).rows.length, 0);
+
+    for (const table of [
+      "mabang_sku_image_batches",
+      "mabang_sku_image_checkpoints",
+      "mabang_sku_image_discoveries",
+      "product_media_assets",
+      "product_media_links",
+    ]) {
+      const count = await access.provider.query(`SELECT COUNT(*) AS total FROM ${table}`);
+      assert.equal(Number(count.rows[0].total), 0, table);
+    }
+
+    access.close();
+    access = openCommerceDataAccess({ rootDir: projectRoot, databasePath });
+    const reapplied = await access.provider.query("SELECT version FROM schema_migrations ORDER BY version");
+    assert.deepEqual(reapplied.rows.map((row) => row.version), migrationNames);
+  } finally {
+    access?.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 async function createAsset(context) {
   const service = new MabangImageAssetService({ repository: context.repository, tempRoot: path.join(context.root, "temp"), imageRoot: path.join(context.root, "media") });
   return (await service.store({ buffer: png(), contentType: "image/png", sourceUrl: "https://stock-cos.mabangerp.com/AB-1_1.png" })).asset;

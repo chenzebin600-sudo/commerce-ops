@@ -165,10 +165,14 @@ test("G1B2 frontend workflow and isolated validation contract", async (t) => {
     assert.match(app, /productCenterPage\.load/);
   });
 
-  await t.test("24 migrations remain exactly 001 through 014", () => {
+  await t.test("24 G1B migration baseline remains complete from 001 through 014", () => {
     const numbered = migrations.filter((name) => /^\d{3}_/.test(name)).sort();
-    assert.equal(numbered.at(-1).startsWith("014_"), true);
-    assert.equal(numbered.some((name) => /^(015|016|017)_/.test(name)), false);
+    const baselineMigrations = numbered.filter((name) => Number.parseInt(name.slice(0, 3), 10) <= 14);
+    assert.deepEqual(
+      baselineMigrations.map((name) => Number.parseInt(name.slice(0, 3), 10)),
+      Array.from({ length: 14 }, (_, index) => index + 1),
+    );
+    assert.equal(baselineMigrations.at(-1), "014_deterministic_growth_radar_scope_and_linkage.sql");
   });
 
   await t.test("25 formal database paths remain fail-closed", () => {
