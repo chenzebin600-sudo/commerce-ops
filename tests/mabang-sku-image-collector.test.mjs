@@ -571,6 +571,15 @@ test("42. 完成审计记录配置上限和实际选中 SKU 数量", async () =>
   const completed = harness.auditRecords.find((record) => record.action === "mabang_images.collect_completed");
   assert.equal(completed.metadata.configuredMaxSkusPerBatch, 50);
   assert.equal(completed.metadata.actualSelectedSkuCount, 50);
+  assert.deepEqual(sanitizeAuditMetadata(completed.metadata), {
+    batchId: "batch",
+    accountId: "account",
+    mode: "full_initial",
+    discoveredSkus: 50,
+    failedImages: 0,
+    configuredMaxSkusPerBatch: 50,
+    actualSelectedSkuCount: 50,
+  });
 });
 
 async function createAsset(context) {
