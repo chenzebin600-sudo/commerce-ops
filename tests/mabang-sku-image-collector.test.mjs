@@ -17,7 +17,11 @@ import {
 } from "../lib/mabang-images/extraction.mjs";
 import { MabangInventoryBrowserSession, requestForPage, selectInventoryCapture } from "../lib/mabang-images/browser-session.mjs";
 import { inspectImageBuffer, MabangImageAssetService } from "../lib/mabang-images/image-assets.mjs";
-import { createMabangImageAuditRecord, MabangSkuImageCollectorService } from "../lib/mabang-images/service.mjs";
+import {
+  createMabangImageAuditRecord,
+  MabangSkuImageCollectorService,
+  selectRowsWithinSkuLimit,
+} from "../lib/mabang-images/service.mjs";
 import { redactAuditText, sanitizeAuditMetadata } from "../lib/security/audit-service.mjs";
 
 const projectRoot = path.resolve(".");
@@ -481,6 +485,94 @@ test("35. 失败采集审计事件显式记录 failed 状态", async () => {
   );
 });
 
+test("36. 50 个唯一 SKU 上限按 SKU 而不是数据行生效", () => {
+  const rows = Array.from({ length: 75 }, (_, index) => row(`SKU-${index + 1}`));
+  const result = selectRowsWithinSkuLimit(rows, new Set(), 50);
+  assert.equal(result.actualSelectedSkuCount, 50);
+  assert.equal(new Set(result.rows.map((item) => item.sourceSkuNormalized)).size, 50);
+  assert.equal(result.limitReached, true);
+});
+
+test("37. 默认建议的 100 个唯一 SKU 上限可精确保留 100 个 SKU", () => {
+  const service = new MabangSkuImageCollectorService({
+    repository: {},
+    assetService: {},
+    browserFactory: async () => ({}),
+  });
+  const rows = Array.from({ length: 125 }, (_, index) => row(`SKU-${index + 1}`));
+  const result = selectRowsWithinSkuLimit(rows, new Set(), service.maxSkusPerBatch);
+  assert.equal(service.maxSkusPerBatch, 100);
+  assert.equal(result.actualSelectedSkuCount, 100);
+  assert.equal(result.rows.length, 100);
+});
+
+test("38. 重复 SKU 不占用额外批次名额", () => {
+  const rows = Array.from({ length: 60 }, (_, index) => row(`SKU-${index + 1}`))
+    .flatMap((item, index) => [item, { ...item, sourceRowNumber: index + 101 }]);
+  const result = selectRowsWithinSkuLimit(rows, new Set(), 50);
+  assert.equal(result.actualSelectedSkuCount, 50);
+  assert.equal(result.rows.length, 100);
+});
+
+test("39. 多仓库同 SKU 的所有行在 SKU 入选后均被保留", () => {
+  const rows = [
+    { ...row("SKU-A"), warehouseName: "WH-1", sourceRowNumber: 1 },
+    { ...row("SKU-B"), warehouseName: "WH-1", sourceRowNumber: 2 },
+    { ...row("SKU-C"), warehouseName: "WH-1", sourceRowNumber: 3 },
+    { ...row("SKU-A"), warehouseName: "WH-2", sourceRowNumber: 4 },
+  ];
+  const result = selectRowsWithinSkuLimit(rows, new Set(), 2);
+  assert.deepEqual(result.rows.map((item) => `${item.sourceSkuNormalized}:${item.warehouseName}`), [
+    "SKU-A:WH-1",
+    "SKU-B:WH-1",
+    "SKU-A:WH-2",
+  ]);
+});
+
+test("40. 分页达到唯一 SKU 上限后停止请求后续页面", async () => {
+  const harness = runHarness([
+    { rows: skuPage(1, 1, 60), hasNext: true, totalPages: 3 },
+    { rows: skuPage(2, 61, 60), hasNext: true, totalPages: 3 },
+    { rows: skuPage(3, 121, 20), hasNext: false, totalPages: 3 },
+  ], null, { maxSkusPerBatch: 100 });
+  await harness.service.run("batch");
+  assert.deepEqual(harness.pageCalls, [1, 2]);
+  assert.equal(harness.batch.discoveredSkus, 100);
+  assert.equal(harness.selectedSkuCount(), 100);
+});
+
+test("41. 暂停后从检查点恢复不会突破已累计的 SKU 上限", async () => {
+  const initialRows = skuPage(1, 1, 80);
+  const harness = runHarness([
+    { rows: skuPage(2, 81, 40), hasNext: true, totalPages: 3 },
+    { rows: skuPage(3, 121, 20), hasNext: false, totalPages: 3 },
+  ], {
+    pageNumber: 1,
+    pageHash: inventoryPageHash(initialRows),
+    status: "completed",
+  }, {
+    maxSkusPerBatch: 100,
+    initialRows,
+    initialStatus: "paused",
+  });
+  await harness.service.resume("batch", "tester");
+  await harness.service.active.get("batch");
+  assert.deepEqual(harness.pageCalls, [2]);
+  assert.equal(harness.selectedSkuCount(), 100);
+  assert.equal(harness.batch.status, "completed");
+});
+
+test("42. 完成审计记录配置上限和实际选中 SKU 数量", async () => {
+  const harness = runHarness([
+    { rows: skuPage(1, 1, 75), hasNext: true, totalPages: 2 },
+    { rows: skuPage(2, 76, 10), hasNext: false, totalPages: 2 },
+  ], null, { maxSkusPerBatch: 50, audit: true });
+  await harness.service.run("batch");
+  const completed = harness.auditRecords.find((record) => record.action === "mabang_images.collect_completed");
+  assert.equal(completed.metadata.configuredMaxSkusPerBatch, 50);
+  assert.equal(completed.metadata.actualSelectedSkuCount, 50);
+});
+
 async function createAsset(context) {
   const service = new MabangImageAssetService({ repository: context.repository, tempRoot: path.join(context.root, "temp"), imageRoot: path.join(context.root, "media") });
   return (await service.store({ buffer: png(), contentType: "image/png", sourceUrl: "https://stock-cos.mabangerp.com/AB-1_1.png" })).asset;
@@ -510,6 +602,7 @@ function collectorAuditHarness({ failOpen = false } = {}) {
       return { ...batch };
     },
     latestCheckpoint: async () => null,
+    selectedSkuKeys: async () => [],
     upsertCheckpoint: async () => {},
     saveDiscoveries: async () => {},
     discoveriesForPage: async () => [],
@@ -559,27 +652,53 @@ async function retryHarness(statuses) {
   return { calls, waits, update };
 }
 
-function runHarness(pages, checkpoint = null) {
-  const batch = { id: "batch", accountId: "account", mode: "full_initial", status: "pending", currentPage: checkpoint?.pageNumber || 0,
+function skuPage(pageNumber, firstSku, count) {
+  return Array.from({ length: count }, (_, index) => row(`SKU-${firstSku + index}`, null, pageNumber, index + 1));
+}
+
+function runHarness(pages, checkpoint = null, {
+  maxSkusPerBatch = 100,
+  initialRows = [],
+  initialStatus = "pending",
+  audit = false,
+} = {}) {
+  const batch = { id: "batch", accountId: "account", mode: "full_initial", status: initialStatus, currentPage: checkpoint?.pageNumber || 0,
     totalPages: null, startedAt: null, createdBy: "tester", failedImages: 0 };
   const checkpoints = [];
   const discoveries = new Map();
+  if (initialRows.length) {
+    discoveries.set(initialRows[0].sourcePage || 1,
+      initialRows.map((item, index) => ({ ...item, id: `initial-${index}` })));
+  }
   const pageCalls = [];
+  const auditRecords = [];
+  const allDiscoveries = () => [...discoveries.values()].flat();
+  const selectedSkuCount = () => new Set(allDiscoveries().map((item) => item.sourceSkuNormalized)).size;
   const repository = {
     getBatch: async () => ({ ...batch }),
     updateBatch: async (_id, changes) => { Object.assign(batch, changes); return { ...batch }; },
     latestCheckpoint: async () => checkpoint,
+    selectedSkuKeys: async () => [...new Set(allDiscoveries().map((item) => item.sourceSkuNormalized))],
     upsertCheckpoint: async (value) => checkpoints.push(value),
     saveDiscoveries: async (_id, values) => { discoveries.set(values[0]?.sourcePage || 1, values.map((item, index) => ({ ...item, id: `${item.sourcePage}-${index}` }))); },
     discoveriesForPage: async (_id, pageNumber) => discoveries.get(pageNumber) || [],
     updateDiscovery: async () => {},
-    recomputeBatchCounters: async () => ({ ...batch, failedImages: 0 }),
+    recomputeBatchCounters: async () => {
+      Object.assign(batch, { discoveredSkus: selectedSkuCount(), failedImages: 0 });
+      return { ...batch };
+    },
   };
   const browser = {
     open: async () => ({ interfaceProfile: {}, totalPages: null }),
     page: async (number) => { pageCalls.push(number); const value = pages[pageCalls.length - 1] || { rows: [], hasNext: false }; return value; },
     close: async () => {},
   };
-  const service = new MabangSkuImageCollectorService({ repository, assetService: {}, browserFactory: async () => browser });
-  return { service, batch, checkpoints, pageCalls };
+  const service = new MabangSkuImageCollectorService({
+    repository,
+    assetService: {},
+    browserFactory: async () => browser,
+    maxSkusPerBatch,
+    audit: audit ? async (event) => auditRecords.push(createMabangImageAuditRecord(event)) : null,
+  });
+  return { service, batch, checkpoints, pageCalls, auditRecords, selectedSkuCount };
 }

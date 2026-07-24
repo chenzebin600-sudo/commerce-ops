@@ -370,6 +370,7 @@ const mabangImageService = new MabangSkuImageCollectorService({
   concurrency: Number(process.env.MABANG_IMAGE_DOWNLOAD_CONCURRENCY || 4),
   retryAttempts: Number(process.env.MABANG_IMAGE_RETRY_ATTEMPTS || 4),
   maxPages: Number(process.env.MABANG_IMAGE_SAFE_MAX_PAGES || 10000),
+  maxSkusPerBatch: Number(process.env.MABANG_IMAGE_MAX_SKUS_PER_BATCH || 100),
   audit: async (event) => auditService.recordSafely(createMabangImageAuditRecord(event)),
 });
 await mabangImageService.recoverInterruptedBatches();
