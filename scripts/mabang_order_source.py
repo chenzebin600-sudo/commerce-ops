@@ -38,9 +38,34 @@ ORDER_SEARCH_URL = BASE_URL + '/index.php?mod=order.oTc'
 EXPORT_TEMPLATE_URL = BASE_URL + '/index.php?mod=order.gotoExportOrderTemplate'
 EXPORT_PAGE_URL = BASE_URL + '/index.php?mod=order.exportOrderByTemplate'
 EXPORT_DATA_URL = PRIVATE_URL + '/index.php?mod=order.doExportByTemplateData'
+FULFILLMENT_CHANNEL_LIST_URL = BASE_URL + '/index.php?mod=order.getOrderLogisticsD'
+FULFILLMENT_REPORTING_INFO_URL = BASE_URL + '/index.php?mod=order.getReportingInformation'
+FULFILLMENT_SUBMIT_URL = BASE_URL + '/index.php?mod=order.doReportingInformation'
+FULFILLMENT_DISTRIBUTION_URL = BASE_URL + '/index.php?mod=order.doBatchDistribution'
+FULFILLMENT_BATCH_EDIT_URL = BASE_URL + '/index.php?mod=order.all'
 EXPORT_TEMPLATE_ID = '1049202'
 HEADERS_AJAX = {'Accept': 'application/json, text/javascript, */*; q=0.01', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'X-Requested-With': 'XMLHttpRequest', 'Origin': BASE_URL, 'Referer': ORDER_PAGE_URL}
 HEADERS_PAGE = {'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Referer': INITIAL_URL}
+
+
+def extract_fulfillment_stock_flags(page_html, internal_id='', order_reference=''):
+    wanted_internal_id = str(internal_id or '').strip()
+    wanted_reference = str(order_reference or '').strip()
+    for input_tag in re.findall(r'<input\b[^>]*>', str(page_html or ''), re.I):
+        attributes = {
+            name.lower(): html.unescape(value)
+            for name, _, value in re.findall(r'([\w:-]+)\s*=\s*(["\'])(.*?)\2', input_tag, re.S)
+        }
+        if not (
+            (wanted_internal_id and attributes.get('value') == wanted_internal_id)
+            or (wanted_reference and attributes.get('orderid') == wanted_reference)
+        ):
+            continue
+        return {
+            'hasGoods': attributes.get('data-hasgoods'),
+            'orderItemHasGoods': attributes.get('data-orderitemhasgoods'),
+        }
+    return {}
 
 class WPSLogger:
 
@@ -152,6 +177,20 @@ def safe_json(response):
     except Exception:
         text = response.text or ''
         raise Exception(f'接口返回不是 JSON，前500字符：{text[:500]}')
+
+
+def response_looks_unauthenticated(response, data=None):
+    url = str(getattr(response, 'url', '') or '').lower()
+    text = str(getattr(response, 'text', '') or '')[:20000].lower()
+    if 'mod=main.loginpage' in url:
+        return True
+    if 'name="username"' in text and 'name="password"' in text:
+        return True
+    if isinstance(data, dict) and not data.get('success', True):
+        message = str(data.get('message') or '').lower()
+        auth_markers = ('未登录', '请先登录', '登录失效', '登录过期', '重新登录', 'login expired', 'not logged in')
+        return any(marker in message for marker in auth_markers)
+    return False
 
 def extract_po_data(page_html):
     if not page_html:
@@ -385,6 +424,8 @@ class MabangClient:
     def __init__(self):
         self.session = requests.Session()
         self.session.trust_env = False
+        self._username = ''
+        self._password = ''
         self.last_po_data = '{}'
         self.last_page_count = None
         self.cached_export_fields = None
@@ -421,9 +462,65 @@ class MabangClient:
             headers['Cookie'] = cookie_text
         return headers
 
+    def _reset_session(self):
+        self.session = requests.Session()
+        self.session.trust_env = False
+        self._thread_local = threading.local()
+
+    def _reauthenticate(self):
+        if not self._username or not self._password:
+            raise Exception('MABANG_AUTH_REQUIRED: 马帮登录凭据不可用，需要人工重新配置。')
+        username, password = self._username, self._password
+        self._reset_session()
+        self.login(username, password)
+
+    def post_json_with_reauth(self, url, *, data, headers=None, operation='只读查询'):
+        for attempt in range(2):
+            response = self.session.post(
+                url, headers=headers or HEADERS_AJAX, data=data,
+                timeout=REQUEST_TIMEOUT, allow_redirects=True,
+            )
+            if response_looks_unauthenticated(response):
+                if attempt == 0:
+                    logger.warning(f'{operation}发现登录失效，自动重新登录一次。')
+                    self._reauthenticate()
+                    continue
+                raise Exception(f'MABANG_AUTH_EXPIRED: {operation}时马帮登录状态失效，自动重新登录后仍未恢复。')
+            try:
+                result = response.json()
+            except Exception:
+                if attempt == 0 and response_looks_unauthenticated(response):
+                    self._reauthenticate()
+                    continue
+                raise Exception(f'MABANG_RESPONSE_INVALID: {operation}返回格式异常，已停止操作。')
+            if response_looks_unauthenticated(response, result):
+                if attempt == 0:
+                    logger.warning(f'{operation}返回登录失效，自动重新登录一次。')
+                    self._reauthenticate()
+                    continue
+                raise Exception(f'MABANG_AUTH_EXPIRED: {operation}时马帮登录状态失效，自动重新登录后仍未恢复。')
+            return result
+        raise Exception(f'MABANG_AUTH_EXPIRED: {operation}无法获得有效登录状态。')
+
+    def get_text_with_reauth(self, url, *, headers=None, operation='只读页面查询'):
+        for attempt in range(2):
+            response = self.session.get(
+                url, headers=headers or HEADERS_PAGE,
+                timeout=REQUEST_TIMEOUT, allow_redirects=True,
+            )
+            if not response_looks_unauthenticated(response):
+                return str(response.text or '')
+            if attempt == 0:
+                logger.warning(f'{operation}发现登录失效，自动重新登录一次。')
+                self._reauthenticate()
+                continue
+            raise Exception(f'MABANG_AUTH_EXPIRED: {operation}时马帮登录状态失效，自动重新登录后仍未恢复。')
+        raise Exception(f'MABANG_AUTH_EXPIRED: {operation}无法获得有效登录状态。')
+
     def login(self, username, password):
         if not username or not password:
-            raise Exception('马帮账号或密码不能为空。')
+            raise Exception('MABANG_AUTH_REQUIRED: 马帮账号或密码不能为空。')
+        self._username, self._password = username, password
         logger.info('打开登录页')
         self.session.get(INITIAL_URL, headers=HEADERS_PAGE, timeout=REQUEST_TIMEOUT, allow_redirects=True)
         logger.info('提交登录')
@@ -433,10 +530,595 @@ class MabangClient:
         if not data.get('success'):
             message = data.get('message') or '未知错误'
             if '验证码' in message or '验证' in message:
-                raise Exception('马帮登录需要人工验证，请使用 Cookie 模式或官方 API。')
-            raise Exception(f'马帮登录失败：{message}')
-        self.session.get(ORDER_PAGE_URL, headers=HEADERS_PAGE, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+                raise Exception('MABANG_CAPTCHA_REQUIRED: 马帮登录需要人工验证。')
+            raise Exception(f'MABANG_AUTH_FAILED: 马帮登录失败：{message}')
+        verification = self.session.get(ORDER_PAGE_URL, headers=HEADERS_PAGE, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        if response_looks_unauthenticated(verification):
+            raise Exception('MABANG_AUTH_FAILED: 登录接口返回成功，但登录后的页面验证失败。')
         logger.info('马帮登录成功')
+
+    def find_order_for_fulfillment(self, order_reference, pending_status='2'):
+        reference = str(order_reference or '').strip()
+        if not reference:
+            raise Exception('必须指定订单编号。')
+        end = datetime.now()
+        start = end - timedelta(days=92)
+        params = build_order_params(1, start.strftime('%Y-%m-%d 00:00:00'), end.strftime('%Y-%m-%d 23:59:59'))
+        params['rowsPerPage'] = '100'
+        params['Order.orderStatus'] = str(pending_status)
+        params['OrderSearch.fuzzySearchKey'] = 'Order.platformOrderId'
+        params['OrderSearch.fuzzySearchValue'] = reference
+        data = self.post_json_with_reauth(
+            ORDER_SEARCH_URL, headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data=params, operation='查询指定订单',
+        )
+        if not data.get('success'):
+            raise Exception(data.get('message') or '订单查询失败。')
+        page_html = str(data.get('pageHtml') or '')
+        po_data = extract_po_data(page_html)
+        if po_data:
+            self.last_po_data = po_data
+        orders = data.get('orderDataList') or []
+        for order in orders:
+            candidates = [order.get('id'), order.get('orderId'), order.get('platformOrderId'), order.get('salesRecordNumber')]
+            if reference in [str(value or '').strip() for value in candidates]:
+                matched_order = dict(order)
+                internal_id = str(order.get('id') or order.get('orderId') or '').strip()
+                html_flags = extract_fulfillment_stock_flags(data.get('pageHtml'), internal_id, reference)
+                for name in ('hasGoods', 'orderItemHasGoods'):
+                    if matched_order.get(name) is None and html_flags.get(name) is not None:
+                        matched_order[name] = html_flags[name]
+                matched_order['_fulfillmentStockFlagSource'] = 'page_html' if html_flags else 'order_json_or_missing'
+                matched_order['_fulfillmentPageHtmlLength'] = len(str(data.get('pageHtml') or ''))
+                matched_order['_fulfillmentPageContainsOrder'] = reference in str(data.get('pageHtml') or '')
+                return matched_order
+        raise Exception('指定订单不存在、不是待处理状态或不在最近93天。')
+
+    def export_order_references_to_records(self, order_references, pending_status='2'):
+        """精确查询并只导出指定订单，避免为了最多 10 单扫描整个日期范围。"""
+        references = list(dict.fromkeys(
+            str(value or '').strip() for value in (order_references or []) if str(value or '').strip()
+        ))
+        if not references or len(references) > 10:
+            raise ValueError('指定订单数量必须为1-10单。')
+        platform_order_ids = []
+        missing_references = []
+        for reference in references:
+            try:
+                order = self.find_order_for_fulfillment(reference, pending_status)
+            except Exception as error:
+                if '指定订单不存在、不是待处理状态或不在最近93天' in str(error):
+                    missing_references.append(reference)
+                    continue
+                raise
+            platform_order_id = str(order.get('platformOrderId') or '').strip()
+            if platform_order_id and platform_order_id not in platform_order_ids:
+                platform_order_ids.append(platform_order_id)
+        records = self.export_orders_to_records(platform_order_ids) if platform_order_ids else []
+        return records, platform_order_ids, missing_references
+
+    def get_fulfillment_channel_data(self, internal_id):
+        channel_data = self.post_json_with_reauth(
+            FULFILLMENT_CHANNEL_LIST_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data={'orderIds': str(internal_id), 'adminShopIds': ''}, operation='读取订单物流渠道',
+        )
+        if not channel_data.get('success'):
+            raise Exception(channel_data.get('message') or '读取订单物流渠道失败。')
+        selected_order_markup = '\n'.join(
+            str(channel_data.get(key) or '') for key in ('message', 'message1')
+        )
+        channel_data['_selectedOrderMatched'] = str(internal_id) in selected_order_markup
+        channel_data['_orderPageHtml'] = self.get_text_with_reauth(
+            ORDER_PAGE_URL, headers=HEADERS_PAGE, operation='读取物流渠道面板'
+        )
+        return channel_data
+
+    @staticmethod
+    def fulfillment_channel_available(channel_data, channel_id, channel_value=''):
+        escaped_id = re.escape(str(channel_id or '').strip())
+        if not escaped_id:
+            return False
+
+        def iter_text_values(value, depth=0):
+            if depth > 6:
+                return
+            if isinstance(value, str):
+                yield value
+            elif isinstance(value, dict):
+                for nested in value.values():
+                    yield from iter_text_values(nested, depth + 1)
+            elif isinstance(value, (list, tuple)):
+                for nested in value:
+                    yield from iter_text_values(nested, depth + 1)
+
+        exact_id_pattern = re.compile(
+            rf'(?:data-id|data-mylogisticschannelid)\s*=\s*["\']{escaped_id}["\']',
+            re.I,
+        )
+        expected_value = str(channel_value or '').strip()
+        for channel_text in iter_text_values(channel_data):
+            if exact_id_pattern.search(channel_text):
+                return True
+            if expected_value and expected_value in channel_text:
+                return True
+        return False
+
+    @staticmethod
+    def fulfillment_stock_status(order):
+        normalized_order = {
+            re.sub(r'[^a-z0-9]', '', str(key).lower()): value
+            for key, value in order.items()
+        }
+        stock_flags = []
+        for name in ('hasGoods', 'orderItemHasGoods'):
+            value = normalized_order.get(name.lower())
+            stock_flags.append('' if value is None else str(value).strip())
+        if any(not value for value in stock_flags):
+            return 'unknown'
+        if any(value == '3' for value in stock_flags):
+            return 'multi_warehouse'
+        if any(value == '2' for value in stock_flags):
+            return 'out_of_stock'
+        if all(value == '0' for value in stock_flags):
+            return 'in_stock'
+        return 'unknown'
+
+    @staticmethod
+    def stale_multi_warehouse_flag_is_safe(order, single_warehouse_verified=False):
+        """马帮人工换仓后可能保留 hasGoods=3；仅在最新 SKU 明细已确认单仓时接受 3/0 组合。"""
+        if not single_warehouse_verified:
+            return False
+        normalized_order = {
+            re.sub(r'[^a-z0-9]', '', str(key).lower()): value
+            for key, value in order.items()
+        }
+        has_goods = normalized_order.get('hasgoods')
+        order_item_has_goods = normalized_order.get('orderitemhasgoods')
+        return (
+            ('' if has_goods is None else str(has_goods).strip()) == '3'
+            and ('' if order_item_has_goods is None else str(order_item_has_goods).strip()) == '0'
+        )
+
+    def inspect_fulfillment(self, order_reference, channel_value, channel_id):
+        order = self.find_order_for_fulfillment(order_reference)
+        internal_id = str(order.get('id') or order.get('orderId') or '').strip()
+        platform_order_id = str(order.get('platformOrderId') or order_reference).strip()
+        if not internal_id:
+            raise Exception('订单缺少马帮内部ID。')
+        channel_data = self.get_fulfillment_channel_data(internal_id)
+        reporting = self.post_json_with_reauth(FULFILLMENT_REPORTING_INFO_URL, headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'}, data={
+            'orderId': internal_id, 'tableBase': '1', 'myLogisticsChannelId': channel_value, 'orderLogisticsSearchId': ''
+        }, operation='读取交运参数')
+        property_json = reporting.get('propertyJson') if isinstance(reporting.get('propertyJson'), (list, dict)) else []
+        order_page_html = str(channel_data.get('_orderPageHtml') or '')
+        inventory_fields = {
+            str(key): str(value)[:120]
+            for key, value in order.items()
+            if re.search(r'(goods|stock|inventory|kucun)', str(key), re.I)
+        }
+        channel_markup = '\n'.join(
+            str(channel_data.get(key) or '') for key in ('message', 'message1', 'printlabelChannelDiv')
+        )
+        channel_candidate_ids = sorted(set(re.findall(
+            r'(?:data-mylogisticschannelid|Logistics-delivery-myLogisticsChannelId-)\s*(?:=\s*["\'])?([0-9]+)',
+            channel_markup,
+            re.I,
+        )))
+        current_logistics_html = str(order.get('cansend1logisticsHtml') or '')
+        tracking_acquisition_pending = (
+            not str(order.get('trackNumber') or '').strip()
+            and str(order.get('isSyncLogistics') or '').strip() == '1'
+            and '运单号获取中' in current_logistics_html
+            and bool(re.search(rf'data-id\s*=\s*["\']{re.escape(str(channel_id))}["\']', current_logistics_html, re.I))
+        )
+        return {
+            'internalOrderId': internal_id,
+            'platformOrderId': platform_order_id,
+            'orderStatus': str(order.get('orderStatus') or order.get('status') or ''),
+            'trackNumber': str(order.get('trackNumber') or ''),
+            'orderFieldNames': sorted(str(key) for key in order.keys() if re.search(r'(shop|platform|status|logistic|track|channel|sync)', str(key), re.I)),
+            'channelMatched': self.fulfillment_channel_available(channel_data, channel_id, channel_value),
+            'channelResponseKeys': sorted(key for key in channel_data.keys() if not str(key).startswith('_')),
+            'selectedOrderMatched': bool(channel_data.get('_selectedOrderMatched')),
+            'channelCandidateIds': channel_candidate_ids,
+            'channelMarkupLength': len(channel_markup),
+            'channelContainsJtExpress': 'J&TExpress' in channel_markup,
+            'reportingSuccess': bool(reporting.get('success')),
+            'reportingMessage': str(reporting.get('message') or ''),
+            'reportingResponseKeys': sorted(reporting.keys()),
+            'notFoundPlatformOrderIds': reporting.get('notFoundPlatformOrderIds') or [],
+            'autoApi': str(reporting.get('autoApi') or ''),
+            'isSLogisticsChannel': str(reporting.get('isSLogisticsChannel') or ''),
+            'isSyncLogistics': str(order.get('isSyncLogistics') or ''),
+            'trackingAcquisitionPending': tracking_acquisition_pending,
+            'propertyJson': property_json,
+            'hasDeclarationRows': bool(str(reporting.get('stockHtml') or '').strip()),
+            'stockStatus': self.fulfillment_stock_status(order),
+            'inventoryFields': inventory_fields,
+            'stockFlagSource': str(order.get('_fulfillmentStockFlagSource') or ''),
+            'pageHtmlLength': int(order.get('_fulfillmentPageHtmlLength') or 0),
+            'pageContainsOrder': bool(order.get('_fulfillmentPageContainsOrder')),
+            'orderPageContainsFixedChannel': self.fulfillment_channel_available(
+                {'orderPageHtml': order_page_html}, channel_id, channel_value
+            ),
+        }
+
+    def prepare_fulfillment(self, order_reference, channel_value, channel_id, expected_shop_id='', expected_platform_id='',
+                            single_warehouse_verified=False):
+        order = self.find_order_for_fulfillment(order_reference, '2')
+        internal_id = str(order.get('id') or order.get('orderId') or '').strip()
+        if not internal_id:
+            raise Exception('订单缺少马帮内部ID。')
+        if expected_shop_id and str(order.get('shopId') or '') != str(expected_shop_id):
+            raise Exception('订单店铺与固定店铺不一致，已停止发货。')
+        if expected_platform_id and str(order.get('platformId') or '') != str(expected_platform_id):
+            raise Exception('订单平台与固定平台不一致，已停止发货。')
+        if str(order.get('orderStatus') or '') != '2':
+            raise Exception('订单已不是待处理状态，已停止发货。')
+        if str(order.get('trackNumber') or '').strip():
+            raise Exception('订单已经存在运单号，已停止重复发货。')
+        stock_status = self.fulfillment_stock_status(order)
+        if stock_status == 'multi_warehouse' and self.stale_multi_warehouse_flag_is_safe(order, single_warehouse_verified):
+            stock_status = 'in_stock'
+        if stock_status == 'unknown':
+            raise Exception('INVENTORY_UNKNOWN_BEFORE_SUBMIT: 马帮订单库存标志缺失或无法识别，已停止发货。')
+        if stock_status == 'multi_warehouse':
+            raise Exception('MULTI_WAREHOUSE_REQUIRES_REVIEW: 同一订单中的SKU分属不同仓库，请先在马帮待审核中人工换仓。')
+        if stock_status == 'out_of_stock':
+            raise Exception('OUT_OF_STOCK_BEFORE_SUBMIT: 马帮订单库存标志显示缺货，已停止发货。')
+
+        channel_data = self.get_fulfillment_channel_data(internal_id)
+        if not channel_data.get('_selectedOrderMatched'):
+            raise Exception('ORDER_NOT_AVAILABLE_FOR_DELIVERY: 马帮物流交运列表未返回指定订单，已停止发货。')
+        if not self.fulfillment_channel_available(channel_data, channel_id, channel_value):
+            raise Exception('CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT: 固定物流渠道不在该订单可用渠道列表中，已停止发货。')
+
+        reporting = self.post_json_with_reauth(FULFILLMENT_REPORTING_INFO_URL, headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'}, data={
+            'orderId': internal_id, 'tableBase': '1', 'myLogisticsChannelId': channel_value, 'orderLogisticsSearchId': ''
+        }, operation='读取交运参数')
+        if not reporting.get('success'):
+            raise Exception(reporting.get('message') or '读取交运参数失败。')
+        if reporting.get('notFoundPlatformOrderIds'):
+            raise Exception('马帮未找到指定平台订单，已停止发货。')
+        if str(reporting.get('isSLogisticsChannel') or '') == '2':
+            raise Exception('订单已有交运记录，不支持二次交运。')
+        if str(reporting.get('stockHtml') or '').strip():
+            raise Exception('订单需要补充申报信息，自动发货已停止。')
+        property_json = reporting.get('propertyJson') or []
+        if isinstance(property_json, dict):
+            property_json = list(property_json.values())
+        for prop in property_json if isinstance(property_json, list) else []:
+            if not isinstance(prop, dict):
+                continue
+            name = str(prop.get('name') or '').strip()
+            value = prop.get('value')
+            if prop.get('require') and (value is None or str(value).strip() == ''):
+                raise Exception(f'物流渠道必填参数缺失：{name or "未知参数"}。')
+
+        return {
+            'order': order,
+            'internalOrderId': internal_id,
+            'platformOrderId': str(order.get('platformOrderId') or order_reference).strip(),
+            'stockStatus': stock_status,
+            'channelMatched': True,
+            'reporting': reporting,
+            'propertyJson': property_json if isinstance(property_json, list) else [],
+        }
+
+    def preflight_fulfillment(self, order_reference, channel_value, channel_id, expected_shop_id='', expected_platform_id='',
+                              single_warehouse_verified=False):
+        prepared = self.prepare_fulfillment(
+            order_reference, channel_value, channel_id, expected_shop_id, expected_platform_id,
+            single_warehouse_verified
+        )
+        required_properties = [
+            str(prop.get('name') or '').strip()
+            for prop in prepared['propertyJson']
+            if isinstance(prop, dict) and prop.get('require')
+        ]
+        return {
+            'ready': True,
+            'wouldSubmit': False,
+            'internalOrderId': prepared['internalOrderId'],
+            'platformOrderId': prepared['platformOrderId'],
+            'orderStatus': str(prepared['order'].get('orderStatus') or ''),
+            'hasTrackingNumber': bool(str(prepared['order'].get('trackNumber') or '').strip()),
+            'stockStatus': prepared['stockStatus'],
+            'channelMatched': prepared['channelMatched'],
+            'reportingSuccess': bool(prepared['reporting'].get('success')),
+            'hasDeclarationRows': bool(str(prepared['reporting'].get('stockHtml') or '').strip()),
+            'requiredPropertyCount': len(required_properties),
+            'missingRequiredPropertyCount': 0,
+            'checks': [
+                'shop', 'platform', 'pending_status', 'empty_tracking_number',
+                'inventory', 'available_channel', 'reporting_parameters',
+                'no_existing_shipping_record', 'no_declaration_rows', 'required_properties',
+            ],
+        }
+
+    def distribute_existing_fulfillment(self, order_reference, expected_tracking_number, channel_value, channel_id,
+                                         expected_shop_id='', expected_platform_id='', verify_timeout_seconds=90):
+        order = self.find_order_for_fulfillment(order_reference, '')
+        internal_id = str(order.get('id') or order.get('orderId') or '').strip()
+        if not internal_id:
+            raise Exception('订单缺少马帮内部ID。')
+        if expected_shop_id and str(order.get('shopId') or '') != str(expected_shop_id):
+            raise Exception('订单店铺与固定店铺不一致，已停止转配货。')
+        if expected_platform_id and str(order.get('platformId') or '') != str(expected_platform_id):
+            raise Exception('订单平台与固定平台不一致，已停止转配货。')
+
+        tracking_number = str(order.get('trackNumber') or '').strip()
+        if not tracking_number or tracking_number != str(expected_tracking_number or '').strip():
+            raise Exception('TRACKING_MISMATCH_BEFORE_DISTRIBUTION: 当前运单号与确认的运单号不一致，已停止转配货。')
+        current_status = str(order.get('showOrderStatusText') or order.get('orderStatus') or '')
+        if '配货中' in current_status:
+            return {
+                'alreadyDistributed': True, 'distributionSubmitted': False, 'verified': True,
+                'internalOrderId': internal_id, 'platformOrderId': str(order.get('platformOrderId') or order_reference),
+                'trackingNumber': tracking_number, 'afterStatus': current_status,
+            }
+        if '待处理' not in current_status:
+            raise Exception(f'ORDER_STATUS_NOT_PENDING_BEFORE_DISTRIBUTION: 当前订单状态为【{current_status}】，已停止转配货。')
+
+        channel_data = self.get_fulfillment_channel_data(internal_id)
+        if not channel_data.get('_selectedOrderMatched'):
+            raise Exception('ORDER_NOT_AVAILABLE_FOR_DELIVERY: 马帮物流交运列表未返回指定订单，已停止转配货。')
+        if not self.fulfillment_channel_available(channel_data, channel_id, channel_value):
+            raise Exception('CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT: 固定物流渠道不可用，已停止转配货。')
+
+        response = self.session.post(
+            FULFILLMENT_DISTRIBUTION_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data={'orderIds': internal_id, 'type': '1'}, timeout=REQUEST_TIMEOUT, allow_redirects=True,
+        )
+        if response_looks_unauthenticated(response):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_DISTRIBUTION: 转入配货中时登录状态失效；系统不会自动重试。')
+        result = safe_json(response)
+        if response_looks_unauthenticated(response, result):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_DISTRIBUTION: 转入配货中时登录状态失效；系统不会自动重试。')
+        if not result.get('success'):
+            raise Exception(result.get('message') or '马帮拒绝转入配货中。')
+
+        deadline = time.time() + max(15, min(int(verify_timeout_seconds), 300))
+        latest = order
+        while time.time() < deadline:
+            time.sleep(3)
+            try:
+                latest = self.find_order_for_fulfillment(order_reference, '')
+            except Exception:
+                continue
+            latest_tracking = str(latest.get('trackNumber') or '').strip()
+            latest_status = str(latest.get('showOrderStatusText') or latest.get('orderStatus') or '')
+            if latest_tracking == tracking_number and '配货中' in latest_status:
+                return {
+                    'alreadyDistributed': False, 'distributionSubmitted': True, 'verified': True,
+                    'internalOrderId': internal_id,
+                    'platformOrderId': str(latest.get('platformOrderId') or order_reference),
+                    'trackingNumber': latest_tracking, 'afterStatus': latest_status,
+                    'message': str(result.get('message') or '已开始配货'),
+                }
+        latest_status = str(latest.get('showOrderStatusText') or latest.get('orderStatus') or '')
+        return {
+            'alreadyDistributed': False, 'distributionSubmitted': True, 'verified': False,
+            'internalOrderId': internal_id, 'platformOrderId': str(latest.get('platformOrderId') or order_reference),
+            'trackingNumber': str(latest.get('trackNumber') or '').strip(), 'afterStatus': latest_status,
+            'message': '马帮已接受转配货请求，但状态回查尚未变为配货中。',
+        }
+
+    def clear_pending_tracking_channel(self, order_reference, channel_value, channel_id,
+                                       expected_shop_id='', expected_platform_id=''):
+        """清空审批超时订单的物流渠道；只执行 UI“批量修改订单”中的空渠道动作。"""
+        order = self.find_order_for_fulfillment(order_reference, '2')
+        internal_id = str(order.get('id') or order.get('orderId') or '').strip()
+        platform_order_id = str(order.get('platformOrderId') or order_reference).strip()
+        if not internal_id:
+            raise Exception('订单缺少马帮内部ID。')
+        if expected_shop_id and str(order.get('shopId') or '') != str(expected_shop_id):
+            raise Exception('TRACKING_RESET_SHOP_MISMATCH: 订单店铺与固定店铺不一致，已停止清空物流渠道。')
+        if expected_platform_id and str(order.get('platformId') or '') != str(expected_platform_id):
+            raise Exception('TRACKING_RESET_PLATFORM_MISMATCH: 订单平台与固定平台不一致，已停止清空物流渠道。')
+        if str(order.get('orderStatus') or '') != '2':
+            raise Exception('TRACKING_RESET_STATUS_CHANGED: 订单已不是待处理状态，已停止清空物流渠道。')
+        if str(order.get('trackNumber') or '').strip():
+            raise Exception('TRACKING_RESET_HAS_TRACKING: 订单已出现运单号，已停止清空物流渠道。')
+        stock_status = self.fulfillment_stock_status(order)
+        if stock_status != 'in_stock':
+            raise Exception(f'TRACKING_RESET_INVENTORY_UNSAFE: 当前库存状态为 {stock_status}，已停止清空物流渠道。')
+
+        reporting = self.post_json_with_reauth(
+            FULFILLMENT_REPORTING_INFO_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data={'orderId': internal_id, 'tableBase': '1', 'myLogisticsChannelId': channel_value,
+                  'orderLogisticsSearchId': ''}, operation='复核待审批交运记录'
+        )
+        if not reporting.get('success'):
+            raise Exception(reporting.get('message') or '读取待审批交运记录失败。')
+        current_logistics_html = str(order.get('cansend1logisticsHtml') or '')
+        row_shows_tracking_pending = (
+            str(order.get('isSyncLogistics') or '').strip() == '1'
+            and '运单号获取中' in current_logistics_html
+            and bool(re.search(rf'data-id\s*=\s*["\']{re.escape(str(channel_id))}["\']', current_logistics_html, re.I))
+        )
+        if str(reporting.get('isSLogisticsChannel') or '') != '2' and not row_shows_tracking_pending:
+            raise Exception('TRACKING_RESET_NOT_PENDING: 当前订单没有可确认的既有交运记录，已停止清空物流渠道。')
+
+        # 在产生外部修改前再读一次，缩小运单号恰好审批成功时的竞态窗口。
+        latest = self.find_order_for_fulfillment(order_reference, '2')
+        if str(latest.get('id') or latest.get('orderId') or '').strip() != internal_id:
+            raise Exception('TRACKING_RESET_ORDER_CHANGED: 马帮返回的订单已变化，已停止清空物流渠道。')
+        if str(latest.get('orderStatus') or '') != '2' or str(latest.get('trackNumber') or '').strip():
+            raise Exception('TRACKING_RESET_ORDER_CHANGED: 订单状态或运单号已变化，已停止清空物流渠道。')
+
+        response = self.session.post(
+            FULFILLMENT_BATCH_EDIT_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data=[
+                ('sourceflag', '1'), ('platformOrderIds', platform_order_id), ('order-edit[]', '2'),
+                ('selChannel', ''), ('myLogisticsChannelId', ''), ('tableBase', '1'),
+                ('isOrderPhz', '1'), ('issecondsyc', '2'), ('confirmActiveFlag', '0'),
+            ], timeout=REQUEST_TIMEOUT, allow_redirects=True,
+        )
+        if response_looks_unauthenticated(response):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_TRACKING_RESET: 清空物流渠道时登录状态失效；系统不会自动重试。')
+        result = safe_json(response)
+        if response_looks_unauthenticated(response, result):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_TRACKING_RESET: 清空物流渠道时登录状态失效；系统不会自动重试。')
+        if not result.get('success'):
+            raise Exception(result.get('message') or '马帮拒绝清空物流渠道。')
+        if result.get('platformOrderIdArr'):
+            raise Exception('TRACKING_RESET_EXTRA_CONFIRMATION_REQUIRED: 马帮要求额外人工确认，已停止自动恢复。')
+        if result.get('notFoundPlatformOrderIds'):
+            raise Exception('TRACKING_RESET_ORDER_NOT_FOUND: 马帮未找到指定订单，已停止自动恢复。')
+
+        verified = self.find_order_for_fulfillment(order_reference, '2')
+        verified_status = str(verified.get('showOrderStatusText') or verified.get('orderStatus') or '')
+        verified_tracking = str(verified.get('trackNumber') or '').strip()
+        if '待处理' not in verified_status and str(verified.get('orderStatus') or '') != '2':
+            raise Exception(f'TRACKING_RESET_VERIFY_FAILED: 清空后订单状态为【{verified_status}】。')
+        if verified_tracking:
+            return {'cleared': True, 'trackingNumber': verified_tracking, 'orderStatus': verified_status,
+                    'platformOrderId': platform_order_id, 'message': str(result.get('message') or '')}
+        return {'cleared': True, 'trackingNumber': '', 'orderStatus': verified_status,
+                'platformOrderId': platform_order_id, 'message': str(result.get('message') or '物流渠道已清空')}
+
+    def submit_fulfillment(self, order_reference, channel_value, channel_id, channel_source='1', expected_shop_id='', expected_platform_id='',
+                           verify_timeout_seconds=90, single_warehouse_verified=False):
+        total_started = time.monotonic()
+        prepare_started = time.monotonic()
+        prepared = self.prepare_fulfillment(
+            order_reference, channel_value, channel_id, expected_shop_id, expected_platform_id,
+            single_warehouse_verified
+        )
+        prepare_ms = round((time.monotonic() - prepare_started) * 1000)
+        order = prepared['order']
+        internal_id = prepared['internalOrderId']
+        property_json = prepared['propertyJson']
+        submit_data = [
+            ('myLogisticsChannelId', channel_value), ('orderId', internal_id), ('source', str(channel_source)),
+            ('tableBase', '1'), ('trackNumber', ''), ('quickaccessBol', '2'), ('dataChanges', '1'), ('isSyncLogistics', '1')
+        ]
+        for prop in property_json:
+            if not isinstance(prop, dict):
+                continue
+            name = str(prop.get('name') or '').strip()
+            value = prop.get('value')
+            if not name or value is None or str(value).strip() == '':
+                continue
+            if isinstance(value, list):
+                submit_data.extend((name + '[]', str(item)) for item in value)
+            else:
+                submit_data.append((name, str(value)))
+
+        submit_started = time.monotonic()
+        response = self.session.post(FULFILLMENT_SUBMIT_URL, headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data=submit_data, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        submit_request_ms = round((time.monotonic() - submit_started) * 1000)
+        if response_looks_unauthenticated(response):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_SUBMIT: 提交时登录状态失效；为避免重复发货，系统不会自动重试。')
+        submitted = safe_json(response)
+        if response_looks_unauthenticated(response, submitted):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_SUBMIT: 提交时登录状态失效；为避免重复发货，系统不会自动重试。')
+        if not submitted.get('success'):
+            raise Exception(submitted.get('message') or '马帮交运提交失败。')
+
+        verify_seconds = max(15, min(int(verify_timeout_seconds), 300))
+        deadline = time.time() + verify_seconds
+        latest = order
+        channel_matched = False
+        tracking_poll_count = 0
+        tracking_started = time.monotonic()
+        while time.time() < deadline:
+            time.sleep(3)
+            try:
+                latest = self.find_order_for_fulfillment(order_reference, '')
+            except Exception:
+                continue
+            tracking_poll_count += 1
+            channel_data = self.get_fulfillment_channel_data(internal_id)
+            channel_matched = self.fulfillment_channel_available(channel_data, channel_id, channel_value)
+            if str(latest.get('trackNumber') or '').strip() and channel_matched:
+                break
+        tracking_wait_ms = round((time.monotonic() - tracking_started) * 1000)
+
+        tracking_number = str(latest.get('trackNumber') or '').strip()
+        after_status = str(latest.get('showOrderStatusText') or latest.get('orderStatus') or '')
+        distribution_submitted = False
+        distribution_success = False
+        distribution_message = ''
+        distribution_error_code = ''
+        distribution_request_ms = 0
+        distribution_wait_ms = 0
+        distribution_poll_count = 0
+
+        if tracking_number and channel_matched and '配货中' in after_status:
+            distribution_success = True
+        elif tracking_number and channel_matched:
+            distribution_submitted = True
+            distribution_request_started = time.monotonic()
+            distribution_response = self.session.post(
+                FULFILLMENT_DISTRIBUTION_URL,
+                headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+                data={'orderIds': internal_id, 'type': '1'},
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=True,
+            )
+            distribution_request_ms = round((time.monotonic() - distribution_request_started) * 1000)
+            if response_looks_unauthenticated(distribution_response):
+                distribution_error_code = 'MABANG_AUTH_EXPIRED_DURING_DISTRIBUTION'
+                distribution_message = '转入配货中时登录状态失效；为避免重复操作，系统不会自动重试。'
+            else:
+                distribution_result = safe_json(distribution_response)
+                if response_looks_unauthenticated(distribution_response, distribution_result):
+                    distribution_error_code = 'MABANG_AUTH_EXPIRED_DURING_DISTRIBUTION'
+                    distribution_message = '转入配货中时登录状态失效；为避免重复操作，系统不会自动重试。'
+                elif not distribution_result.get('success'):
+                    distribution_error_code = 'DISTRIBUTION_REJECTED'
+                    distribution_message = str(distribution_result.get('message') or '马帮拒绝转入配货中。')
+                else:
+                    distribution_message = str(distribution_result.get('message') or '已开始配货')
+                    distribution_deadline = time.time() + verify_seconds
+                    distribution_wait_started = time.monotonic()
+                    while time.time() < distribution_deadline:
+                        time.sleep(3)
+                        try:
+                            latest = self.find_order_for_fulfillment(order_reference, '')
+                        except Exception:
+                            continue
+                        distribution_poll_count += 1
+                        after_status = str(latest.get('showOrderStatusText') or latest.get('orderStatus') or '')
+                        latest_tracking = str(latest.get('trackNumber') or '').strip()
+                        if '配货中' in after_status and latest_tracking == tracking_number:
+                            distribution_success = True
+                            break
+                    distribution_wait_ms = round((time.monotonic() - distribution_wait_started) * 1000)
+                    if not distribution_success:
+                        distribution_error_code = 'DISTRIBUTION_VERIFY_FAILED'
+                        if not distribution_message:
+                            distribution_message = '马帮已接受转配货请求，但状态回查尚未变为配货中。'
+
+        sync_status = str(latest.get('isSyncLogistics') or '')
+        verified = bool(tracking_number and channel_matched and distribution_success and '配货中' in after_status)
+        return {
+            'submitted': True, 'verified': verified,
+            'trackingNumber': tracking_number, 'afterStatus': after_status,
+            'channelVerified': channel_matched, 'syncLogisticsStatus': sync_status,
+            'distributionSubmitted': distribution_submitted,
+            'distributionSuccess': distribution_success,
+            'distributionErrorCode': distribution_error_code,
+            'distributionMessage': distribution_message,
+            'message': str(submitted.get('message') or ''),
+            'timingsMs': {
+                'prepare': prepare_ms,
+                'submitRequest': submit_request_ms,
+                'trackingWait': tracking_wait_ms,
+                'distributionRequest': distribution_request_ms,
+                'distributionWait': distribution_wait_ms,
+                'total': round((time.monotonic() - total_started) * 1000),
+                'trackingPollCount': tracking_poll_count,
+                'distributionPollCount': distribution_poll_count,
+            },
+        }
 
     def search_orders_page(self, page, paid_start, paid_end, use_worker_session=False, update_export_context=False):
         params = build_order_params(page, paid_start, paid_end)

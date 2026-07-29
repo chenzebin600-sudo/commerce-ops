@@ -7,6 +7,7 @@
     <title>跨境电商 AI 运营工作台</title>
     <link rel="stylesheet" href="/styles.css?v=20260722-mabang-images-2" />
     <link rel="stylesheet" href="/growth-radar.css?v=20260722-g1b2-1" />
+    <link rel="stylesheet" href="/fulfillment.css?v=20260729-4" />
   </head>
   <body>
     <section id="authGate" class="auth-gate" aria-labelledby="authTitle" hidden>
@@ -44,6 +45,13 @@
             <button class="tab-button" type="button" data-page="keyword" aria-controls="page-keyword">
               <span class="nav-monogram" aria-hidden="true">K</span>
               <span>搜索关键词竞品分析</span>
+            </button>
+          </div>
+          <div class="nav-group">
+            <span class="nav-group-label">订单履约</span>
+            <button class="tab-button" type="button" data-page="fulfillment" aria-controls="page-fulfillment">
+              <span class="nav-monogram" aria-hidden="true">F</span>
+              <span>履约中心</span>
             </button>
           </div>
           <div class="nav-group">
@@ -985,6 +993,109 @@
           </dialog>
         </section>
 
+        <section id="page-fulfillment" class="page-section fulfillment-page" hidden>
+          <div class="fulfillment-commandbar">
+            <div class="fulfillment-view-tabs" role="tablist" aria-label="履约中心页面">
+              <button class="fulfillment-view-tab active" type="button" role="tab" data-fulfillment-view="overview" aria-selected="true">发货总览</button>
+              <button class="fulfillment-view-tab" type="button" role="tab" data-fulfillment-view="orders" aria-selected="false">待发货订单</button>
+              <button class="fulfillment-view-tab" type="button" role="tab" data-fulfillment-view="tasks" aria-selected="false">发货任务</button>
+              <button class="fulfillment-view-tab" type="button" role="tab" data-fulfillment-view="exceptions" aria-selected="false">异常中心</button>
+              <button class="fulfillment-view-tab" type="button" role="tab" data-fulfillment-view="stores" aria-selected="false">店铺与物流</button>
+            </div>
+            <div class="fulfillment-actions">
+              <button id="fulfillmentRefreshBtn" class="button-secondary" type="button">刷新状态</button>
+              <button id="fulfillmentScanBtn" type="button">立即扫描订单</button>
+            </div>
+          </div>
+
+          <section class="fulfillment-filterbar" aria-label="履约筛选条件">
+            <label><span>国家</span><select id="fulfillmentCountryFilter"><option value="">全部国家</option></select></label>
+            <label><span>平台</span><select id="fulfillmentPlatformFilter"><option value="">全部平台</option></select></label>
+            <label><span>店铺</span><select id="fulfillmentShopFilter"><option value="">全部店铺</option></select></label>
+            <div class="fulfillment-sync-state">
+              <span class="fulfillment-live-dot" aria-hidden="true"></span>
+              <span id="fulfillmentSyncText">等待读取履约服务</span>
+            </div>
+          </section>
+
+          <div id="fulfillmentServiceAlert" class="fulfillment-service-alert neutral" role="status" aria-live="polite">
+            正在连接履约服务…
+          </div>
+
+          <div id="fulfillmentLoading" class="fulfillment-loading" aria-label="正在加载履约数据">
+            <span></span><span></span><span></span><span></span>
+          </div>
+
+          <div id="fulfillmentContent" hidden>
+            <section class="fulfillment-view active" data-fulfillment-panel="overview">
+              <section class="fulfillment-dashboard-intro">
+                <div><span class="page-context">LIVE OPERATIONS</span><h1>今日履约看板</h1><p>从订单进入发货队列，到取得运单号并转入配货中，集中查看每家店铺的实时结果。</p></div>
+                <div id="fulfillmentOverviewMeta" class="fulfillment-overview-meta" aria-label="履约效率摘要"></div>
+              </section>
+              <div class="fulfillment-metrics" aria-label="履约统计">
+                <article><span>今日进入发货</span><strong id="fulfillmentMetricTotal">0</strong><small>真实批次订单</small></article>
+                <article class="metric-success"><span>今日成功</span><strong id="fulfillmentMetricSuccess">0</strong><small>已转入配货中</small></article>
+                <article><span>今日成功率</span><strong id="fulfillmentMetricSuccessRate">—</strong><small>成功单量 ÷ 发货单量</small></article>
+                <article><span>执行中</span><strong id="fulfillmentMetricRunning">0</strong><small>提交或回查中</small></article>
+                <article class="metric-exception"><span>今日发现异常</span><strong id="fulfillmentMetricExceptions">0</strong><small>含预检排除订单</small></article>
+              </div>
+              <div class="fulfillment-analytics-grid">
+                <section class="fulfillment-panel fulfillment-trend-panel">
+                  <div class="fulfillment-panel-head"><div><h2>近 7 日发货趋势</h2><p>每日进入真实发货、成功及异常订单量。</p></div><span class="fulfillment-chart-legend"><i></i>成功 <i></i>异常</span></div>
+                  <div id="fulfillmentTrendChart" class="fulfillment-trend-chart"></div>
+                </section>
+                <section class="fulfillment-panel">
+                  <div class="fulfillment-panel-head"><div><h2>今日异常构成</h2><p>按最新预检与发货结果去重汇总。</p></div><span id="fulfillmentExceptionSummaryCount" class="fulfillment-count danger">0 项</span></div>
+                  <div id="fulfillmentExceptionBreakdown" class="fulfillment-exception-breakdown"></div>
+                </section>
+              </div>
+              <div class="fulfillment-overview-grid">
+                <section class="fulfillment-panel">
+                  <div class="fulfillment-panel-head"><div><h2>今日店铺表现</h2><p>比较订单量、成功率和当前需要处理的订单。</p></div><span id="fulfillmentShopCount" class="fulfillment-count">0 家</span></div>
+                  <div id="fulfillmentShopOverview" class="fulfillment-table-wrap"></div>
+                </section>
+                <section class="fulfillment-panel">
+                  <div class="fulfillment-panel-head"><div><h2>最近扫描</h2><p>定时任务与人工扫描的最近结果。</p></div><span id="fulfillmentNextScan" class="fulfillment-count">—</span></div>
+                  <div id="fulfillmentRecentScans" class="fulfillment-event-list"></div>
+                </section>
+              </div>
+            </section>
+
+            <section class="fulfillment-view" data-fulfillment-panel="orders" hidden>
+              <section class="fulfillment-panel">
+                <div class="fulfillment-panel-head"><div><h2>待发货订单</h2><p>有货订单可以发货；缺货与库存未知订单只展示，不会提交。</p></div><span id="fulfillmentOrderCount" class="fulfillment-count">0 单</span></div>
+                <div id="fulfillmentOrdersTable" class="fulfillment-table-wrap"></div>
+              </section>
+            </section>
+
+            <section class="fulfillment-view" data-fulfillment-panel="tasks" hidden>
+              <section id="fulfillmentActiveTask" class="fulfillment-active-task"></section>
+              <section class="fulfillment-panel">
+                <div class="fulfillment-panel-head"><div><h2>运单恢复队列</h2><p>持续回查 Shopee 审批中的运单；清空物流渠道与重新交运最多各执行一次。</p></div><span id="fulfillmentRecoveryCount" class="fulfillment-count">0 单</span></div>
+                <div id="fulfillmentRecoveriesTable" class="fulfillment-table-wrap"></div>
+              </section>
+              <section class="fulfillment-panel">
+                <div class="fulfillment-panel-head"><div><h2>发货任务记录</h2><p>逐单查看运单号获取和转配货结果。</p></div><span id="fulfillmentTaskCount" class="fulfillment-count">0 批</span></div>
+                <div id="fulfillmentTasksTable" class="fulfillment-table-wrap"></div>
+              </section>
+            </section>
+
+            <section class="fulfillment-view" data-fulfillment-panel="exceptions" hidden>
+              <section class="fulfillment-panel">
+                <div class="fulfillment-panel-head"><div><h2>需要处理的异常</h2><p>异常原因和下一步操作集中显示在这里。</p></div><span id="fulfillmentExceptionCount" class="fulfillment-count danger">0 项</span></div>
+                <div id="fulfillmentExceptionsTable" class="fulfillment-table-wrap"></div>
+              </section>
+            </section>
+
+            <section class="fulfillment-view" data-fulfillment-panel="stores" hidden>
+              <section class="fulfillment-panel">
+                <div class="fulfillment-panel-head"><div><h2>店铺与物流</h2><p>平台、国家、物流渠道与自动发货开关的当前配置。</p></div><a href="http://127.0.0.1:3112/docs" target="_blank" rel="noopener">打开接口测试文档</a></div>
+                <div id="fulfillmentStoresTable" class="fulfillment-table-wrap"></div>
+              </section>
+            </section>
+          </div>
+        </section>
+
         <section id="page-ads" class="page-section" hidden>
           <section class="panel ads-panel">
             <div class="panel-heading ads-head">
@@ -1325,6 +1436,6 @@
         <div class="dialog-actions"><button class="button-secondary" type="button" data-close-dialog="runNowConfirmDialog">取消</button><button id="confirmRunNowBtn" type="button">确认执行</button></div>
       </dialog>
     </main>
-    <script type="module" src="/app.js?v=20260722-mabang-images-2"></script>
+    <script type="module" src="/app.js?v=20260729-fulfillment-4"></script>
   </body>
 </html>

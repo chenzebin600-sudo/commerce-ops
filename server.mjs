@@ -92,6 +92,7 @@ import { MabangImageAssetService } from "./lib/mabang-images/image-assets.mjs";
 import { createMabangImageAuditRecord, MabangSkuImageCollectorService } from "./lib/mabang-images/service.mjs";
 import { createMabangImageAccessPolicy } from "./lib/mabang-images/access-policy.mjs";
 import { createMabangImageApi } from "./lib/mabang-images/api.mjs";
+import { createFulfillmentDashboardProxy } from "./lib/fulfillment-dashboard-proxy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -169,6 +170,10 @@ const proxyAdServiceRequest = createAdServiceProxy({
       // Successful non-JSON advertising responses do not add inferred audit details.
     }
   },
+});
+const proxyFulfillmentDashboard = createFulfillmentDashboardProxy({
+  baseUrl: process.env.FULFILLMENT_DASHBOARD_BASE_URL || "http://127.0.0.1:3112",
+  apiToken: process.env.FULFILLMENT_API_TOKEN || "",
 });
 const chromeAllowedHosts = resolveAllowedHosts(
   Object.values(DEFAULT_CHROME_ALLOWED_HOSTS_BY_PLATFORM).flat(),
@@ -2294,6 +2299,9 @@ async function handleApi(req, res, url) {
 
   const fileHandled = await handleFileApi(req, res, url);
   if (fileHandled) return true;
+
+  const fulfillmentHandled = await proxyFulfillmentDashboard(req, res, url);
+  if (fulfillmentHandled) return true;
 
   if (url.pathname.startsWith("/api/ads/")) {
     return proxyAdServiceRequest(req, res, url, "api");

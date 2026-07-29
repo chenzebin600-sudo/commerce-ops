@@ -270,6 +270,106 @@ def collect_inventory(payload):
     }
 
 
+def collect_fulfillment_orders(payload):
+    username, password = require_credentials(payload)
+    references = payload.get("orderReferences") or []
+    if not isinstance(references, list):
+        raise ValueError("orderReferences 必须是订单号数组。")
+    client = order_source.MabangClient()
+    client.login(username, password)
+    records, matched_ids, missing_references = client.export_order_references_to_records(
+        references, str(payload.get("pendingStatusId") or "2")
+    )
+    return {
+        "ok": True,
+        "kind": "fulfillment-orders",
+        "records": json_safe(records),
+        "summary": {
+            "requestedOrders": len(references),
+            "matchedOrders": len(matched_ids),
+            "rows": len(records),
+            "missingOrderReferences": missing_references,
+        },
+    }
+
+
+def inspect_fulfillment(payload):
+    username, password = require_credentials(payload)
+    order_reference = str(payload.get("orderReference") or "").strip()
+    channel_value = str(payload.get("channelValue") or "").strip()
+    channel_id = str(payload.get("channelId") or "").strip()
+    if not order_reference or not channel_value or not channel_id:
+        raise ValueError("订单号和固定物流渠道配置不能为空。")
+    client = order_source.MabangClient()
+    client.login(username, password)
+    return {"ok": True, "kind": "fulfillment-inspection", **json_safe(client.inspect_fulfillment(order_reference, channel_value, channel_id))}
+
+
+def preflight_fulfillment(payload):
+    username, password = require_credentials(payload)
+    required = ["orderReference", "channelValue", "channelId", "shopId", "platformId"]
+    if any(not str(payload.get(key) or "").strip() for key in required):
+        raise ValueError("深度预检参数不完整。")
+    if payload.get("commit"):
+        raise ValueError("深度预检不接受任何提交确认标记。")
+    client = order_source.MabangClient()
+    client.login(username, password)
+    result = client.preflight_fulfillment(
+        payload["orderReference"], payload["channelValue"], payload["channelId"],
+        payload["shopId"], payload["platformId"], bool(payload.get("singleWarehouseVerified")),
+    )
+    return {"ok": True, "kind": "fulfillment-preflight", **json_safe(result)}
+
+
+def submit_fulfillment(payload):
+    username, password = require_credentials(payload)
+    if payload.get("commit") != "FULFILLMENT_CONFIRMED":
+        raise ValueError("真实发货缺少最终确认标记。")
+    required = ["orderReference", "channelValue", "channelId", "shopId", "platformId"]
+    if any(not str(payload.get(key) or "").strip() for key in required):
+        raise ValueError("真实发货参数不完整。")
+    client = order_source.MabangClient()
+    client.login(username, password)
+    result = client.submit_fulfillment(
+        payload["orderReference"], payload["channelValue"], payload["channelId"],
+        payload.get("channelSource") or "1", payload["shopId"], payload["platformId"],
+        payload.get("verifyTimeoutSeconds") or 90, bool(payload.get("singleWarehouseVerified")),
+    )
+    return {"ok": True, "kind": "fulfillment-submission", **json_safe(result)}
+
+
+def distribute_existing_fulfillment(payload):
+    username, password = require_credentials(payload)
+    if payload.get("commit") != "DISTRIBUTION_CONFIRMED":
+        raise ValueError("转入配货中缺少最终确认标记。")
+    required = ["orderReference", "trackingNumber", "channelValue", "channelId", "shopId", "platformId"]
+    if any(not str(payload.get(key) or "").strip() for key in required):
+        raise ValueError("转入配货中参数不完整。")
+    client = order_source.MabangClient()
+    client.login(username, password)
+    result = client.distribute_existing_fulfillment(
+        payload["orderReference"], payload["trackingNumber"], payload["channelValue"], payload["channelId"],
+        payload["shopId"], payload["platformId"], payload.get("verifyTimeoutSeconds") or 90,
+    )
+    return {"ok": True, "kind": "fulfillment-distribution", **json_safe(result)}
+
+
+def clear_pending_tracking_channel(payload):
+    username, password = require_credentials(payload)
+    if payload.get("commit") != "TRACKING_RESET_CONFIRMED":
+        raise ValueError("清空物流渠道缺少最终确认标记。")
+    required = ["orderReference", "channelValue", "channelId", "shopId", "platformId"]
+    if any(not str(payload.get(key) or "").strip() for key in required):
+        raise ValueError("清空物流渠道参数不完整。")
+    client = order_source.MabangClient()
+    client.login(username, password)
+    result = client.clear_pending_tracking_channel(
+        payload["orderReference"], payload["channelValue"], payload["channelId"],
+        payload["shopId"], payload["platformId"],
+    )
+    return {"ok": True, "kind": "fulfillment-tracking-reset", **json_safe(result)}
+
+
 def write_xlsx(payload):
     output_path = Path(str(payload.get("outputPath") or "")).resolve()
     allowed_root = Path(os.environ.get("MABANG_EXPORT_DIR") or output_path.parent).resolve()
@@ -359,8 +459,20 @@ def dispatch(payload):
         return test_login(payload)
     if action == "orders":
         return collect_orders(payload)
+    if action == "fulfillment-orders":
+        return collect_fulfillment_orders(payload)
     if action == "inventory":
         return collect_inventory(payload)
+    if action == "fulfillment-inspect":
+        return inspect_fulfillment(payload)
+    if action == "fulfillment-preflight":
+        return preflight_fulfillment(payload)
+    if action == "fulfillment-submit":
+        return submit_fulfillment(payload)
+    if action == "fulfillment-distribute-existing":
+        return distribute_existing_fulfillment(payload)
+    if action == "fulfillment-clear-pending-channel":
+        return clear_pending_tracking_channel(payload)
     if action == "write-xlsx":
         return write_xlsx(payload)
     if action == "fields":
