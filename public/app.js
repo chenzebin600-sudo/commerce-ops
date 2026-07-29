@@ -9,6 +9,7 @@ import { createAuditPage } from "./audit-page.mjs";
 import { createProductCenterPage } from "./product-center-page.mjs?v=20260721-ui-delete-ai-1";
 import { createGrowthRadarPage } from "./growth-radar-page.mjs?v=20260722-g1b2-1";
 import { createMabangImagesPage } from "./mabang-images-page.mjs?v=20260722-mabang-images-2";
+import { createFulfillmentPage } from "./fulfillment-page.mjs?v=20260729-4";
 import { createExcelHtmlRenderer } from "/excel-cell-policy.mjs";
 
 let currentReport = null;
@@ -26,6 +27,7 @@ let auditPage = null;
 let productCenterPage = null;
 let growthRadarPage = null;
 let mabangImagesPage = null;
+let fulfillmentPage = null;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
@@ -169,6 +171,8 @@ productCenterPage.initialize();
 growthRadarPage = createGrowthRadarPage({ authorizedFetch, onStatus: setStatus });
 growthRadarPage.initialize();
 mabangImagesPage = createMabangImagesPage({ authorizedFetch, apiJson, setStatus });
+fulfillmentPage = createFulfillmentPage({ authorizedFetch, setStatus });
+fulfillmentPage.initialize();
 adsFrameBridge = createAdFrameBridge({
   windowObject: window,
   frame: $("adsFrame"),
@@ -237,6 +241,10 @@ const PAGE_META = {
   "growth-radar": {
     title: "确定性货盘增长雷达",
     subtitle: "管理订单、库存、店铺范围与来源语义；当前节点不提供机会评分或店铺推荐。",
+  },
+  fulfillment: {
+    title: "履约中心",
+    subtitle: "统一查看 Shopee、Lazada 与 TikTok Shop 店铺的订单扫描、自动发货和异常状态。",
   },
 };
 
@@ -345,6 +353,7 @@ function switchPage(page, { skipProductClose = false } = {}) {
   if (page === "audit") auditPage.load();
   if (page === "products") productCenterPage.load().catch((error) => setStatus(error.message, "error"));
   if (page === "growth-radar") growthRadarPage.load().catch((error) => setStatus(error.message, "error"));
+  if (page === "fulfillment") fulfillmentPage.load().catch((error) => setStatus(error.message, "error"));
   if (location.hash !== `#${page}`) history.replaceState(null, "", `#${page}`);
 }
 

@@ -10,6 +10,7 @@
 
 # Dependencies and language caches
 node_modules/
+.pnpm-store/
 .venv/
 .venv-*/
 venv/

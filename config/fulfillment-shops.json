@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "defaultShopId": "2021485965",
+  "channels": [
+    {
+      "profileId": "id-shopee-jt-furniture",
+      "countryCode": "ID",
+      "platformId": "17",
+      "channelId": "1143663",
+      "channelProviderId": "1023359",
+      "channelLogisticsId": "1591",
+      "channelSource": "1",
+      "channelValue": "1143663_1023359_ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具_1591",
+      "channelName": "ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具【shopeeV2线上发货(新)】"
+    }
+  ],
+  "shops": [
+    {
+      "shopId": "2021578358",
+      "shopName": "Arca Woods",
+      "platform": "Shopee",
+      "platformId": "17",
+      "countryCode": "ID",
+      "channelProfileId": "id-shopee-jt-furniture",
+      "allowedWarehouses": [],
+      "autoFulfillEnabled": true
+    },
+    {
+      "shopId": "2021640336",
+      "shopName": "CONOCO.ID",
+      "platform": "Shopee",
+      "platformId": "17",
+      "countryCode": "ID",
+      "channelProfileId": "id-shopee-jt-furniture",
+      "allowedWarehouses": [],
+      "autoFulfillEnabled": false
+    },
+    {
+      "shopId": "2021485965",
+      "shopName": "JOJO Mall",
+      "platform": "Shopee",
+      "platformId": "17",
+      "countryCode": "ID",
+      "channelProfileId": "id-shopee-jt-furniture",
+      "allowedWarehouses": [],
+      "autoFulfillEnabled": true
+    },
+    {
+      "shopId": "2021621760",
+      "shopName": "Table Trove Mall.ID",
+      "platform": "Shopee",
+      "platformId": "17",
+      "countryCode": "ID",
+      "channelProfileId": "id-shopee-jt-furniture",
+      "allowedWarehouses": [],
+      "autoFulfillEnabled": true
+    },
+    {
+      "shopId": "2021557966",
+      "shopName": "Toko Penguin",
+      "platform": "Shopee",
+      "platformId": "17",
+      "countryCode": "ID",
+      "channelProfileId": "id-shopee-jt-furniture",
+      "allowedWarehouses": [],
+      "autoFulfillEnabled": true
+    }
+  ]
+}
