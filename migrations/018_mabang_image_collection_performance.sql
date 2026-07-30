@@ -1,0 +1,2 @@
+CREATE INDEX idx_mabang_sku_image_discovery_images_url_asset
+  ON mabang_sku_image_discovery_images(source_url_hash, asset_id);

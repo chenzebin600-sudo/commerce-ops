@@ -5,14 +5,22 @@ import path from "node:path";
 import test from "node:test";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
 import { createGrowthRadarAccessPolicy, GROWTH_RADAR_PERMISSIONS } from "../lib/growth-radar/growth-radar-access-policy.mjs";
+import { growthRadarParseOutputLimit } from "../lib/growth-radar/growth-radar-parser.mjs";
 import { GrowthRadarService } from "../lib/growth-radar/growth-radar-service.mjs";
 import { describeAuditRequest } from "../lib/security/audit-http.mjs";
 
 const projectRoot = path.resolve(".");
 const ORDER_SHA = "a".repeat(64);
+const ORDER_SEMANTIC_KEY = "c".repeat(64);
 const ORDER_SHA_2 = "e".repeat(64);
 const INVENTORY_SHA = "b".repeat(64);
 const AT = "2026-07-15T02:53:01.000Z";
+
+test("Growth Radar parser transport scales to the supported workbook row limit", () => {
+  assert.equal(growthRadarParseOutputLimit(1000), 128 * 1024 * 1024);
+  assert.equal(growthRadarParseOutputLimit(200000), 512 * 1024 * 1024);
+  assert.equal(growthRadarParseOutputLimit(1000000), 512 * 1024 * 1024);
+});
 
 function normalizedOrder(overrides = {}) {
   return {
@@ -173,7 +181,26 @@ test("G1A deterministic growth radar foundation", async (t) => {
 
     await t.test("04 migration creates the complete G1A table set", async () => {
       const rows = await dataAccess.provider.query("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'growth_%' OR name='product_identity_mappings')");
-      assert.equal(rows.rows.length, 16);
+      const actual = new Set(rows.rows.map((row) => row.name));
+      const expected = [
+        "growth_source_batches",
+        "growth_shops",
+        "growth_shop_source_mappings",
+        "growth_order_headers",
+        "growth_order_raw_rows",
+        "product_identity_mappings",
+        "growth_order_lines",
+        "growth_mapping_issues",
+        "growth_inventory_raw_rows",
+        "growth_inventory_snapshots",
+        "growth_data_quality_issues",
+        "growth_mapping_events",
+        "growth_shop_sku_observations",
+        "growth_shop_sku_coverage_snapshots",
+        "growth_order_inventory_links",
+        "growth_sku_warehouse_sales_metrics",
+      ];
+      assert.deepEqual(expected.filter((name) => !actual.has(name)), []);
     });
 
     await t.test("05 historical observations reject current-online semantics", async () => {
@@ -185,7 +212,8 @@ test("G1A deterministic growth radar foundation", async (t) => {
 
     await t.test("06 preview creates no database batch", async () => {
       orderPreview = await service.previewFile("mabang_order", { filename: "C:/outside/订单样本.xlsx", sourceFilename: "订单样本.xlsx",
-        sourceSha256: ORDER_SHA, sourceScope: { dateFrom: "2026-07-09", dateTo: "2026-07-15" } });
+        sourceSha256: ORDER_SHA, sourceIdempotencyKey: ORDER_SEMANTIC_KEY,
+        sourceScope: { dateFrom: "2026-07-09", dateTo: "2026-07-15" } });
       const summary = await service.summary();
       assert.equal(summary.batches, 0);
     });
@@ -236,6 +264,15 @@ test("G1A deterministic growth radar foundation", async (t) => {
 
     await t.test("23 source batch stores basename instead of an absolute path", () => assert.equal(orderApplied.batch.sourceFilename, "订单样本.xlsx"));
     await t.test("24 source batch retains its SHA-256 evidence", () => assert.equal(orderApplied.batch.sourceSha256, ORDER_SHA));
+
+    await t.test("24a source evidence hash and semantic idempotency key remain distinct", async () => {
+      const row = (await dataAccess.provider.query(
+        "SELECT source_sha256,idempotency_key FROM growth_source_batches WHERE id=?",
+        [orderApplied.batch.id],
+      )).rows[0];
+      assert.equal(row.source_sha256, ORDER_SHA);
+      assert.equal(row.idempotency_key, ORDER_SEMANTIC_KEY);
+    });
 
     await t.test("24a order amount is stored once and never allocated to lines", async () => {
       const header = (await dataAccess.provider.query("SELECT order_amount FROM growth_order_headers WHERE source_order_id='ORDER-001'")).rows[0];

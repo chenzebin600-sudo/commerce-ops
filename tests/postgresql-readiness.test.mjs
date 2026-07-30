@@ -21,7 +21,41 @@ test("SQLite readiness inspection is read-only and returns schema metadata only"
   const after = await fs.stat(databasePath);
   assert.equal(report.integrity, "ok");
   assert.equal(report.foreignKeyViolations, 0);
-  assert.equal(report.tableCount, 59);
+  const migrationSql = (await fs.readdir(path.resolve("migrations")))
+    .filter((name) => name.endsWith(".sql"))
+    .map((name) => fs.readFile(path.resolve("migrations", name), "utf8"));
+  const expectedTables = new Set(["schema_migrations"]);
+  for (const sql of await Promise.all(migrationSql)) {
+    for (const match of sql.matchAll(/CREATE TABLE(?: IF NOT EXISTS)?\s+([A-Za-z0-9_]+)/gi)) {
+      if (!match[1].endsWith("_d2b1")) expectedTables.add(match[1]);
+    }
+  }
+  assert.equal(report.tableCount, expectedTables.size);
+  for (const table of [
+    "growth_country_mapping_sets",
+    "growth_warehouse_country_mappings",
+    "growth_rule_sets",
+    "growth_analysis_runs",
+    "growth_sku_daily_metrics",
+    "growth_sku_warehouse_daily_metrics",
+    "growth_shop_daily_metrics",
+    "growth_shop_sku_daily_metrics",
+    "growth_signals",
+    "growth_focus_items",
+    "growth_focus_item_events",
+    "foundation_source_systems",
+    "foundation_integration_accounts",
+    "foundation_account_capabilities",
+    "foundation_owners",
+    "foundation_warehouses",
+    "foundation_identity_links",
+    "foundation_source_runs",
+    "foundation_tasks",
+    "foundation_task_events",
+    "foundation_task_leases",
+  ]) {
+    assert.ok(report.tables.some((candidate) => candidate.name === table), table);
+  }
   assert.equal(report.modifiedDuringProbe, false);
   assert.equal(before.size, after.size);
   assert.equal(before.mtimeMs, after.mtimeMs);

@@ -12,6 +12,8 @@
     "dev:fulfillment": "node --disable-warning=ExperimentalWarning --watch --watch-preserve-output fulfillment-service/server.mjs",
     "start:fulfillment:supervised": "node --disable-warning=ExperimentalWarning scripts/fulfillment-supervisor.mjs",
     "start:ads": "node scripts/start-ads.mjs",
+    "start:mabang-listing": "node scripts/start-mabang-listing.mjs",
+    "start:mabang-wps": "node scripts/start-mabang-wps.mjs",
     "scheduler": "npm run start:scheduler",
     "start:all": "node scripts/start-all.mjs",
     "dev:growth-radar:g1b": "node --disable-warning=ExperimentalWarning scripts/start-growth-radar-g1b.mjs",
@@ -28,7 +30,11 @@
     "postgres:f3:migrate-test": "node --disable-warning=ExperimentalWarning scripts/postgresql-f3-migration-test.mjs",
     "postgres:f4:check": "node --disable-warning=ExperimentalWarning scripts/postgresql-f4-compatibility-check.mjs",
     "validate:growth-radar:g1a5": "node --disable-warning=ExperimentalWarning scripts/validate-growth-radar-g1a5.mjs",
-    "build": "npm run check:paths && node scripts/check-build.mjs",
+    "build:growth-radar:v2": "npm --prefix frontend/growth-radar-v2 run build",
+    "build:sales-assortment": "npm --prefix frontend/sales-assortment-dashboard run build",
+    "build:mabang-listing": "npm --prefix frontend/mabang-listing run build",
+    "build": "npm run check:paths && npm run build:growth-radar:v2 && npm run build:sales-assortment && npm run build:mabang-listing && node scripts/check-build.mjs",
+    "test:mabang-getdata": "node scripts/test-mabang-getdata.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs"
   },
   "dependencies": {

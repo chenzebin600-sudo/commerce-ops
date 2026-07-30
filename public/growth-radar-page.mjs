@@ -193,7 +193,7 @@ function safeSampleRows(issue) {
   return rows.length ? rows.map((row) => `来源行 ${formatCount(row.sourceRowNumber)}`).join("、") : "无原始值回显";
 }
 
-export function createGrowthRadarPage({ authorizedFetch, onStatus = () => {} }) {
+export function createGrowthRadarPage({ authorizedFetch, onStatus = () => {}, rootId = "growthRadarRoot" }) {
   const state = {
     initialized: false,
     loaded: false,
@@ -207,7 +207,7 @@ export function createGrowthRadarPage({ authorizedFetch, onStatus = () => {} }) 
     shopFilter: "pending",
     renderSequence: 0,
   };
-  const root = () => document.getElementById("growthRadarRoot");
+  const root = () => document.getElementById(rootId);
 
   async function api(path, options = {}) {
     const response = await authorizedFetch(path, options);

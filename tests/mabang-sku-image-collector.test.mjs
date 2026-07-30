@@ -9,19 +9,23 @@ import {
   analyzeInventoryHtmlPayload,
   analyzeInventoryPayload,
   deduplicateDiscoveryRows,
+  filenameSkuFromOriginalFilename,
   filenameSkuFromUrl,
   inventoryPageHash,
+  isKnownMabangNonProductImage,
   normalizeDiscoveryRow,
   sanitizeInterfaceProfile,
   sanitizeStoredSourceUrl,
 } from "../lib/mabang-images/extraction.mjs";
 import { MabangInventoryBrowserSession, requestForPage, selectInventoryCapture } from "../lib/mabang-images/browser-session.mjs";
+import { MabangInventoryWorkerSession, parseInventoryHtmlRows } from "../lib/mabang-images/worker-session.mjs";
 import { inspectImageBuffer, MabangImageAssetService } from "../lib/mabang-images/image-assets.mjs";
 import {
   createMabangImageAuditRecord,
   MabangSkuImageCollectorService,
   selectRowsWithinSkuLimit,
 } from "../lib/mabang-images/service.mjs";
+import { describeAuditRequest } from "../lib/security/audit-http.mjs";
 import { redactAuditText, sanitizeAuditMetadata } from "../lib/security/audit-service.mjs";
 
 const projectRoot = path.resolve(".");
@@ -143,6 +147,8 @@ test("8. 行 SKU 始终作为主要身份", () => {
 test("9. 文件名 SKU 只用于正则校验", () => {
   assert.equal(filenameSkuFromUrl("https://stock-cos.mabangerp.com/a/ABC-9_171234.jpg"), "ABC-9");
   assert.equal(filenameSkuFromUrl("https://stock-cos.mabangerp.com/a/ABC-9.jpg"), null);
+  assert.equal(filenameSkuFromOriginalFilename("T5GG2441083_1769410047.jpg"), "T5GG2441083");
+  assert.equal(filenameSkuFromOriginalFilename("T5GG2441083_1.jpg"), null);
 });
 
 test("10. SKU 不一致生成质量问题", () => {
@@ -259,21 +265,24 @@ test("23. 图片二进制不写入 SQLite 迁移", async () => {
   assert.match(sql, /relative_path TEXT NOT NULL/);
 });
 
-test("24. 下载并发被限制为 3 到 5", () => {
+test("24. 下载并发默认 8 且被限制为 3 到 12", () => {
+  const normal = new MabangSkuImageCollectorService({ repository: {}, assetService: {}, browserFactory: async () => ({}) });
   const low = new MabangSkuImageCollectorService({ repository: {}, assetService: {}, browserFactory: async () => ({}), concurrency: 1 });
   const high = new MabangSkuImageCollectorService({ repository: {}, assetService: {}, browserFactory: async () => ({}), concurrency: 99 });
+  assert.equal(normal.concurrency, 8);
   assert.equal(low.concurrency, 3);
-  assert.equal(high.concurrency, 5);
+  assert.equal(high.concurrency, 12);
 });
 
-test("25. 管理页包含二次确认、暂停、继续、失败原因与主图确认", async () => {
+test("25. 管理页包含全量同步、二次确认、暂停、继续与产品图片操作", async () => {
   const [html, page] = await Promise.all([
     fs.readFile(path.join(projectRoot, "public", "index.html"), "utf8"),
     fs.readFile(path.join(projectRoot, "public", "mabang-images-page.mjs"), "utf8"),
   ]);
   const source = `${html}\n${page}`;
-  for (const text of ["开始首次全量采集", "补采缺失图片", "重试失败图片", "暂停", "继续", "失败原因", "确认设为产品主图"]) assert.match(source, new RegExp(text));
-  assert.match(page, /window\.confirm\("确认开始首次全量采集/);
+  for (const text of ["一键同步全部 SKU 图片", "补采缺失图片", "重试失败图片", "暂停", "继续", "失败原因", "加入产品图片", "移除关联"]) assert.match(source, new RegExp(text));
+  assert.doesNotMatch(source, /确认设为产品主图/);
+  assert.match(page, /window\.confirm\("确认同步全部 SKU 图片/);
 });
 
 test("26. CDP 标准返回包和库存 iframe 执行上下文可读取", async () => {
@@ -424,7 +433,7 @@ test("32. 素材记录存在但物理文件缺失时由相同 SHA 内容安全�
   assert.equal((await fs.stat(storedPath)).size, source.buffer.length);
 });
 
-test("33. 当前分支完整迁移链可从 001 执行至 015 且新增表初始为空", async () => {
+test("33. 当前分支迁移链可从 001 执行至 018 且全量同步表初始为空", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mabang-image-migration-chain-"));
   const databasePath = path.join(root, "migration-chain.sqlite");
   let access;
@@ -432,11 +441,15 @@ test("33. 当前分支完整迁移链可从 001 执行至 015 且新增表初始
     const migrationNames = (await fs.readdir(path.join(projectRoot, "migrations")))
       .filter((name) => /^\d{3}_.+\.sql$/.test(name))
       .sort();
+    const migrationNumbers = migrationNames.map((name) => Number.parseInt(name.slice(0, 3), 10));
     assert.deepEqual(
-      migrationNames.map((name) => Number.parseInt(name.slice(0, 3), 10)),
-      Array.from({ length: 15 }, (_, index) => index + 1),
+      migrationNumbers.filter((version) => version <= 18),
+      [...Array.from({ length: 15 }, (_, index) => index + 1), 17, 18],
     );
-    assert.equal(migrationNames.at(-1), "015_mabang_sku_image_collector.sql");
+    assert.equal(
+      migrationNames.find((name) => name.startsWith("018_")),
+      "018_mabang_image_collection_performance.sql",
+    );
 
     access = openCommerceDataAccess({ rootDir: projectRoot, databasePath });
     const applied = await access.provider.query("SELECT version FROM schema_migrations ORDER BY version");
@@ -448,6 +461,8 @@ test("33. 当前分支完整迁移链可从 001 执行至 015 且新增表初始
       "mabang_sku_image_batches",
       "mabang_sku_image_checkpoints",
       "mabang_sku_image_discoveries",
+      "mabang_sku_image_discovery_images",
+      "mabang_sku_image_sync_runs",
       "product_media_assets",
       "product_media_links",
     ]) {
@@ -711,3 +726,686 @@ function runHarness(pages, checkpoint = null, {
   });
   return { service, batch, checkpoints, pageCalls, auditRecords, selectedSkuCount };
 }
+
+test("43. 后台库存页解析可识别 SKU、商品、仓库和图片", () => {
+  const rows = parseInventoryHtmlRows(`
+    <li><ul>
+      <li><img data-src="https://stock-cos.mabangerp.com/p/A-1_1.jpg"></li>
+      <li><a class="shopStock">A-1</a><p class="ellipsis">测试商品</p></li>
+      <li class="warehouseIds">华南仓</li>
+    </ul></li>
+  `, 2);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].sourceSku, "A-1");
+  assert.equal(rows[0].productName, "测试商品");
+  assert.equal(rows[0].warehouseName, "华南仓");
+  assert.equal(rows[0].sourcePage, 2);
+  assert.equal(rows[0].sourceImageUrl, "https://stock-cos.mabangerp.com/p/A-1_1.jpg");
+});
+
+test("44. 图片采集按所选账号在后台登录且不需要浏览器会话", async () => {
+  let workerPayload;
+  const verification = [];
+  const session = new MabangInventoryWorkerSession({
+    username: "configured-user",
+    password: "configured-password",
+    maxSkus: 100,
+    runWorker: async (payload) => {
+      workerPayload = payload;
+      return {
+        recordCount: 1,
+        pages: [{
+          pageNumber: 1,
+          request: { url: "https://private-amz.mabangerp.com/index.php?mod=warehouse.searchwarehousestock", method: "POST", postData: "page=1&rowsPerPage=50" },
+          payload: { success: true, message: '<li><ul><li><img src="https://stock-cos.mabangerp.com/p/A-1_1.jpg"></li><li><a class="shopStock">A-1</a></li></ul></li>' },
+        }],
+      };
+    },
+    onVerification: async (status, message) => verification.push({ status, message }),
+  });
+  const opened = await session.open();
+  const page = await session.page(1);
+  assert.equal(workerPayload.action, "inventory-images");
+  assert.equal(workerPayload.username, "configured-user");
+  assert.equal(workerPayload.password, "configured-password");
+  assert.equal(workerPayload.maxSkus, 100);
+  assert.equal(opened.strategy, "worker");
+  assert.equal(page.rows[0].sourceSku, "A-1");
+  assert.equal(verification[0].status, "success");
+  await session.close();
+  assert.equal(session.username, null);
+  assert.equal(session.password, null);
+});
+
+test("45. 后台登录失败返回可操作错误且不回显密码", async () => {
+  const session = new MabangInventoryWorkerSession({
+    username: "configured-user",
+    password: "never-echo-this-password",
+    runWorker: async () => {
+      throw new Error("马帮登录失败：用户名或密码错误");
+    },
+  });
+  await assert.rejects(() => session.open(), (error) => {
+    assert.equal(error.code, "MABANG_LOGIN_FAILED");
+    assert.match(error.message, /检查所选账号/);
+    assert.doesNotMatch(error.message, /never-echo-this-password/);
+    return true;
+  });
+});
+
+test("46. 后台图片下载限制域名、响应大小并校验跳转结果", async () => {
+  const image = png(6, 7);
+  const response = new Response(image, { status: 200, headers: { "content-type": "image/png" } });
+  Object.defineProperty(response, "url", { value: "https://stock-cos.mabangerp.com/p/A-1_1.jpg" });
+  const session = new MabangInventoryWorkerSession({
+    username: "user",
+    password: "password",
+    runWorker: async () => ({ pages: [] }),
+    fetchImpl: async () => response,
+  });
+  const result = await session.fetchImage("https://stock-cos.mabangerp.com/p/A-1_1.jpg");
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.buffer, image);
+  await assert.rejects(() => session.fetchImage("https://example.com/image.jpg"), { code: "MABANG_IMAGE_HOST_BLOCKED" });
+});
+
+test("47. 马帮图片页面明确使用后台账号登录且不要求弹窗浏览器", async () => {
+  const [html, page, worker] = await Promise.all([
+    fs.readFile(path.join(projectRoot, "public", "index.html"), "utf8"),
+    fs.readFile(path.join(projectRoot, "public", "mabang-images-page.mjs"), "utf8"),
+    fs.readFile(path.join(projectRoot, "scripts", "mabang_worker.py"), "utf8"),
+  ]);
+  assert.match(html, /使用所选账号在后台安全登录马帮/);
+  assert.doesNotMatch(`${html}\n${page}`, /打开\s*\/\s*检查马帮会话|先打开验证浏览器/);
+  assert.match(worker, /inventory-images/);
+});
+
+test("48. 同一 SKU 的 src、懒加载、srcset 和背景图都会进入图片候选集", () => {
+  const rows = parseInventoryHtmlRows(`
+    <li><ul>
+      <li>
+        <img src="https://stock-cos.mabangerp.com/p/A-1_1.jpg">
+        <img data-src="https://stock-cos.mabangerp.com/p/A-1_2.jpg">
+        <img srcset="https://stock-cos.mabangerp.com/p/A-1_3.jpg 1x, https://stock-cos.mabangerp.com/p/A-1_4.jpg 2x">
+        <span style="background-image:url('https://stock-cos.mabangerp.com/p/A-1_5.jpg')"></span>
+      </li>
+      <li><a class="shopStock">A-1</a><p class="ellipsis">测试商品</p></li>
+      <li class="warehouseIds">华南仓</li>
+    </ul></li>
+  `, 1);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(
+    rows[0].imageCandidates.map((item) => item.url),
+    [
+      "https://stock-cos.mabangerp.com/p/A-1_1.jpg",
+      "https://stock-cos.mabangerp.com/p/A-1_2.jpg",
+      "https://stock-cos.mabangerp.com/p/A-1_3.jpg",
+      "https://stock-cos.mabangerp.com/p/A-1_4.jpg",
+      "https://stock-cos.mabangerp.com/p/A-1_5.jpg",
+    ],
+  );
+});
+
+test("49. 多张图片逐张入库，重复二进制只保存一次且精确关联产品", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    context.access.close();
+    await fs.rm(context.root, { recursive: true, force: true });
+  });
+  const seeded = await seedProducts(context, ["TH"]);
+  const batch = await context.repository.createBatch({
+    accountId: context.accountId,
+    mode: "full_initial",
+    createdBy: "tester",
+  });
+  const urls = [
+    "https://stock-cos.mabangerp.com/p/AB-1_1.png",
+    "https://stock-cos.mabangerp.com/p/AB-1_2.png",
+    "https://stock-cos.mabangerp.com/p/AB-1_3.png",
+  ];
+  await context.repository.saveDiscoveries(batch.id, [
+    normalizeDiscoveryRow({
+      sourceSku: "AB-1",
+      productName: "测试商品",
+      warehouseName: "华南仓",
+      imageCandidates: urls.map((url) => ({ url, sourceKind: "interface" })),
+    }),
+  ]);
+  const discoveries = await context.repository.discoveriesForPage(batch.id, 1);
+  assert.equal(discoveries[0].images.length, 3);
+
+  const assetService = new MabangImageAssetService({
+    repository: context.repository,
+    tempRoot: path.join(context.root, "temp"),
+    imageRoot: path.join(context.root, "media"),
+  });
+  const collector = new MabangSkuImageCollectorService({
+    repository: context.repository,
+    assetService,
+    browserFactory: async () => ({}),
+  });
+  const browser = {
+    fetchImage: async (url) => ({
+      status: 200,
+      contentType: "image/png",
+      buffer: url.endsWith("_2.png") ? png(4, 5) : png(2, 3),
+    }),
+  };
+  await collector.downloadRows(batch, discoveries, browser);
+
+  const imageRows = await context.access.provider.query(
+    "SELECT download_status,asset_id,error_code,error_message FROM mabang_sku_image_discovery_images ORDER BY image_index",
+  );
+  assert.deepEqual(
+    imageRows.rows.map((item) => item.download_status),
+    ["downloaded", "downloaded", "duplicate"],
+    JSON.stringify(imageRows.rows.map(({ download_status, error_code }) => ({ download_status, error_code }))),
+  );
+  assert.equal(new Set(imageRows.rows.map((item) => item.asset_id)).size, 2);
+  assert.equal(Number((await context.access.provider.query("SELECT count(*) total FROM product_media_assets")).rows[0].total), 2);
+  assert.equal(Number((await context.access.provider.query("SELECT count(*) total FROM product_media_links")).rows[0].total), 2);
+
+  const before = await context.access.repositories.productCatalog.get(seeded.products[0].id);
+  assert.equal(before.mabangImages.length, 2);
+  const confirmed = await collector.confirmGallery(before.mabangImages[0].linkId, "tester");
+  assert.equal(confirmed.mappingStatus, "confirmed");
+  assert.equal(confirmed.mediaRole, "gallery");
+  assert.equal(Number((await context.access.provider.query("SELECT count(*) total FROM product_images")).rows[0].total), 0);
+  const rejected = await collector.rejectLink(before.mabangImages[1].linkId, "tester");
+  assert.equal(rejected.mappingStatus, "rejected");
+});
+
+test("50. 250 个 SKU 自动拆成三个内部批次并从正确分页继续", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    context.access.close();
+    await fs.rm(context.root, { recursive: true, force: true });
+  });
+  const startPages = [];
+  const service = new MabangSkuImageCollectorService({
+    repository: context.repository,
+    assetService: {},
+    maxSkusPerBatch: 100,
+    fullSyncSegmentSkus: 100,
+    browserFactory: async ({ startPage }) => {
+      startPages.push(startPage);
+      return {
+        open: async () => ({ interfaceProfile: {}, totalPages: 5 }),
+        page: async (pageNumber) => ({
+          rows: skuPage(pageNumber, (pageNumber - 1) * 50 + 1, 50),
+          currentPage: pageNumber,
+          totalPages: 5,
+          hasNext: pageNumber < 5,
+          strategy: "worker",
+        }),
+        close: async () => {},
+      };
+    },
+  });
+  const run = await context.repository.createSyncRun({
+    accountId: context.accountId,
+    createdBy: "tester",
+  });
+  const completed = await service.runSyncRun(run.id);
+  const batches = await context.repository.listSyncRunBatches(run.id);
+
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.discoveredSkus, 250);
+  assert.equal(completed.segmentCount, 3);
+  assert.equal(completed.nextPage, 6);
+  assert.deepEqual(startPages, [1, 3, 5]);
+  assert.deepEqual(batches.map((item) => [item.segmentNo, item.startPage, item.endPage]), [
+    [1, 1, 2],
+    [2, 3, 4],
+    [3, 5, 5],
+  ]);
+});
+
+test("51. 单个 SKU 超过 50 张图片时不会被测试版上限截断", () => {
+  const urls = Array.from({ length: 75 }, (_, index) => `https://stock-cos.mabangerp.com/p/MANY-${index + 1}.jpg`);
+  const normalized = normalizeDiscoveryRow({
+    sourceSku: "MANY",
+    imageCandidates: urls.map((url) => ({ url, sourceKind: "interface" })),
+  });
+  const analyzed = analyzeInventoryPayload({
+    data: {
+      list: [{
+        skuCode: "MANY",
+        imageUrls: urls,
+      }],
+    },
+  }, {
+    request: { url: "https://private-amz.mabangerp.com/inventory?pageNo=1", method: "GET" },
+    transport: "xhr",
+  });
+  assert.equal(normalized.imageCandidates.length, 75);
+  assert.equal(analyzed.rows[0].imageCandidates.length, 75);
+});
+
+test("52. 同一来源 URL 在当前页只下载一次，后续批次直接复用实体素材", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    context.access.close();
+    await fs.rm(context.root, { recursive: true, force: true });
+  });
+  await seedProducts(context, ["TH"]);
+  const sourceUrl = "https://stock-cos.mabangerp.com/p/AB-1_shared.png";
+  const assetService = new MabangImageAssetService({
+    repository: context.repository,
+    tempRoot: path.join(context.root, "temp"),
+    imageRoot: path.join(context.root, "media"),
+  });
+  const collector = new MabangSkuImageCollectorService({
+    repository: context.repository,
+    assetService,
+    browserFactory: async () => ({}),
+  });
+  let fetches = 0;
+  const browser = {
+    fetchImage: async () => {
+      fetches += 1;
+      return { status: 200, contentType: "image/png", buffer: png(8, 9) };
+    },
+  };
+
+  const firstBatch = await context.repository.createBatch({
+    accountId: context.accountId,
+    mode: "full_initial",
+    createdBy: "tester",
+  });
+  await context.repository.saveDiscoveries(firstBatch.id, [
+    normalizeDiscoveryRow({ sourceSku: "AB-1", warehouseName: "A", imageCandidates: [{ url: sourceUrl, sourceKind: "interface" }] },
+      { pageNumber: 1, rowNumber: 1 }),
+    normalizeDiscoveryRow({ sourceSku: "AB-1", warehouseName: "B", imageCandidates: [{ url: sourceUrl, sourceKind: "interface" }] },
+      { pageNumber: 1, rowNumber: 2 }),
+  ]);
+  await collector.downloadRows(firstBatch, await context.repository.discoveriesForPage(firstBatch.id, 1), browser);
+  assert.equal(fetches, 1);
+  const firstStatuses = await context.access.provider.query(
+    "SELECT i.download_status FROM mabang_sku_image_discovery_images i JOIN mabang_sku_image_discoveries d ON d.id=i.discovery_id WHERE d.batch_id=? ORDER BY d.source_row_number",
+    [firstBatch.id],
+  );
+  assert.deepEqual(firstStatuses.rows.map((row) => row.download_status), ["downloaded", "duplicate"]);
+
+  const secondBatch = await context.repository.createBatch({
+    accountId: context.accountId,
+    mode: "full_initial",
+    createdBy: "tester",
+  });
+  await context.repository.saveDiscoveries(secondBatch.id, [
+    normalizeDiscoveryRow({ sourceSku: "AB-1", imageCandidates: [{ url: sourceUrl, sourceKind: "interface" }] },
+      { pageNumber: 1, rowNumber: 1 }),
+  ]);
+  await collector.downloadRows(secondBatch, await context.repository.discoveriesForPage(secondBatch.id, 1), {
+    fetchImage: async () => { throw new Error("historical URL should not be downloaded again"); },
+  });
+  const secondStatus = await context.access.provider.query(
+    "SELECT i.download_status FROM mabang_sku_image_discovery_images i JOIN mabang_sku_image_discoveries d ON d.id=i.discovery_id WHERE d.batch_id=?",
+    [secondBatch.id],
+  );
+  assert.equal(secondStatus.rows[0].download_status, "duplicate");
+  assert.equal(fetches, 1);
+  assert.equal(Number((await context.access.provider.query("SELECT count(*) total FROM product_media_assets")).rows[0].total), 1);
+});
+
+test("53. 全量同步默认每 500 个唯一 SKU 分段并把分段上限传给后台采集器", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    context.access.close();
+    await fs.rm(context.root, { recursive: true, force: true });
+  });
+  const startPages = [];
+  const workerLimits = [];
+  const service = new MabangSkuImageCollectorService({
+    repository: context.repository,
+    assetService: {},
+    maxSkusPerBatch: 100,
+    browserFactory: async ({ startPage, maxSkus }) => {
+      startPages.push(startPage);
+      workerLimits.push(maxSkus);
+      return {
+        open: async () => ({ interfaceProfile: {}, totalPages: 5 }),
+        page: async (pageNumber) => ({
+          rows: skuPage(pageNumber, (pageNumber - 1) * 50 + 1, 50),
+          currentPage: pageNumber,
+          totalPages: 5,
+          hasNext: pageNumber < 5,
+          strategy: "worker",
+        }),
+        close: async () => {},
+      };
+    },
+  });
+  const run = await context.repository.createSyncRun({
+    accountId: context.accountId,
+    createdBy: "tester",
+  });
+  const completed = await service.runSyncRun(run.id);
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.discoveredSkus, 250);
+  assert.equal(completed.segmentCount, 1);
+  assert.deepEqual(startPages, [1]);
+  assert.deepEqual(workerLimits, [500]);
+});
+
+test("54. 批量匹配优先使用采集记录 SKU 并关联同 SKU 的全部国家产品", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    context.access.close();
+    await fs.rm(context.root, { recursive: true, force: true });
+  });
+  await seedProducts(context, ["TH", "PH"], "AB-1");
+  const asset = await createAsset(context);
+  const batch = await context.repository.createBatch({
+    accountId: context.accountId,
+    mode: "full_initial",
+    createdBy: "tester",
+  });
+  await context.repository.saveDiscoveries(batch.id, [
+    normalizeDiscoveryRow({
+      sourceSku: "AB-1",
+      imageCandidates: [{ url: "https://stock-cos.mabangerp.com/legacy/no-sku.png", sourceKind: "interface" }],
+    }, { pageNumber: 1, rowNumber: 1 }),
+  ]);
+  const [discovery] = await context.repository.discoveriesForPage(batch.id, 1);
+  await context.repository.updateDiscoveryImage(discovery.images[0].id, {
+    downloadStatus: "downloaded",
+    assetId: asset.id,
+  });
+
+  const result = await context.repository.matchCollectedAssetsToProducts({ linkedBy: "tester" });
+  assert.equal(result.authoritativeCandidates, 1);
+  assert.equal(result.filenameFallbackCandidates, 0);
+  assert.equal(result.matchedSkus, 1);
+  assert.equal(result.matchedProducts, 2);
+  assert.equal(result.linksCreated, 2);
+  const links = await context.repository.linksForAsset(asset.id);
+  assert.deepEqual(new Set(links.map((link) => link.countryCode)), new Set(["TH", "PH"]));
+  assert.equal(links.every((link) => link.mappingStatus === "suggested" && link.mediaRole === "gallery"), true);
+});
+
+test("55. 旧素材可由 original_filename 时间戳后缀精确匹配且重复执行幂等", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    context.access.close();
+    await fs.rm(context.root, { recursive: true, force: true });
+  });
+  await seedProducts(context, ["MY"], "T5GG2441083");
+  const assetId = randomUUID();
+  await context.repository.createAsset({
+    id: assetId,
+    sourceSystem: "mabang",
+    sourceUrl: null,
+    storageFileId: randomUUID(),
+    originalFilename: "T5GG2441083_1769410047.jpg",
+    storageFilename: `${assetId}.jpg`,
+    relativePath: `mabang/${assetId}.jpg`,
+    sha256: randomUUID().replaceAll("-", "").padEnd(64, "0"),
+    mimeType: "image/jpeg",
+    width: 1,
+    height: 1,
+    fileSize: 1,
+  });
+
+  const first = await context.repository.matchCollectedAssetsToProducts({ linkedBy: "tester" });
+  const second = await context.repository.matchCollectedAssetsToProducts({ linkedBy: "tester" });
+  assert.equal(first.filenameFallbackCandidates, 1);
+  assert.equal(first.linksCreated, 1);
+  assert.equal(second.linksCreated, 0);
+  assert.equal(second.linksExisting, 1);
+  assert.equal(Number((await context.access.provider.query(
+    "SELECT count(*) total FROM product_media_links WHERE asset_id=?",
+    [assetId],
+  )).rows[0].total), 1);
+});
+
+test("56. 批量匹配不做模糊 SKU 匹配且不覆盖人工产品图片", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    context.access.close();
+    await fs.rm(context.root, { recursive: true, force: true });
+  });
+  const seeded = await seedProducts(context, ["TH"], "SKU-EXACT-X");
+  await context.access.provider.execute(`INSERT INTO product_images
+    (id,sku_id,original_filename,storage_filename,relative_path,mime_type,file_size,file_hash,is_primary,sort_order,status,operator_label,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [randomUUID(), seeded.products[0].id, "manual.png", "manual.png",
+    "manual/manual.png", "image/png", 24, "manual-image-hash", 1, 0, "available", "human", context.now, context.now]);
+  const assetId = randomUUID();
+  await context.repository.createAsset({
+    id: assetId,
+    sourceSystem: "mabang",
+    sourceUrl: null,
+    storageFileId: randomUUID(),
+    originalFilename: "SKU-EXACT_1769410047.jpg",
+    storageFilename: `${assetId}.jpg`,
+    relativePath: `mabang/${assetId}.jpg`,
+    sha256: randomUUID().replaceAll("-", "").padEnd(64, "1"),
+    mimeType: "image/jpeg",
+    width: 1,
+    height: 1,
+    fileSize: 1,
+  });
+
+  const result = await context.repository.matchCollectedAssetsToProducts({ linkedBy: "tester" });
+  assert.equal(result.linksCreated, 0);
+  assert.deepEqual(result.unmatchedSkuSample, ["SKU-EXACT"]);
+  assert.equal(Number((await context.access.provider.query("SELECT count(*) total FROM product_images")).rows[0].total), 1);
+});
+
+test("57. 产品中心公开马帮图片表头、批量匹配按钮和受审计 API", async () => {
+  const [html, page, api] = await Promise.all([
+    fs.readFile(path.join(projectRoot, "public", "index.html"), "utf8"),
+    fs.readFile(path.join(projectRoot, "public", "product-center-page.mjs"), "utf8"),
+    fs.readFile(path.join(projectRoot, "lib", "mabang-images", "api.mjs"), "utf8"),
+  ]);
+  assert.match(html, /id="matchMabangImagesBtn"[^>]*>匹配马帮图片<\/button>/);
+  assert.match(page, /<th>马帮图片<\/th>/);
+  assert.match(page, /\/api\/mabang-images\/match-products/);
+  assert.match(page, /data-mabang-image-asset/);
+  assert.match(api, /accessPolicy\.assert\("mabang_images\.link"\)/);
+  assert.equal(describeAuditRequest("POST", "/api/mabang-images/match-products").action, "mabang_images.bulk_linked");
+});
+
+test("58. Mabang global sales-status icons are excluded from SKU image candidates", () => {
+  const productImage = "https://stock-cos.mabangerp.com/catalog/T5SS1010732_1776755636.jpg";
+  const statusIcon = "https://global.mabangerp.com/image/icon_sluggish.png";
+  const normalized = normalizeDiscoveryRow({
+    sourceSku: "T5SS1010732",
+    imageCandidates: [
+      { url: productImage, sourceKind: "src" },
+      { url: statusIcon, sourceKind: "src" },
+    ],
+  });
+
+  assert.equal(isKnownMabangNonProductImage({ sourceUrl: statusIcon }), true);
+  assert.equal(isKnownMabangNonProductImage({ sourceUrl: productImage }), false);
+  assert.deepEqual(normalized.imageCandidates.map((candidate) => candidate.url), [productImage]);
+  assert.equal(normalized.sourceImageUrl, productImage);
+});
+
+test("59. Product Center hides historical global icons but keeps real small SKU images", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    context.access.close();
+    await fs.rm(context.root, { recursive: true, force: true });
+  });
+  const seeded = await seedProducts(context, ["TH"], "AB-1");
+  const productImage = await createAsset(context);
+  await context.repository.linkAssetToMatchingProducts({
+    assetId: productImage.id,
+    sourceSku: "AB-1",
+    linkedBy: "tester",
+  });
+
+  const iconId = randomUUID();
+  await context.repository.createAsset({
+    id: iconId,
+    sourceSystem: "mabang",
+    sourceUrl: "https://global.mabangerp.com/image/icon_flat.png",
+    storageFileId: randomUUID(),
+    originalFilename: "icon_flat.png",
+    storageFilename: `${iconId}.png`,
+    relativePath: `mabang/${iconId}.png`,
+    sha256: randomUUID().replaceAll("-", "").padEnd(64, "2"),
+    mimeType: "image/png",
+    width: 32,
+    height: 32,
+    fileSize: 1000,
+  });
+  await context.access.provider.execute(`INSERT INTO product_media_links (
+    id,asset_id,source_sku,source_sku_normalized,product_id,country_code,media_role,mapping_status,
+    linked_at,linked_by,confirmed_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [
+    randomUUID(), iconId, "AB-1", "AB-1", seeded.products[0].id, "TH", "suggested_primary",
+    "suggested", context.now, "legacy_collector", null,
+  ]);
+
+  const listed = (await context.access.repositories.productCatalog.list({ keyword: "AB-1" })).products[0];
+  const detail = await context.access.repositories.productCatalog.get(seeded.products[0].id);
+  assert.equal(listed.image.mabangCount, 1);
+  assert.equal(listed.image.mabangAssetId, productImage.id);
+  assert.deepEqual(detail.mabangImages.map((image) => image.assetId), [productImage.id]);
+});
+
+test("60. Bulk matching ignores historical Mabang status-icon assets", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    context.access.close();
+    await fs.rm(context.root, { recursive: true, force: true });
+  });
+  await seedProducts(context, ["TH"], "AB-1");
+  const iconId = randomUUID();
+  await context.repository.createAsset({
+    id: iconId,
+    sourceSystem: "mabang",
+    sourceUrl: "https://global.mabangerp.com/image/icon_explode.png",
+    storageFileId: randomUUID(),
+    originalFilename: "icon_explode.png",
+    storageFilename: `${iconId}.png`,
+    relativePath: `mabang/${iconId}.png`,
+    sha256: randomUUID().replaceAll("-", "").padEnd(64, "3"),
+    mimeType: "image/png",
+    width: 32,
+    height: 32,
+    fileSize: 1000,
+  });
+
+  const result = await context.repository.matchCollectedAssetsToProducts({ linkedBy: "tester" });
+  assert.equal(result.assetsScanned, 0);
+  assert.equal(result.linksCreated, 0);
+  assert.equal(Number((await context.access.provider.query(
+    "SELECT count(*) total FROM product_media_links WHERE asset_id=?",
+    [iconId],
+  )).rows[0].total), 0);
+});
+
+test("61. Product Center Mabang images support an authenticated accessible preview dialog", async () => {
+  const [html, page, styles] = await Promise.all([
+    fs.readFile(path.join(projectRoot, "public", "index.html"), "utf8"),
+    fs.readFile(path.join(projectRoot, "public", "product-center-page.mjs"), "utf8"),
+    fs.readFile(path.join(projectRoot, "public", "styles.css"), "utf8"),
+  ]);
+
+  assert.match(html, /id="mabangImagePreviewDialog"/);
+  assert.match(html, /id="mabangImagePreviewImage"/);
+  assert.match(html, /id="closeMabangImagePreviewBtn"/);
+  assert.match(page, /data-mabang-preview-asset=/);
+  assert.match(page, /openMabangImagePreview\(/);
+  assert.match(page, /\/api\/mabang-images\/assets\/\$\{encodeURIComponent\(assetId\)\}\/content/);
+  assert.match(page, /state\.mabangPreviewObjectUrl/);
+  assert.match(page, /URL\.revokeObjectURL\(state\.mabangPreviewObjectUrl\)/);
+  assert.match(page, /addEventListener\("cancel"/);
+  assert.match(page, /event\.target === byId\("mabangImagePreviewDialog"\)/);
+  assert.match(styles, /\.mabang-image-preview-trigger[\s\S]*cursor:\s*zoom-in/);
+  assert.match(styles, /\.product-image-item \.mabang-image-preview-trigger[\s\S]*position:\s*static/);
+  assert.match(styles, /\.mabang-image-preview-stage[\s\S]*object-fit:\s*contain/);
+});
+
+test("62. Manual Mabang image management targets one country SKU and preserves shared assets", async (t) => {
+  const context = await fixture();
+  t.after(() => context.access.close());
+  const seeded = await seedProducts(context, ["TH", "PH"], "AB-1");
+  const assetService = new MabangImageAssetService({
+    repository: context.repository,
+    tempRoot: path.join(context.root, "temp"),
+    imageRoot: path.join(context.root, "media"),
+  });
+  const collector = new MabangSkuImageCollectorService({
+    repository: context.repository,
+    assetService,
+    browserFactory: async () => ({}),
+  });
+
+  const first = await collector.uploadProductImage({
+    productId: seeded.products[0].id,
+    buffer: png(16, 12),
+    contentType: "image/png",
+    originalFilename: "AB-1-manual.png",
+    actor: "tester",
+  });
+  assert.equal(first.duplicate, false);
+  assert.equal(first.asset.sourceSystem, "manual_mabang");
+  assert.equal(first.asset.originalFilename, "AB-1-manual.png");
+  assert.equal(first.link.productId, seeded.products[0].id);
+  assert.equal(first.link.mappingStatus, "suggested");
+  assert.equal((await context.access.repositories.productCatalog.get(seeded.products[0].id)).mabangImages.length, 1);
+  assert.equal((await context.access.repositories.productCatalog.get(seeded.products[1].id)).mabangImages.length, 0);
+
+  const secondCountry = await collector.uploadProductImage({
+    productId: seeded.products[1].id,
+    buffer: png(16, 12),
+    contentType: "image/png",
+    originalFilename: "same-content.png",
+    actor: "tester",
+  });
+  assert.equal(secondCountry.duplicate, true);
+  assert.equal(secondCountry.asset.id, first.asset.id);
+  assert.notEqual(secondCountry.link.id, first.link.id);
+  assert.equal(Number((await context.access.provider.query(
+    "SELECT count(*) total FROM product_media_assets WHERE sha256=?",
+    [first.asset.sha256],
+  )).rows[0].total), 1);
+
+  await collector.rejectLink(first.link.id, "tester");
+  assert.equal((await context.access.repositories.productCatalog.get(seeded.products[0].id)).mabangImages.length, 0);
+  assert.equal((await context.access.repositories.productCatalog.get(seeded.products[1].id)).mabangImages.length, 1);
+  assert.equal((await context.repository.getAsset(first.asset.id)).status, "available");
+
+  const restored = await collector.uploadProductImage({
+    productId: seeded.products[0].id,
+    buffer: png(16, 12),
+    contentType: "image/png",
+    originalFilename: "AB-1-restored.png",
+    actor: "tester",
+  });
+  assert.equal(restored.duplicate, true);
+  assert.equal(restored.link.id, first.link.id);
+  assert.equal(restored.link.mappingStatus, "suggested");
+  assert.equal((await context.access.repositories.productCatalog.get(seeded.products[0].id)).mabangImages.length, 1);
+});
+
+test("63. Product Center exposes per-SKU Mabang image upload, preview and safe removal controls", async () => {
+  const [html, page, styles, api, audit] = await Promise.all([
+    fs.readFile(path.join(projectRoot, "public", "index.html"), "utf8"),
+    fs.readFile(path.join(projectRoot, "public", "product-center-page.mjs"), "utf8"),
+    fs.readFile(path.join(projectRoot, "public", "styles.css"), "utf8"),
+    fs.readFile(path.join(projectRoot, "lib", "mabang-images", "api.mjs"), "utf8"),
+    fs.readFile(path.join(projectRoot, "lib", "security", "audit-http.mjs"), "utf8"),
+  ]);
+
+  assert.match(html, /id="mabangImageManagerDialog"/);
+  assert.match(html, /id="mabangImageUploadInput"/);
+  assert.match(html, /id="mabangImageManagerList"/);
+  assert.match(page, /data-manage-mabang-product=/);
+  assert.match(page, /修改马帮图片/);
+  assert.match(page, /\/api\/mabang-images\/products\/\$\{encodeURIComponent\(product\.id\)\}\/assets/);
+  assert.match(page, /data-delete-managed-mabang-link=/);
+  assert.match(page, /\/api\/mabang-images\/links\/\$\{encodeURIComponent\(linkId\)\}\/reject/);
+  assert.match(page, /"x-file-name": encodeURIComponent\(file\.name\)/);
+  assert.doesNotMatch(page, /localStorage|sessionStorage|[?&](?:token|access_token)=/i);
+  assert.match(api, /accessPolicy\.assert\("mabang_images\.link"\)/);
+  assert.match(api, /readBuffer\(req, maxImageBytes\)/);
+  assert.match(audit, /mabang_images\.manual_uploaded/);
+  assert.match(styles, /\.product-sku-line/);
+  assert.match(styles, /\.mabang-image-manager-list/);
+});

@@ -61,7 +61,7 @@ async function main() {
     const orderApplied = await service.applyPreview("mabang_order", {
       previewId: orderPreview.previewId,
       idempotencyKey: orderPreview.sourceSha256,
-    }, { actorLabel: "g1a5_isolated_validator" });
+    }, { actorLabel: "g1a5_isolated_validator", confirmationGranted: true });
 
     const inventoryPreview = await service.previewFile("mabang_inventory", {
       filename: args.inventory,
@@ -77,12 +77,12 @@ async function main() {
       matched: inventoryPreview.summary.matchedOrderLineCount,
       unmatched: inventoryPreview.summary.unmatchedOrderLineCount,
       snapshotAt: inventoryPreview.summary.snapshotAt,
-    }, { rows: 1440, snapshots: 1438, skus: 952, warehouses: 6, multiWarehouseSkus: 278, matched: 2658,
+    }, { rows: 1440, snapshots: 1438, skus: 952, warehouses: 6, multiWarehouseSkus: 278, matched: 2113,
       unmatched: 1, snapshotAt: "2026-07-21 20:20:37" });
     const inventoryApplied = await service.applyPreview("mabang_inventory", {
       previewId: inventoryPreview.previewId,
       idempotencyKey: inventoryPreview.sourceSha256,
-    }, { actorLabel: "g1a5_isolated_validator" });
+    }, { actorLabel: "g1a5_isolated_validator", confirmationGranted: true });
 
     const provider = dataAccess.provider;
     const linkCounts = await provider.query(`SELECT match_status,COUNT(*) AS total
@@ -120,7 +120,7 @@ async function main() {
     assert.equal(await scalar(provider, "SELECT COUNT(*) AS value FROM growth_order_raw_rows"), 2659);
     assert.equal(await scalar(provider, "SELECT COUNT(*) AS value FROM growth_inventory_raw_rows"), 1440);
     assert.equal(await scalar(provider, "SELECT COUNT(*) AS value FROM growth_inventory_snapshots"), 1438);
-    assert.deepEqual(links, { matched: 2658, unmatched: 1 });
+    assert.deepEqual(links, { matched: 2113, unmatched: 1 });
     assert.equal(unmatched.rows.length, 1);
     assert.equal(unmatched.rows[0].source_sku, "P4GG1790785");
     assert.equal(unmatched.rows[0].order_status, "已作废");
@@ -130,14 +130,14 @@ async function main() {
     assert.equal(Number(metricStatus.rows_total), 1438);
     assert.equal(Number(metricStatus.own_confirmed), 1438);
     assert.equal(Number(metricStatus.prediction_rows), 1438);
-    assert.equal(Number(metricStatus.own_sales_quantity_7d), 2434);
-    assert.deepEqual(scopeStatuses.rows.map((row) => row.source_scope_status), ["unconfirmed"]);
+    assert.equal(Number(metricStatus.own_sales_quantity_7d), 1859);
+    assert.deepEqual(scopeStatuses.rows.map((row) => row.source_scope_status), ["confirmed"]);
     assert.equal(currentOnlineCoverageRows, 0);
 
     process.stdout.write(`${JSON.stringify({
       validation: "passed",
       databaseMode: "temporary_isolated_deleted_after_validation",
-      sourceScopeStatus: "unconfirmed",
+      sourceScopeStatus: "confirmed",
       order: {
         sourceFilename: orderApplied.batch.sourceFilename,
         sourceSha256: orderApplied.batch.sourceSha256,

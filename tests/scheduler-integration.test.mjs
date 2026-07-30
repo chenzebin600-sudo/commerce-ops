@@ -77,6 +77,7 @@ test("mock login, orders, filter, Excel and DingTalk produce success", async () 
   const context = setup();
   const audit = createOperationAuditService({ db: context.db, env: {} });
   let notified = false;
+  let persisted;
   const executor = createTaskExecutor({
     db: context.db,
     runWorker: successfulWorker(),
@@ -84,6 +85,11 @@ test("mock login, orders, filter, Excel and DingTalk produce success", async () 
     retryDelays: [0, 0, 0],
     notify: async () => { notified = true; return { ok: true, status: 200, code: 0 }; },
     audit,
+    persistCollectedData: async (input) => {
+      persisted = input;
+      assert.ok((await fs.stat(input.filename)).size > 0);
+      return { status: "applied", batchId: "order-batch-1", rowCount: 1 };
+    },
   });
   const run = context.db.createRun({ taskId: context.task.id, triggerType: "manual", scheduledRunAt: new Date("2026-07-14T00:30:00Z") });
   const result = await executor.executeRun(run.id);
@@ -93,6 +99,12 @@ test("mock login, orders, filter, Excel and DingTalk produce success", async () 
   assert.equal(result.detailRowCount, 1);
   assert.equal(result.fileStatus, "available");
   assert.equal(notified, true);
+  assert.equal(persisted.kind, "orders");
+  assert.equal(persisted.sourceFileId, result.exportFileId);
+  assert.equal(persisted.sourceAccountId, context.task.accountProfileId);
+  assert.equal(persisted.sourceScope.dateFrom, result.paymentStartDate);
+  assert.equal(persisted.sourceScope.dateTo, result.paymentEndDate);
+  assert.equal(context.db.getRunDetails(run.id).events.some((event) => event.stage === "persist_collected_data" && event.status === "success"), true);
   assert.equal(audit.queryEvents({ action: "mabang.task.execution.success" }).total, 1);
   assert.equal(audit.queryEvents({ action: "mabang.dingtalk.notify.success" }).total, 1);
   assert.ok((await fs.stat(path.join(context.exportRoot, context.db.getExportFile(result.exportFileId).relativePath))).size > 0);
@@ -103,6 +115,7 @@ test("inventory task collects a snapshot, writes inventory Excel and sends inven
   const context = setup({ taskType: "inventory_export" });
   const calls = [];
   let notification;
+  let persisted;
   const worker = async (payload) => {
     calls.push(payload);
     if (payload.action === "inventory") return {
@@ -129,6 +142,10 @@ test("inventory task collects a snapshot, writes inventory Excel and sends inven
     exportRoot: context.exportRoot,
     retryDelays: [],
     notify: async (payload) => { notification = payload; return { ok: true, status: 200, code: 0 }; },
+    persistCollectedData: async (input) => {
+      persisted = input;
+      return { status: "applied", batchId: "inventory-batch-1", rowCount: 2 };
+    },
   });
   const run = context.db.createRun({ taskId: context.task.id, triggerType: "manual", scheduledRunAt: new Date("2026-07-14T00:30:00Z") });
   const result = await executor.executeRun(run.id);
@@ -139,6 +156,10 @@ test("inventory task collects a snapshot, writes inventory Excel and sends inven
   assert.equal(result.rawOrderCount, 2);
   assert.equal(result.filteredOrderCount, 2);
   assert.equal(result.detailRowCount, 2);
+  assert.equal(persisted.kind, "inventory");
+  assert.equal(persisted.sourceFileId, result.exportFileId);
+  assert.equal(persisted.sourceScope.queryType, "scheduled_export");
+  assert.ok(persisted.sourceScope.snapshotAt);
   assert.match(result.filename, /^马帮库存_/);
   assert.equal(calls.some((payload) => payload.action === "orders"), false);
   assert.equal(notification.title, "马帮库存定时导出成功");
@@ -200,6 +221,26 @@ test("Excel failure is recorded as generate_excel failure", async () => {
   const result = await executor.executeRun(run.id);
   assert.equal(result.status, "failed");
   assert.equal(result.errorStage, "generate_excel");
+  context.db.close();
+});
+
+test("database persistence failure fails the run after retaining the generated Excel", async () => {
+  const context = setup({ withRobot: false });
+  const executor = createTaskExecutor({
+    db: context.db,
+    runWorker: successfulWorker(),
+    exportRoot: context.exportRoot,
+    retryDelays: [],
+    persistCollectedData: async () => {
+      throw new Error("database persistence failed");
+    },
+  });
+  const run = context.db.createRun({ taskId: context.task.id, triggerType: "manual", scheduledRunAt: new Date("2026-07-14T00:34:30Z") });
+  const result = await executor.executeRun(run.id);
+  assert.equal(result.status, "failed");
+  assert.equal(result.errorStage, "persist_collected_data");
+  assert.equal(result.fileStatus, "available");
+  assert.ok(result.exportFileId);
   context.db.close();
 });
 

@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="Lazada、Shopee、TikTok Shop 竞品分析、关键词研究、订单采集与广告分析工作台" />
     <title>跨境电商 AI 运营工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260722-mabang-images-2" />
+    <link rel="stylesheet" href="/styles.css?v=20260728-mabang-nav-1" />
     <link rel="stylesheet" href="/growth-radar.css?v=20260722-g1b2-1" />
     <link rel="stylesheet" href="/fulfillment.css?v=20260729-4" />
+    <link rel="stylesheet" href="/growth-radar-v2.css?v=20260725-direction-1" />
   </head>
   <body>
     <section id="authGate" class="auth-gate" aria-labelledby="authTitle" hidden>
@@ -62,19 +63,23 @@
             </button>
             <button class="tab-button" type="button" data-page="growth-radar" aria-controls="page-growth-radar">
               <span class="nav-monogram" aria-hidden="true">G</span>
-              <span>增长雷达</span>
+              <span>超级店长助手</span>
+            </button>
+            <button class="tab-button" type="button" data-page="sales-assortment" aria-controls="page-sales-assortment">
+              <span class="nav-monogram" aria-hidden="true">D</span>
+              <span>销售与货盘</span>
             </button>
             <button class="tab-button" type="button" data-page="mabang" aria-controls="page-mabang">
               <span class="nav-monogram" aria-hidden="true">M</span>
               <span>马帮数据</span>
             </button>
-            <button class="tab-button" type="button" data-page="mabang-images" aria-controls="page-mabang-images">
-              <span class="nav-monogram" aria-hidden="true">I</span>
-              <span>马帮 SKU 图片</span>
+            <button class="tab-button" type="button" data-page="mabang-listing" aria-controls="page-mabang-listing">
+              <span class="nav-monogram" aria-hidden="true">S</span>
+              <span>马帮刊登</span>
             </button>
             <button class="tab-button" type="button" data-page="ads" aria-controls="page-ads">
               <span class="nav-monogram" aria-hidden="true">A</span>
-              <span>Lazada 广告分析</span>
+              <span>广告分析</span>
             </button>
           </div>
           <div class="nav-group">
@@ -278,9 +283,12 @@
               </form>
               <div class="product-catalog-summary">
                 <span id="productCatalogRange">暂无已入库产品</span>
-                <label>每页
-                  <select id="productCatalogPageSize"><option>20</option><option selected>30</option><option>50</option><option>100</option></select>
-                </label>
+                <div class="product-catalog-summary-actions">
+                  <button id="matchMabangImagesBtn" class="button-secondary" type="button">匹配马帮图片</button>
+                  <label>每页
+                    <select id="productCatalogPageSize"><option>20</option><option selected>30</option><option>50</option><option>100</option></select>
+                  </label>
+                </div>
               </div>
               <div id="productCatalogTable" class="table-wrap product-catalog-table-wrap"></div>
               <div class="product-catalog-pager">
@@ -402,12 +410,56 @@
             </div>
           </dialog>
 
+          <dialog id="mabangImagePreviewDialog" class="mabang-image-preview-dialog" aria-labelledby="mabangImagePreviewTitle">
+            <div class="mabang-image-preview-shell">
+              <header>
+                <div>
+                  <span class="page-context">MABANG SKU IMAGE</span>
+                  <h2 id="mabangImagePreviewTitle">马帮图片预览</h2>
+                  <p id="mabangImagePreviewMeta">正在加载图片</p>
+                </div>
+                <button id="closeMabangImagePreviewBtn" class="icon-text-button" type="button" aria-label="关闭图片预览">×</button>
+              </header>
+              <div class="mabang-image-preview-stage">
+                <span id="mabangImagePreviewStatus">正在加载图片…</span>
+                <img id="mabangImagePreviewImage" alt="" hidden />
+              </div>
+            </div>
+          </dialog>
+
           <dialog id="productDetailFieldsDialog" class="product-center-dialog">
             <form id="productDetailFieldsForm" method="dialog" class="product-dialog-shell">
               <header><div><h2>产品详情显示字段</h2><p>保存后对所有产品详情生效。</p></div><button class="icon-text-button" value="cancel" aria-label="关闭">×</button></header>
               <div id="productDetailFieldsList" class="product-field-selector"></div>
               <footer><button class="button-tertiary" value="cancel">取消</button><button id="saveProductFieldsBtn" type="submit" value="default">保存字段</button></footer>
             </form>
+          </dialog>
+
+          <dialog id="mabangImageManagerDialog" class="product-center-dialog mabang-image-manager-dialog" aria-labelledby="mabangImageManagerTitle">
+            <div class="product-dialog-shell">
+              <header>
+                <div>
+                  <span class="page-context">MABANG IMAGE MANAGER</span>
+                  <h2 id="mabangImageManagerTitle">修改马帮图片</h2>
+                  <p id="mabangImageManagerMeta">管理当前国家 + SKU 的参考图片</p>
+                </div>
+                <button id="closeMabangImageManagerBtn" class="icon-text-button" type="button" aria-label="关闭马帮图片管理">×</button>
+              </header>
+              <div class="mabang-image-manager-content">
+                <div class="mabang-image-manager-upload">
+                  <label for="mabangImageUploadInput">
+                    <span>上传图片</span>
+                    <input id="mabangImageUploadInput" type="file" accept="image/jpeg,image/png,image/webp" multiple />
+                  </label>
+                  <button id="uploadMabangImagesBtn" type="button">上传到当前 SKU</button>
+                </div>
+                <p class="mabang-image-manager-note">支持 JPG、PNG、WebP，单张不超过 10MB。删除只解除当前 SKU 关联，不会误删其他 SKU 共用的素材文件。</p>
+                <div id="mabangImageManagerList" class="mabang-image-manager-list"></div>
+              </div>
+              <footer>
+                <button id="doneMabangImageManagerBtn" class="button-tertiary" type="button">完成</button>
+              </footer>
+            </div>
           </dialog>
 
           <dialog id="productEditDialog" class="product-listing-workbench-dialog">
@@ -640,9 +692,19 @@
         <section id="page-growth-radar" class="page-section" hidden>
           <div id="growthRadarRoot" class="growth-radar-shell" aria-live="polite">
             <section class="growth-radar-loading" aria-busy="true">
-              <span class="growth-radar-kicker">DETERMINISTIC GROWTH RADAR · G1B</span>
-              <h2>正在读取数据范围与来源</h2>
-              <p>按需加载店铺、批次、预览、质量与语义状态。</p>
+              <span class="growth-radar-kicker">GROWTH RADAR V2.2</span>
+              <h2>正在加载超级店长运营助手</h2>
+              <p>读取最新已发布分析、运营任务与数据门禁。</p>
+            </section>
+          </div>
+        </section>
+
+        <section id="page-sales-assortment" class="page-section" hidden>
+          <div id="salesAssortmentDashboardRoot" aria-live="polite">
+            <section class="growth-radar-loading" aria-busy="true">
+              <span class="growth-radar-kicker">SALES &amp; ASSORTMENT</span>
+              <h2>正在加载销售与货盘驾驶舱</h2>
+              <p>读取最新订单、库存与产品包数据。</p>
             </section>
           </div>
         </section>
@@ -652,14 +714,25 @@
             <div class="panel-heading mabang-heading">
               <div>
                 <h2>马帮 ERP 数据中心</h2>
-                <p>使用你的马帮账号获取订单或库存数据，结果可直接预览并导出 Excel。</p>
+                <p>集中管理马帮订单、库存、定时任务、导出文件与 SKU 图片采集。</p>
               </div>
               <div class="segmented-control mabang-segmented-control" role="tablist" aria-label="马帮数据类型">
                 <button class="mabang-view-tab active" type="button" role="tab" data-mabang-view="orders" aria-selected="true" aria-controls="mabangOrdersPanel">订单信息</button>
                 <button class="mabang-view-tab" type="button" role="tab" data-mabang-view="inventory" aria-selected="false" aria-controls="mabangInventoryPanel">库存信息</button>
+                <button class="mabang-view-tab" type="button" role="tab" data-mabang-view="images" aria-selected="false" aria-controls="mabangImagesPanel">SKU 图片</button>
                 <button class="mabang-view-tab" type="button" role="tab" data-mabang-view="scheduled" aria-selected="false" aria-controls="mabangScheduledPanel">定时任务</button>
                 <button class="mabang-view-tab" type="button" role="tab" data-mabang-view="files" aria-selected="false" aria-controls="mabangFilesPanel">导出记录</button>
               </div>
+            </div>
+
+            <div id="mabangIntegrationToolbar" class="mabang-integration-toolbar" aria-label="马帮本地工具">
+              <div>
+                <strong>WPS 本地同步助手</strong>
+                <span id="mabangWpsStatus">可将马帮导出结果同步到 WPS 表格</span>
+              </div>
+              <button id="mabangWpsLaunchBtn" class="button-secondary" type="button">
+                启动 WPS 同步助手
+              </button>
             </div>
 
             <div id="mabangCredentialSection" class="credential-section" aria-labelledby="mabangCredentialTitle">
@@ -919,20 +992,20 @@
           </section>
         </section>
 
-        <section id="page-mabang-images" class="page-section" hidden>
+        <section id="mabangImagesPanel" class="mabang-integrated-panel" role="tabpanel" hidden>
           <section class="panel mabang-images-panel">
             <div class="panel-heading mabang-images-heading">
               <div>
                 <span class="page-context">MABANG ASSET SYNC</span>
-                <h2>马帮 SKU 图片采集</h2>
-                <p>复用已登录的马帮浏览器会话，从库存查询发现图片并关联同 SKU 的产品记录。</p>
+                <h2>马帮 SKU 图片同步</h2>
+                <p>使用所选马帮账号在后台遍历全部库存 SKU，采集全部可识别图片并关联产品中心。</p>
               </div>
               <span class="status-badge neutral">仅手动运行 · 无每日定时</span>
             </div>
 
             <div class="mabang-images-notice" role="note">
-              <strong>该任务可能运行较长时间，但可以暂停和恢复。</strong>
-              <span>图片保存在统一文件层；不会修改产品包原始数据，也不会自动覆盖人工主图。</span>
+              <strong>该任务可能运行较长时间；失败后可从最后完成页继续。</strong>
+              <span>系统使用所选账号在后台安全登录马帮；图片保存在统一文件层，不会修改产品包原始数据或自动覆盖人工主图。</span>
             </div>
 
             <div class="mabang-images-commandbar">
@@ -941,7 +1014,7 @@
                 <select id="mabangImageAccount"><option value="">正在读取账号…</option></select>
               </label>
               <div class="mabang-images-actions" aria-label="采集操作">
-                <button id="mabangImageFullBtn" type="button">开始首次全量采集</button>
+                <button id="mabangImageFullBtn" type="button">一键同步全部 SKU 图片</button>
                 <button id="mabangImageMissingBtn" class="button-secondary" type="button">补采缺失图片</button>
                 <button id="mabangImageRetryBtn" class="button-tertiary" type="button" disabled>重试失败图片</button>
               </div>
@@ -956,6 +1029,7 @@
                 </div>
               </div>
               <div class="mabang-image-progress-track" aria-hidden="true"><span id="mabangImageProgressBar"></span></div>
+              <div id="mabangImageBatchError" class="mabang-image-batch-error" hidden></div>
               <div class="mabang-image-metrics">
                 <div><span>当前页</span><strong id="mabangImageCurrentPage">—</strong></div>
                 <div><span>总页数</span><strong id="mabangImageTotalPages">—</strong></div>
@@ -964,6 +1038,7 @@
                 <div><span>缺失图片</span><strong id="mabangImageMissing">0</strong></div>
                 <div><span>下载失败</span><strong id="mabangImageFailed">0</strong></div>
                 <div><span>重复图片</span><strong id="mabangImageDuplicate">0</strong></div>
+                <div><span>发现图片</span><strong id="mabangImageTotalCandidates">0</strong></div>
                 <div><span>SKU 文件名不一致</span><strong id="mabangImageMismatch">0</strong></div>
                 <div><span>关联产品</span><strong id="mabangImageLinked">0</strong></div>
               </div>
@@ -986,7 +1061,7 @@
 
           <dialog id="mabangImageProductsDialog" class="management-dialog management-dialog-wide" aria-labelledby="mabangImageProductsTitle">
             <div class="dialog-heading">
-              <div><span class="page-context">SKU ASSET LINKS</span><h2 id="mabangImageProductsTitle">关联产品</h2><p>建议主图只有确认后才成为正式主图；人工主图始终受到保护。</p></div>
+              <div><span class="page-context">SKU ASSET LINKS</span><h2 id="mabangImageProductsTitle">关联产品</h2><p>马帮图片默认只是参考素材；可加入产品图库，但不会自动设置主图或覆盖人工图片。</p></div>
               <button class="dialog-close" type="button" data-close-dialog="mabangImageProductsDialog" aria-label="关闭">×</button>
             </div>
             <div id="mabangImageProductsContent"></div>
@@ -1096,12 +1171,22 @@
           </div>
         </section>
 
+        <section id="page-mabang-listing" class="page-section" hidden>
+          <div id="mabangListingRoot" aria-live="polite">
+            <section class="module-loading" aria-busy="true">
+              <span class="page-context">MABANG PUBLISHING</span>
+              <h2>正在准备马帮刊登工作台</h2>
+              <p>连接后可以查询授权店铺，并在人工确认后执行批量修改或刊登。</p>
+            </section>
+          </div>
+        </section>
+
         <section id="page-ads" class="page-section" hidden>
           <section class="panel ads-panel">
             <div class="panel-heading ads-head">
               <div>
-                <h2>Lazada Sponsored Max 广告分析</h2>
-                <p>上传 Lazada 广告 Excel，分析推广计划、产品系列和推广链接表现。</p>
+                <h2>广告分析</h2>
+                <p>当前支持 Lazada Sponsored Max Excel，分析推广计划、产品系列和推广链接表现。</p>
               </div>
               <div class="ads-actions">
                 <button id="adsReconnectBtn" class="button-secondary" type="button" hidden>重新连接</button>
@@ -1109,7 +1194,7 @@
               </div>
             </div>
             <div id="adsStatus" class="inline-state">正在连接广告分析子项目…</div>
-            <iframe id="adsFrame" class="ads-frame" title="Lazada Sponsored Max 广告分析" src="about:blank"></iframe>
+            <iframe id="adsFrame" class="ads-frame" title="广告分析" src="about:blank"></iframe>
           </section>
         </section>
 
@@ -1436,6 +1521,6 @@
         <div class="dialog-actions"><button class="button-secondary" type="button" data-close-dialog="runNowConfirmDialog">取消</button><button id="confirmRunNowBtn" type="button">确认执行</button></div>
       </dialog>
     </main>
-    <script type="module" src="/app.js?v=20260729-fulfillment-4"></script>
+<script type="module" src="/app.js?v=20260730-mabang-order-amount-1"></script>
   </body>
 </html>

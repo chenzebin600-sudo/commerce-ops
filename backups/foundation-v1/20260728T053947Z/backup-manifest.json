@@ -1,0 +1,71 @@
+{
+  "contractVersion": "FOUNDATION-V1-PRE-019-BACKUP-1.0.0",
+  "createdAt": "2026-07-28T05:40:02.683Z",
+  "formalDatabase": "storage\\commerce-ops.sqlite",
+  "onlineBackup": "backups\\foundation-v1\\20260728T053947Z\\commerce-ops-pre-019.sqlite",
+  "sourceFiles": [
+    {
+      "path": "storage\\commerce-ops.sqlite",
+      "bytes": 454479872,
+      "sha256": "5aa3ad56465f2602f899e3bb7c20e59dd327a3a13824811de48d464c47acec84"
+    },
+    {
+      "path": "storage\\commerce-ops.sqlite-wal",
+      "bytes": 70798112,
+      "sha256": "3c4cec0291896401e104a9026ea58d8b82844a3e15e4d7deddafe7e3cb0b694a"
+    },
+    {
+      "path": "storage\\commerce-ops.sqlite-shm",
+      "bytes": 32768,
+      "sha256": "205f3438f59b36d21a18c58ecd4d16def4aa6c9e63d8831dd9af354455befea6"
+    }
+  ],
+  "rawCopies": [
+    {
+      "path": "backups\\foundation-v1\\20260728T053947Z\\raw\\commerce-ops.sqlite",
+      "bytes": 454479872,
+      "sha256": "5aa3ad56465f2602f899e3bb7c20e59dd327a3a13824811de48d464c47acec84"
+    },
+    {
+      "path": "backups\\foundation-v1\\20260728T053947Z\\raw\\commerce-ops.sqlite-wal",
+      "bytes": 70798112,
+      "sha256": "3c4cec0291896401e104a9026ea58d8b82844a3e15e4d7deddafe7e3cb0b694a"
+    },
+    {
+      "path": "backups\\foundation-v1\\20260728T053947Z\\raw\\commerce-ops.sqlite-shm",
+      "bytes": 32768,
+      "sha256": "205f3438f59b36d21a18c58ecd4d16def4aa6c9e63d8831dd9af354455befea6"
+    }
+  ],
+  "databaseEvidence": {
+    "migrationCount": 17,
+    "latestMigration": "018_mabang_image_collection_performance.sql",
+    "integrity": [
+      "ok"
+    ],
+    "foreignKeyViolations": 0,
+    "counts": {
+      "mabang_account_profiles": 2,
+      "scheduled_export_tasks": 1,
+      "scheduled_export_runs": 2,
+      "product_models": 6500,
+      "product_skus": 18347,
+      "product_package_rows": 21714,
+      "product_media_assets": 6583,
+      "product_media_links": 33759,
+      "mabang_sku_image_batches": 210,
+      "mabang_sku_image_sync_runs": 2,
+      "growth_shops": 107,
+      "growth_source_batches": 4,
+      "growth_order_headers": 2043,
+      "growth_order_lines": 2726,
+      "growth_inventory_snapshots": 21460,
+      "product_listing_drafts": 0,
+      "product_listing_publish_records": 0
+    }
+  },
+  "verification": {
+    "onlineBackupMatchesFormalEvidence": true,
+    "rawTripletMatchesSourceHashes": true
+  }
+}

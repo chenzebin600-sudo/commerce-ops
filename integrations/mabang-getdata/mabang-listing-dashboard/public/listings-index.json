@@ -1,0 +1,84 @@
+{
+  "meta": {
+    "source": "马帮 ERP 刊登",
+    "generated_at": "",
+    "timezone": "Asia/Shanghai",
+    "mode": "只读快照",
+    "platform_count": 3,
+    "shop_count": 0,
+    "listing_count": 0
+  },
+  "platforms": [
+    {
+      "key": "lazada",
+      "name": "Lazada",
+      "shop_count": 0,
+      "listing_count": 0,
+      "shops": [],
+      "states": [
+        { "key": "online", "label": "在线商品", "count": 0 },
+        { "key": "examining", "label": "审核中", "count": 0 },
+        { "key": "offline", "label": "已下架", "count": 0 },
+        { "key": "prohibited", "label": "禁售", "count": 0 },
+        { "key": "deleted", "label": "已删除", "count": 0 }
+      ]
+    },
+    {
+      "key": "shopee",
+      "name": "Shopee",
+      "shop_count": 0,
+      "listing_count": 0,
+      "shops": [],
+      "states": [
+        { "key": "online", "label": "在线商品", "count": 0 },
+        { "key": "sold_out", "label": "已售罄", "count": 0 },
+        { "key": "offline", "label": "已下架", "count": 0 },
+        { "key": "prohibited", "label": "禁售", "count": 0 },
+        { "key": "deleted", "label": "已删除", "count": 0 }
+      ]
+    },
+    {
+      "key": "tiktokshop",
+      "name": "TikTokShop",
+      "shop_count": 0,
+      "listing_count": 0,
+      "shops": [],
+      "states": [
+        { "key": "online", "label": "在线商品", "count": 0 },
+        { "key": "draft", "label": "草稿", "count": 0 },
+        { "key": "sold_out", "label": "已售罄", "count": 0 },
+        { "key": "examining", "label": "审核中", "count": 0 },
+        { "key": "offline", "label": "已下架", "count": 0 },
+        { "key": "pending", "label": "待处理", "count": 0 },
+        { "key": "deactivated", "label": "已停用", "count": 0 },
+        { "key": "deleted", "label": "已删除", "count": 0 }
+      ]
+    }
+  ],
+  "data_files": {
+    "lazada": {
+      "online": [],
+      "examining": [],
+      "offline": [],
+      "prohibited": [],
+      "deleted": []
+    },
+    "shopee": {
+      "online": [],
+      "sold_out": [],
+      "offline": [],
+      "prohibited": [],
+      "deleted": []
+    },
+    "tiktokshop": {
+      "online": [],
+      "draft": [],
+      "sold_out": [],
+      "examining": [],
+      "offline": [],
+      "pending": [],
+      "deactivated": [],
+      "deleted": []
+    }
+  }
+}

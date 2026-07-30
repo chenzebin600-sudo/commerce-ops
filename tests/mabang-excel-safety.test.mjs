@@ -32,7 +32,7 @@ test("Python Excel policy preserves scalar types and escapes only dangerous stri
 test("Mabang workbook keeps columns and scalar values while emitting no untrusted formulas", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mabang-excel-safety-"));
   const outputPath = path.join(tempDir, "mock.xlsx");
-  const columns = ["name", "amount", "date", "active", "sku", "note"];
+  const columns = ["name", "amount", "date", "active", "sku", "note", "原始商品总金额"];
   const payload = {
     action: "write-xlsx",
     outputPath,
@@ -45,13 +45,14 @@ test("Mabang workbook keeps columns and scalar values while emitting no untruste
       active: true,
       sku: "SKU-ABC-123",
       note: "-cmd|' /C calc'!A0",
+      原始商品总金额: "",
     }],
     metadataSheetName: "Task Info",
     summary: { taskName: "+SUM(1,1)", exportedRows: 1 },
   };
   try {
     const generated = spawnSync(python, [worker], {
-      input: JSON.stringify(payload),
+      input: Buffer.from(JSON.stringify(payload), "utf8"),
       encoding: "utf8",
       env: { ...process.env, PYTHONIOENCODING: "utf-8", MABANG_EXPORT_DIR: tempDir },
       timeout: 30_000,
@@ -67,7 +68,7 @@ test("Mabang workbook keeps columns and scalar values while emitting no untruste
       "detail=wb.worksheets[0]",
       "rows=list(detail.iter_rows(values_only=False))",
       "metadata=list(wb.worksheets[1].iter_rows(values_only=True))",
-      "print(json.dumps({'headers':[c.value for c in rows[0]],'values':[c.value for c in rows[1]],'types':[c.data_type for c in rows[1]],'metadata':metadata},ensure_ascii=False,default=str))",
+      "print(json.dumps({'headers':[c.value for c in rows[0]],'values':[c.value for c in rows[1]],'types':[c.data_type for c in rows[1]],'metadata':metadata},ensure_ascii=True,default=str))",
       "wb.close()",
     ].join(";");
     const inspected = spawnSync(python, ["-c", inspectSource, outputPath], { encoding: "utf8" });
@@ -81,6 +82,7 @@ test("Mabang workbook keeps columns and scalar values while emitting no untruste
       true,
       "SKU-ABC-123",
       "'-cmd|' /C calc'!A0",
+      "来源未提供",
     ]);
     assert.equal(workbook.types.includes("f"), false);
     assert.equal(workbook.metadata.some((row) => row.includes("'+SUM(1,1)")), true);

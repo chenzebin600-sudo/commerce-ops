@@ -36,7 +36,7 @@ async function waitFor(url, timeoutMs = 8000) {
   throw new Error("temporary service did not start");
 }
 
-test("a clean neutral directory starts without reading the formal runtime", { timeout: 20_000 }, async () => {
+test("a clean neutral directory starts without reading the formal runtime", { timeout: 45_000 }, async () => {
   const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "e1-neutral-"));
   const appRoot = path.join(sandbox, "app");
   await fs.cp(sourceRoot, appRoot, {

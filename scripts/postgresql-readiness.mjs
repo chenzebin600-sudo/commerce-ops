@@ -10,6 +10,8 @@ import { resolveRuntimeConfig } from "../lib/runtime-config.mjs";
 const BOOLEAN_COLUMNS = new Set([
   "enabled", "notify_on_success", "notify_on_failure", "notify_on_empty", "at_all",
   "notify_enabled", "catch_up_enabled", "truncated", "suggest_quarantine", "suggest_cleanup",
+  "is_source_high_performance", "is_new", "eligible_saleable", "eligible_high_performance",
+  "is_key_performer", "is_growth_focus_candidate",
 ]);
 
 function safeInteger(value) {

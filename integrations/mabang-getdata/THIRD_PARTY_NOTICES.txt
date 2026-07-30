@@ -1,0 +1,13 @@
+Third-Party Notices
+===================
+
+This application redistributes Cloudflare cloudflared.
+
+Project: cloudflared
+Copyright: Cloudflare, Inc.
+License: Apache License 2.0
+Source: https://github.com/cloudflare/cloudflared
+
+The complete license text is installed at:
+licenses/cloudflared-LICENSE.txt
+

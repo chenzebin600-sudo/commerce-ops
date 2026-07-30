@@ -1,0 +1,31 @@
+{
+  "_styles-B2OrEV3M.css": {
+    "file": "assets/styles-B2OrEV3M.css",
+    "src": "_styles-B2OrEV3M.css"
+  },
+  "_styles-CCf49ppo.js": {
+    "file": "assets/styles-CCf49ppo.js",
+    "name": "styles",
+    "css": [
+      "assets/styles-B2OrEV3M.css"
+    ]
+  },
+  "index.html": {
+    "file": "assets/standalone-DUFdCLt5.js",
+    "name": "standalone",
+    "src": "index.html",
+    "isEntry": true,
+    "imports": [
+      "_styles-CCf49ppo.js"
+    ]
+  },
+  "src/embed.tsx": {
+    "file": "assets/embed-d3nRb90a.js",
+    "name": "embed",
+    "src": "src/embed.tsx",
+    "isEntry": true,
+    "imports": [
+      "_styles-CCf49ppo.js"
+    ]
+  }
+}
