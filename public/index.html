@@ -999,7 +999,7 @@
               <button class="fulfillment-view-tab active" type="button" role="tab" data-fulfillment-view="overview" aria-selected="true">发货总览</button>
               <button class="fulfillment-view-tab" type="button" role="tab" data-fulfillment-view="orders" aria-selected="false">待发货订单</button>
               <button class="fulfillment-view-tab" type="button" role="tab" data-fulfillment-view="tasks" aria-selected="false">发货任务</button>
-              <button class="fulfillment-view-tab" type="button" role="tab" data-fulfillment-view="exceptions" aria-selected="false">异常中心</button>
+              <button class="fulfillment-view-tab" type="button" role="tab" data-fulfillment-view="exceptions" aria-selected="false">异常中心 <span id="fulfillmentAlertTabCount" class="fulfillment-tab-count" hidden>0</span></button>
               <button class="fulfillment-view-tab" type="button" role="tab" data-fulfillment-view="stores" aria-selected="false">店铺与物流</button>
             </div>
             <div class="fulfillment-actions">
@@ -1032,6 +1032,14 @@
                 <div><span class="page-context">LIVE OPERATIONS</span><h1>今日履约看板</h1><p>从订单进入发货队列，到取得运单号并转入配货中，集中查看每家店铺的实时结果。</p></div>
                 <div id="fulfillmentOverviewMeta" class="fulfillment-overview-meta" aria-label="履约效率摘要"></div>
               </section>
+              <section class="fulfillment-alert-radar" aria-labelledby="fulfillmentAlertRadarTitle">
+                <div class="fulfillment-alert-radar-head">
+                  <div><span class="page-context">ACTION REQUIRED</span><h2 id="fulfillmentAlertRadarTitle">业务预警</h2><p>优先显示会阻止发货或需要人工介入的问题，按严重程度和发生时间排序。</p></div>
+                  <button id="fulfillmentOpenAlertsBtn" class="button-secondary" type="button">查看全部异常</button>
+                </div>
+                <div id="fulfillmentAlertSummary" class="fulfillment-alert-summary" aria-label="预警类型汇总"></div>
+                <div id="fulfillmentAlertFeed" class="fulfillment-alert-feed" aria-live="polite"></div>
+              </section>
               <div class="fulfillment-metrics" aria-label="履约统计">
                 <article><span>今日进入发货</span><strong id="fulfillmentMetricTotal">0</strong><small>真实批次订单</small></article>
                 <article class="metric-success"><span>今日成功</span><strong id="fulfillmentMetricSuccess">0</strong><small>已转入配货中</small></article>
@@ -1039,6 +1047,17 @@
                 <article><span>执行中</span><strong id="fulfillmentMetricRunning">0</strong><small>提交或回查中</small></article>
                 <article class="metric-exception"><span>今日发现异常</span><strong id="fulfillmentMetricExceptions">0</strong><small>含预检排除订单</small></article>
               </div>
+              <section id="fulfillmentMessageReviewCard" class="fulfillment-message-review-card" aria-labelledby="fulfillmentMessageReviewTitle">
+                <div class="fulfillment-message-review-intro">
+                  <div class="fulfillment-message-review-heading"><span class="fulfillment-status-dot" aria-hidden="true"></span><h2 id="fulfillmentMessageReviewTitle">留言待审核巡检</h2></div>
+                  <p>只处理“唯一异常为有留言、单仓且库存充足”的订单；转回待处理后约 30 秒自动定向扫描，通过完整安全检查才发货。</p>
+                </div>
+                <div id="fulfillmentMessageReviewStats" class="fulfillment-message-review-stats" aria-live="polite"></div>
+                <div class="fulfillment-message-review-action">
+                  <button id="fulfillmentCheckMessageReviewsBtn" class="button-secondary" type="button">立即只读检查</button>
+                  <small id="fulfillmentMessageReviewCheckResult" aria-live="polite">不会改变订单状态</small>
+                </div>
+              </section>
               <div class="fulfillment-analytics-grid">
                 <section class="fulfillment-panel fulfillment-trend-panel">
                   <div class="fulfillment-panel-head"><div><h2>近 7 日发货趋势</h2><p>每日进入真实发货、成功及异常订单量。</p></div><span class="fulfillment-chart-legend"><i></i>成功 <i></i>异常</span></div>
@@ -1083,6 +1102,7 @@
             <section class="fulfillment-view" data-fulfillment-panel="exceptions" hidden>
               <section class="fulfillment-panel">
                 <div class="fulfillment-panel-head"><div><h2>需要处理的异常</h2><p>异常原因和下一步操作集中显示在这里。</p></div><span id="fulfillmentExceptionCount" class="fulfillment-count danger">0 项</span></div>
+                <div id="fulfillmentAlertFilters" class="fulfillment-alert-filters" role="group" aria-label="异常类型筛选"></div>
                 <div id="fulfillmentExceptionsTable" class="fulfillment-table-wrap"></div>
               </section>
             </section>
@@ -1436,6 +1456,6 @@
         <div class="dialog-actions"><button class="button-secondary" type="button" data-close-dialog="runNowConfirmDialog">取消</button><button id="confirmRunNowBtn" type="button">确认执行</button></div>
       </dialog>
     </main>
-    <script type="module" src="/app.js?v=20260729-fulfillment-4"></script>
+    <script type="module" src="/app.js?v=20260730-fulfillment-alerts-1"></script>
   </body>
 </html>

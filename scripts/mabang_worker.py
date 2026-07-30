@@ -293,6 +293,42 @@ def collect_fulfillment_orders(payload):
     }
 
 
+def message_review_candidates(payload):
+    username, password = require_credentials(payload)
+    shops = payload.get('shops') or []
+    if not isinstance(shops, list) or not shops:
+        raise ValueError('店铺配置不能为空。')
+    client = order_source.MabangClient()
+    client.login(username, password)
+    records = client.inspect_message_review_candidates(shops, payload.get('limit') or 10)
+    return {
+        'ok': True,
+        'kind': 'fulfillment-message-review-candidates',
+        'records': json_safe(records),
+        'summary': {
+            'checked': len(records),
+            'eligible': sum(1 for item in records if item.get('eligible')),
+        },
+    }
+
+
+def recover_message_review(payload):
+    username, password = require_credentials(payload)
+    if payload.get('commit') != 'MESSAGE_REVIEW_RECOVERY_CONFIRMED':
+        raise ValueError('缺少待审核留言恢复确认标记。')
+    order_reference = str(payload.get('orderReference') or '').strip()
+    shops = payload.get('shops') or []
+    if not order_reference or not isinstance(shops, list) or not shops:
+        raise ValueError('订单号和店铺配置不能为空。')
+    client = order_source.MabangClient()
+    client.login(username, password)
+    return {
+        'ok': True,
+        'kind': 'fulfillment-message-review-recovery',
+        **json_safe(client.recover_message_review_order(order_reference, shops)),
+    }
+
+
 def inspect_fulfillment(payload):
     username, password = require_credentials(payload)
     order_reference = str(payload.get("orderReference") or "").strip()
@@ -303,6 +339,17 @@ def inspect_fulfillment(payload):
     client = order_source.MabangClient()
     client.login(username, password)
     return {"ok": True, "kind": "fulfillment-inspection", **json_safe(client.inspect_fulfillment(order_reference, channel_value, channel_id))}
+
+
+def inspect_manual_tracking_resolution(payload):
+    username, password = require_credentials(payload)
+    order_reference = str(payload.get("orderReference") or "").strip()
+    if not order_reference:
+        raise ValueError("订单号不能为空。")
+    client = order_source.MabangClient()
+    client.login(username, password)
+    return {"ok": True, "kind": "manual-tracking-resolution-inspection",
+            **json_safe(client.inspect_manual_tracking_resolution(order_reference))}
 
 
 def preflight_fulfillment(payload):
@@ -461,10 +508,16 @@ def dispatch(payload):
         return collect_orders(payload)
     if action == "fulfillment-orders":
         return collect_fulfillment_orders(payload)
+    if action == "fulfillment-message-review-candidates":
+        return message_review_candidates(payload)
+    if action == "fulfillment-message-review-recover":
+        return recover_message_review(payload)
     if action == "inventory":
         return collect_inventory(payload)
     if action == "fulfillment-inspect":
         return inspect_fulfillment(payload)
+    if action == "fulfillment-inspect-manual-resolution":
+        return inspect_manual_tracking_resolution(payload)
     if action == "fulfillment-preflight":
         return preflight_fulfillment(payload)
     if action == "fulfillment-submit":

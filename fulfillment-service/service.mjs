@@ -43,10 +43,33 @@ function paidTimestamp(order) {
   const timestamp = Date.parse(text.includes("T") ? text : text.replace(" ", "T"));
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
+function shippingDeadlineTimestamp(value) {
+  const text = bounded(value, 80);
+  if (!text) return null;
+  const normalized = text.replaceAll("/", "-").replace(" ", "T");
+  const timestamp = Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized) ? normalized : `${normalized}+08:00`);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+function shippingDeadlineState(deadlineAt, now) {
+  const timestamp = shippingDeadlineTimestamp(deadlineAt);
+  if (!Number.isFinite(timestamp)) return { shippingDeadlineStatus: "unknown", shippingRemainingMinutes: null };
+  const remainingMinutes = Math.ceil((timestamp - now.getTime()) / 60000);
+  const status = remainingMinutes <= 0 ? "overdue" : remainingMinutes <= 120 ? "critical"
+    : remainingMinutes <= 360 ? "urgent" : remainingMinutes <= 1440 ? "due_soon" : "normal";
+  return { shippingDeadlineStatus: status, shippingRemainingMinutes: remainingMinutes };
+}
 function preflightPassed(checked) {
   return Boolean(checked?.ready) && !checked?.wouldSubmit && checked.stockStatus === "in_stock"
     && !checked.hasTrackingNumber && Boolean(checked.channelMatched) && Boolean(checked.reportingSuccess)
     && !checked.hasDeclarationRows && Number(checked.missingRequiredPropertyCount || 0) === 0;
+}
+function manualTrackingResolutionDetected(inspection) {
+  const trackingNumber = bounded(inspection?.trackingNumber, 100);
+  const orderStatus = bounded(inspection?.orderStatus, 80);
+  const orderStatusText = bounded(inspection?.orderStatusText, 80);
+  const pending = orderStatus === "2" || orderStatusText.includes("待处理");
+  const completedStatus = /(配货中|已发货|待揽收|已揽收|已签收|已完成)/.test(orderStatusText);
+  return Boolean(completedStatus || (trackingNumber && (orderStatus || orderStatusText) && !pending));
 }
 
 export class FulfillmentError extends Error {
@@ -76,6 +99,9 @@ export class FulfillmentService {
     const quantity = Number(raw.quantity || raw["商品数量"] || 0);
     const inventoryRaw = firstDefined(raw.availableQuantity, raw.inventoryQuantity, raw.stock, raw["商品库存"]);
     const paidAt = bounded(raw.paidAt || raw["付款时间"], 80);
+    const shippingDeadlineRaw = bounded(raw.shippingDeadlineAt || raw.lastShippingDeadline || raw["最后发货期限"], 80);
+    const shippingDeadlineMs = shippingDeadlineTimestamp(shippingDeadlineRaw);
+    const shippingDeadlineAt = Number.isFinite(shippingDeadlineMs) ? new Date(shippingDeadlineMs).toISOString() : null;
     const inventory = inventoryState(inventoryRaw, quantity);
     const exclusions = [];
     if (!sourceOrderId && !tradeNumber) exclusions.push("MISSING_ORDER_ID");
@@ -96,7 +122,7 @@ export class FulfillmentService {
       requiredQuantity: Number.isFinite(quantity) ? quantity : null, availableQuantity: inventory.availableQuantity,
       eligible: exclusions.length === 0, exclusions,
       snapshot: { sourceOrderId, tradeNumber, shopName, countryCode, orderStatus, warehouse, sku, quantity,
-        inventoryRaw: bounded(inventoryRaw, 80), paidAt },
+        inventoryRaw: bounded(inventoryRaw, 80), paidAt, shippingDeadlineRaw, shippingDeadlineAt },
     };
   }
 
@@ -140,6 +166,9 @@ export class FulfillmentService {
       if (warehouses.length > 1) exclusions.push("MULTI_WAREHOUSE_REQUIRES_REVIEW");
       const totalItemQuantity = items.reduce((sum, item) => sum + item.requiredQuantity, 0);
       const stockStatus = outOfStockItemCount ? "out_of_stock" : unknownStockItemCount ? "unknown" : "in_stock";
+      const shippingDeadlineMs = Math.min(...group.map((row) => shippingDeadlineTimestamp(row.snapshot.shippingDeadlineAt))
+        .filter(Number.isFinite));
+      const shippingDeadlineAt = Number.isFinite(shippingDeadlineMs) ? new Date(shippingDeadlineMs).toISOString() : null;
       return {
         ...first, warehouse: warehouses.join(" / ") || first.warehouse, warehouses,
         skuCount: new Set(items.map((item) => item.sku).filter(Boolean)).size,
@@ -148,7 +177,7 @@ export class FulfillmentService {
         availableQuantity: items.length === 1 ? items[0].availableQuantity : null,
         outOfStockItemCount, unknownStockItemCount, eligible: exclusions.length === 0, exclusions,
         snapshot: { ...first.snapshot, warehouse: warehouses.join(" / ") || first.snapshot.warehouse,
-          warehouses, sku: undefined, quantity: undefined, inventoryRaw: undefined, items },
+          warehouses, shippingDeadlineAt, sku: undefined, quantity: undefined, inventoryRaw: undefined, items },
       };
     });
   }
@@ -186,7 +215,11 @@ export class FulfillmentService {
 
   createPreviewFromRaw(raw, { hasOrderIds, requestedOrderIds, requested }) {
     let normalized = this.aggregateOrders(raw.map((order) => this.normalizeOrder(order)));
-    if (!hasOrderIds) normalized.sort((left, right) => paidTimestamp(right) - paidTimestamp(left));
+    if (!hasOrderIds) normalized.sort((left, right) => {
+      const leftDeadline = shippingDeadlineTimestamp(left.snapshot.shippingDeadlineAt) ?? Number.POSITIVE_INFINITY;
+      const rightDeadline = shippingDeadlineTimestamp(right.snapshot.shippingDeadlineAt) ?? Number.POSITIVE_INFINITY;
+      return leftDeadline - rightDeadline || paidTimestamp(right) - paidTimestamp(left);
+    });
     if (hasOrderIds) {
       const wanted = new Set(requestedOrderIds);
       normalized = normalized.filter((order) => wanted.has(order.snapshot.sourceOrderId) || wanted.has(order.tradeNumber));
@@ -223,14 +256,16 @@ export class FulfillmentService {
       const totalItemQuantity = inventoryItems.reduce((sum, item) => sum + (Number.isFinite(Number(item.requiredQuantity)) ? Number(item.requiredQuantity) : 0), 0);
       const stockStatus = outOfStockItemCount ? "out_of_stock" : (unknownStockItemCount || inventoryItems.length === 0) ? "unknown" : "in_stock";
       const warehouses = [...new Set((snapshot.warehouses || [snapshot.warehouse]).map((value) => bounded(value, 160)).filter(Boolean))].sort();
+      const deadline = shippingDeadlineState(snapshot.shippingDeadlineAt, this.now());
       return { ...order, warehouse: warehouses.join(" / ") || order.warehouse, warehouses,
         requiredQuantity: totalItemQuantity, totalItemQuantity,
         availableQuantity: inventoryItems.length === 1 ? inventoryItems[0].availableQuantity : null,
         outOfStockItemCount, unknownStockItemCount,
-        stockStatus, isOutOfStock: outOfStockItemCount ? true : (unknownStockItemCount || inventoryItems.length === 0) ? null : false };
+        stockStatus, isOutOfStock: outOfStockItemCount ? true : (unknownStockItemCount || inventoryItems.length === 0) ? null : false,
+        shippingDeadlineAt: snapshot.shippingDeadlineAt || null, ...deadline };
     };
     const response = {
-      previewId: preview.id, status: preview.status, expiresAt: preview.expiresAt,
+      previewId: preview.id, status: preview.status, createdAt: preview.createdAt, expiresAt: preview.expiresAt,
       shop: { id: preview.shopId, name: preview.shopName }, channel: { id: preview.channelId, name: preview.channelName },
       eligibleOrders: preview.orders.filter((order) => order.eligible).map(presentOrder),
       excludedOrders: preview.orders.filter((order) => !order.eligible).map(presentOrder),
@@ -462,7 +497,8 @@ export class FulfillmentService {
           timings: { ...(result.timings || {}), executorTotal: Date.now() - orderStartedMs } };
       } catch (error) {
         const errorCode = bounded(error.code || "FULFILLMENT_FAILED", 80);
-        const status = ["INVENTORY_UNKNOWN_BEFORE_SUBMIT", "MULTI_WAREHOUSE_REQUIRES_REVIEW"].includes(errorCode)
+        const status = ["INVENTORY_UNKNOWN_BEFORE_SUBMIT", "MULTI_WAREHOUSE_REQUIRES_REVIEW",
+          "CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT"].includes(errorCode)
           ? "needs_attention" : "failed";
         return { status, errorCode, errorMessage: bounded(error.message),
           timings: { executorTotal: Date.now() - orderStartedMs } };
@@ -476,12 +512,17 @@ export class FulfillmentService {
         if (patch.status === "success") successes += 1;
         const updatedAt = this.now().toISOString();
         this.repository.updateBatchOrder(batch.id, order.orderKey, { ...patch, updatedAt });
-        if (patch.errorCode === "TRACKING_NUMBER_PENDING") {
+        const recoverableAfterSubmit = ["TRACKING_NUMBER_PENDING", "VERIFY_FAILED"].includes(patch.errorCode)
+          && String(patch.afterStatus || "").includes("待处理")
+          && Number(patch.timings?.submitRequest || 0) > 0
+          && Number(patch.timings?.distributionRequest || 0) === 0;
+        if (recoverableAfterSubmit) {
           const submittedAt = updatedAt;
           this.repository.registerTrackingRecovery({ orderKey: order.orderKey, batchId: batch.id,
             displayOrderId: order.displayOrderId, shopId: this.config.shopId, submittedAt,
             nextCheckAt: new Date(this.now().getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString(),
-            deadlineAt: new Date(this.now().getTime() + this.config.trackingRecoveryDeadlineHours * 3600000).toISOString() });
+            deadlineAt: new Date(this.now().getTime() + this.config.trackingRecoveryDeadlineHours * 3600000).toISOString(),
+            originErrorCode: patch.errorCode });
         }
       });
       if (patches.some((patch) => patch.status !== "success")) {
@@ -532,6 +573,9 @@ export class FulfillmentService {
     const now = this.now();
     const recoveryWriteEnabled = Boolean(this.config.trackingRecoveryResetEnabled || allowReset);
     const due = this.repository.listDueTrackingRecoveries(now.toISOString(), limit, this.config.shopId, orderId);
+    const manualCheckBefore = new Date(now.getTime() - this.config.trackingRecoveryCheckSeconds * 1000).toISOString();
+    const manualDue = this.repository.listManualAttentionTrackingRecoveries(
+      manualCheckBefore, limit, this.config.shopId, orderId);
     const results = [];
     for (const recovery of due) {
       const checkedAt = this.now();
@@ -560,6 +604,38 @@ export class FulfillmentService {
               checkedAt: this.now().toISOString(), nextCheckAt, errorCode: "DISTRIBUTION_VERIFY_FAILED",
               errorMessage: distributed.message || "已有运单号，但转配货状态尚未确认。" });
             results.push({ orderId: recovery.displayOrderId, status: "waiting_distribution" });
+          }
+          continue;
+        }
+
+        if (recovery.originErrorCode === "SERVICE_RESTARTED_DURING_BATCH") {
+          const safeUnsubmittedState = String(inspection.orderStatus || "") === "2"
+            && inspection.shippingRecordPending === false
+            && inspection.selectedOrderMatched === true
+            && inspection.channelMatched === true;
+          if (!safeUnsubmittedState) {
+            if (inspection.shippingRecordPending) {
+              const nextCheckAt = new Date(checkedAt.getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString();
+              this.repository.deferTrackingRecovery(recovery.orderKey, { status: "waiting_tracking",
+                checkedAt: checkedAt.toISOString(), nextCheckAt });
+              results.push({ orderId: recovery.displayOrderId, status: "waiting_tracking" });
+            } else {
+              const errorCode = "INTERRUPTED_ORDER_STATE_UNSAFE";
+              const errorMessage = "服务中断后订单状态、物流渠道或交运记录无法安全确认，已停止自动恢复。";
+              this.repository.expireTrackingRecovery(recovery, { completedAt: checkedAt.toISOString(), errorCode, errorMessage });
+              results.push({ orderId: recovery.displayOrderId, status: "manual_attention", errorCode });
+            }
+            continue;
+          }
+          if (recovery.status !== "verifying_unsubmitted") {
+            const nextCheckAt = new Date(checkedAt.getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString();
+            this.repository.deferTrackingRecovery(recovery.orderKey, { status: "verifying_unsubmitted",
+              checkedAt: checkedAt.toISOString(), nextCheckAt,
+              errorCode: "INTERRUPTED_UNSUBMITTED_RECHECK",
+              errorMessage: "首次确认无运单号且无交运记录；下一轮再次确认后才恢复正常发货资格。" });
+            results.push({ orderId: recovery.displayOrderId, status: "verifying_unsubmitted" });
+          } else if (this.repository.releaseInterruptedRecovery(recovery, checkedAt.toISOString())) {
+            results.push({ orderId: recovery.displayOrderId, status: "released_for_normal_fulfillment" });
           }
           continue;
         }
@@ -640,6 +716,12 @@ export class FulfillmentService {
 
         const elapsedMs = checkedAt.getTime() - Date.parse(recovery.submittedAt);
         const resetDue = elapsedMs >= this.config.trackingRecoveryResetMinutes * 60000 && recovery.resetCount < 1;
+        if (elapsedMs >= this.config.trackingRecoveryResetMinutes * 60000
+          && this.repository.claimAlertNotification({ fingerprint: `tracking_delay:${recovery.orderKey}`,
+            alertType: "tracking_delay", nowIso: checkedAt.toISOString(), cooldownMinutes: 360 })) {
+          this.notifier.notify({ title: `${this.config.shopName} 运单号获取延迟`,
+            message: `${recovery.displayOrderId} 已等待 ${Math.max(1, Math.floor(elapsedMs / 60000))} 分钟，系统会继续回查，禁止人工重复交运。` });
+        }
         if (resetDue && recoveryWriteEnabled && typeof this.trackingRecovery.resetPending === "function") {
           if (inspection.shippingRecordPending !== false) {
             try {
@@ -679,7 +761,39 @@ export class FulfillmentService {
         results.push({ orderId: recovery.displayOrderId, status: "check_failed", errorCode: error.code || "TRACKING_RECOVERY_CHECK_FAILED" });
       }
     }
-    return { shop: { id: this.config.shopId, name: this.config.shopName }, checked: due.length, results };
+    for (const recovery of manualDue) {
+      const checkedAt = this.now();
+      const nextCheckAt = new Date(checkedAt.getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString();
+      try {
+        const inspection = typeof this.trackingRecovery.inspectManualResolution === "function"
+          ? await this.trackingRecovery.inspectManualResolution(recovery.displayOrderId)
+          : await this.trackingRecovery.inspect(recovery.displayOrderId);
+        const observedOrderStatus = bounded(inspection.orderStatusText || inspection.orderStatus, 80);
+        const resolved = manualTrackingResolutionDetected(inspection);
+        this.repository.recordManualTrackingInspection(recovery, { checkedAt: checkedAt.toISOString(), nextCheckAt, resolved,
+          trackingNumberMasked: maskTracking(inspection.trackingNumber), observedOrderStatus });
+        if (resolved) {
+          this.notifier.notify({ title: `${this.config.shopName} 人工处理结果待确认`,
+            message: `${recovery.displayOrderId} 已检测到订单进入配货中或后续状态，请在看板确认已处理。` });
+          results.push({ orderId: recovery.displayOrderId, status: "awaiting_manual_confirmation",
+            trackingNumberMasked: maskTracking(inspection.trackingNumber), observedOrderStatus });
+        } else {
+          results.push({ orderId: recovery.displayOrderId, status: "manual_attention" });
+        }
+      } catch (error) {
+        this.repository.recordManualTrackingInspection(recovery, { checkedAt: checkedAt.toISOString(), nextCheckAt });
+        results.push({ orderId: recovery.displayOrderId, status: "manual_check_failed",
+          errorCode: bounded(error.code || "MANUAL_TRACKING_RECHECK_FAILED", 80), errorMessage: bounded(error.message) });
+      }
+    }
+    return { shop: { id: this.config.shopId, name: this.config.shopName }, checked: due.length + manualDue.length, results };
+  }
+
+  acknowledgeManualTrackingResolutions(orderIds) {
+    const ids = [...new Set((Array.isArray(orderIds) ? orderIds : []).map((value) => bounded(value, 100)).filter(Boolean))];
+    if (!ids.length || ids.length > 20) throw new FulfillmentError("INVALID_TRACKING_ACKNOWLEDGEMENTS", "请选择 1 至 20 个待确认订单");
+    return this.repository.acknowledgeTrackingRecoveries(
+      ids.map((orderId) => ({ shopId:this.config.shopId,orderId })), this.now().toISOString());
   }
 
   getActiveBatch() {

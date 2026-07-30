@@ -7,7 +7,7 @@ import { Readable } from "node:stream";
 import { FulfillmentRepository } from "../fulfillment-service/repository.mjs";
 import { FulfillmentService } from "../fulfillment-service/service.mjs";
 import { createApiDocsHtml } from "../fulfillment-service/api-docs.mjs";
-import { createMabangFulfillmentExecutor, createMabangFulfillmentPreflight, createMabangFulfillmentScanSource, createMabangFulfillmentSource } from "../fulfillment-service/mabang-source.mjs";
+import { createMabangFulfillmentExecutor, createMabangFulfillmentPreflight, createMabangFulfillmentScanSource, createMabangFulfillmentSource, createMabangMessageReviewRecovery, createMabangTrackingRecoveryAdapter } from "../fulfillment-service/mabang-source.mjs";
 import { FulfillmentPreviewScheduler } from "../fulfillment-service/scheduler.mjs";
 import { createWindowsNotifier } from "../fulfillment-service/notifier.mjs";
 import { resolveFulfillmentConfig } from "../fulfillment-service/config.mjs";
@@ -44,10 +44,14 @@ test("fulfillment dashboard proxy permits only fixed local read routes", async (
   const recoveryResponse = proxyResponse();
   assert.equal(await proxy({ method:"GET" }, recoveryResponse, new URL("http://localhost/api/fulfillment-dashboard/tracking-recoveries?limit=999")), true);
   assert.equal(calls[2].url, "http://127.0.0.1:3112/api/fulfillment/tracking-recoveries?limit=100");
+  const messageReviewResponse = proxyResponse();
+  assert.equal(await proxy({ method:"GET" }, messageReviewResponse,
+    new URL("http://localhost/api/fulfillment-dashboard/message-review-recoveries/candidates?limit=999")), true);
+  assert.equal(calls[3].url, "http://127.0.0.1:3112/api/fulfillment/message-review-recoveries/candidates?limit=10");
   const rejected = proxyResponse();
   assert.equal(await proxy({ method:"POST" }, rejected, new URL("http://localhost/api/fulfillment-dashboard/previews/abc")), true);
   assert.equal(rejected.status, 404);
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
 });
 
 test("fulfillment dashboard summary uses full database history and groups shops, trends and queues", () => {
@@ -60,6 +64,9 @@ test("fulfillment dashboard summary uses full database history and groups shops,
   repository.db.prepare(`INSERT INTO fulfillment_preview_orders
     (preview_id,order_key,display_order_id,warehouse,sku_count,eligible,exclusion_json,snapshot_json,priority)
     VALUES ('p1','s1:excluded','EX-1','W1',1,0,'["OUT_OF_STOCK"]','{}',0)`).run();
+  repository.db.prepare(`INSERT INTO fulfillment_preview_orders
+    (preview_id,order_key,display_order_id,warehouse,sku_count,eligible,exclusion_json,snapshot_json,priority)
+    VALUES ('p1','s1:deadline','DUE-1','W1',1,1,'[]','{"shippingDeadlineAt":"2026-07-29T09:30:00.000Z"}',1)`).run();
   repository.db.prepare("INSERT INTO fulfillment_batches (id,preview_id,status,created_at,finished_at) VALUES (?,?,?,?,?)")
     .run("b1","p1","partial_success","2026-07-29T02:00:00.000Z","2026-07-29T02:10:00.000Z");
   repository.db.prepare("INSERT INTO fulfillment_batches (id,preview_id,status,created_at,finished_at) VALUES (?,?,?,?,?)")
@@ -85,12 +92,113 @@ test("fulfillment dashboard summary uses full database history and groups shops,
     [["2026-07-28",1,1,0],["2026-07-29",2,1,1]]);
   assert.equal(summary.exceptions.find((item) => item.code === "OUT_OF_STOCK").count, 1);
   assert.equal(summary.exceptions.find((item) => item.code === "MULTI_WAREHOUSE_REQUIRES_REVIEW").count, 1);
+  assert.equal(summary.alertSummary.inventory, 1);
+  assert.equal(summary.alertSummary.multi_warehouse, 1);
+  assert.equal(summary.alertSummary.tracking_delay, 1);
+  assert.equal(summary.alertSummary.shipping_deadline, 1);
+  assert.equal(summary.alertSummary.critical, 2);
+  assert.deepEqual(summary.alerts.map((item) => [item.type,item.orderId]), [
+    ["multi_warehouse","O2"],["shipping_deadline","DUE-1"],["tracking_delay","O4"],["inventory","EX-1"],
+  ]);
   assert.deepEqual(summary.queues.tracking, [{ shopId:"s1",status:"waiting_tracking",count:1 }]);
   assert.deepEqual(summary.queues.manual, [{ shopId:"s1",count:1 }]);
   repository.close();
 });
 
-test("fulfillment dashboard proxy forwards only validated manual review fields", async () => {
+test("dashboard hides historical failures and preview exclusions after a later success", () => {
+  const repository = new FulfillmentRepository();
+  const addPreview = repository.db.prepare(`INSERT INTO fulfillment_previews
+    (id,status,shop_id,shop_name,channel_id,channel_name,confirmation_hash,expires_at,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`);
+  addPreview.run("old-preview","confirmed","s1","JOJO Mall","c1","J&T","h","2026-07-31T00:00:00.000Z","2026-07-30T01:00:00.000Z");
+  addPreview.run("new-preview","confirmed","s1","JOJO Mall","c1","J&T","h","2026-07-31T00:00:00.000Z","2026-07-30T02:00:00.000Z");
+  repository.db.prepare(`INSERT INTO fulfillment_preview_orders
+    (preview_id,order_key,display_order_id,warehouse,sku_count,eligible,exclusion_json,snapshot_json,priority)
+    VALUES ('old-preview','s1:o1','O1','W1',1,0,'["OUT_OF_STOCK"]','{}',0)`).run();
+  repository.db.prepare("INSERT INTO fulfillment_batches (id,preview_id,status,created_at,finished_at) VALUES (?,?,?,?,?)")
+    .run("old-batch","old-preview","failed","2026-07-30T01:05:00.000Z","2026-07-30T01:06:00.000Z");
+  repository.db.prepare("INSERT INTO fulfillment_batches (id,preview_id,status,created_at,finished_at) VALUES (?,?,?,?,?)")
+    .run("new-batch","new-preview","success","2026-07-30T02:05:00.000Z","2026-07-30T02:06:00.000Z");
+  const addOrder = repository.db.prepare(`INSERT INTO fulfillment_batch_orders
+    (batch_id,order_key,display_order_id,status,error_code,error_message,updated_at) VALUES (?,?,?,?,?,?,?)`);
+  addOrder.run("old-batch","s1:o1","O1","needs_attention","CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT","old failure","2026-07-30T01:06:00.000Z");
+  addOrder.run("new-batch","s1:o1","O1","success",null,null,"2026-07-30T02:06:00.000Z");
+  repository.db.prepare("INSERT INTO fulfillment_idempotency (order_key,batch_id,status,completed_at) VALUES (?,?,?,?)")
+    .run("s1:o1","new-batch","success","2026-07-30T02:06:00.000Z");
+
+  const summary = repository.getDashboardSummary({
+    todayStartIso:"2026-07-29T16:00:00.000Z",trendStartIso:"2026-07-29T16:00:00.000Z",endIso:"2026-07-30T08:00:00.000Z",
+    dayWindows:[{ date:"2026-07-30",fromIso:"2026-07-29T16:00:00.000Z",toIso:"2026-07-30T16:00:00.000Z" }],
+  });
+
+  assert.deepEqual(summary.shops.map((shop)=>[shop.total,shop.success,shop.exceptions]),[[1,1,0]]);
+  assert.deepEqual(summary.exceptions,[]);
+  assert.equal(summary.alerts.some((alert)=>alert.orderId === "O1"),false);
+  assert.deepEqual(summary.queues.manual,[]);
+  repository.close();
+});
+
+test("alert notifications persist cooldown and scan details retain login failures", () => {
+  const repository = new FulfillmentRepository();
+  const notifications = [];
+  const service = {
+    repository,
+    recordScanRun:(run)=>repository.recordScanRun(run),
+    getActiveBatch:()=>null,
+    listPendingPreviewSummaries:()=>[],
+    listRecentScanRuns:()=>repository.listRecentScanRuns(),
+  };
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:true,autoFulfillEnabled:true,schedulerIntervalSeconds:300 },
+    service, services:[service], notifier:{ notify:(item)=>notifications.push(item) }, now:()=>new Date("2026-07-30T01:00:00.000Z") });
+  const details = { failures:[{ shopId:"s1",shopName:"JOJO Mall",code:"MABANG_LOGIN_REQUIRED",category:"login",message:"登录已失效" }] };
+  scheduler.finishRun({ startedAt:"2026-07-30T00:59:00.000Z",outcome:"scan_failed",message:"扫描失败",details });
+  scheduler.finishRun({ startedAt:"2026-07-30T00:59:30.000Z",outcome:"scan_failed",message:"扫描失败",details });
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].title, "马帮登录状态异常");
+  assert.equal(repository.listRecentScanRuns()[0].details.failures[0].category, "login");
+  repository.close();
+});
+
+test("preview risk notifications aggregate inventory and multi-warehouse orders without repeated popups", () => {
+  const repository = new FulfillmentRepository();
+  const notifications = [];
+  const service = { repository,getActiveBatch:()=>null,listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[] };
+  const scheduler = new FulfillmentPreviewScheduler({ config:{},service,services:[service],
+    notifier:{ notify:(item)=>notifications.push(item) },now:()=>new Date("2026-07-30T01:00:00.000Z") });
+  const previews = [{ shop:{ id:"s1",name:"JOJO Mall" },excludedOrders:[
+    { displayOrderId:"OOS-1",exclusions:["OUT_OF_STOCK"] },
+    { displayOrderId:"MULTI-1",exclusions:["MULTI_WAREHOUSE_REQUIRES_REVIEW"] },
+  ] }];
+  scheduler.notifyPreviewRisks(previews);
+  scheduler.notifyPreviewRisks(previews);
+  assert.deepEqual(notifications.map((item)=>item.title), ["发现多仓订单","发现库存异常"]);
+  repository.close();
+});
+
+test("shipping deadline notifications escalate by stage without repeating the same stage", () => {
+  const repository = new FulfillmentRepository();
+  const notifications = [];
+  const service = { repository,getActiveBatch:()=>null,listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[] };
+  const scheduler = new FulfillmentPreviewScheduler({ config:{},service,services:[service],
+    notifier:{ notify:(item)=>notifications.push(item) },now:()=>new Date("2026-07-30T08:00:00.000Z") });
+  const preview = { shop:{ id:"s1",name:"JOJO Mall" },eligibleOrders:[
+    { displayOrderId:"DUE-1",shippingRemainingMinutes:90 },
+    { displayOrderId:"DUE-2",shippingRemainingMinutes:300 },
+    { displayOrderId:"SAFE-1",shippingRemainingMinutes:1500 },
+    { displayOrderId:"UNKNOWN-1",shippingRemainingMinutes:null },
+  ],excludedOrders:[] };
+  scheduler.notifyShippingDeadlines([preview]);
+  scheduler.notifyShippingDeadlines([preview]);
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].title, "发现发货时效紧急订单");
+  assert.match(notifications[0].message, /2 单进入时效预警/);
+  preview.eligibleOrders[1].shippingRemainingMinutes = 100;
+  scheduler.notifyShippingDeadlines([preview]);
+  assert.equal(notifications.length, 2);
+  repository.close();
+});
+
+test("fulfillment dashboard proxy forwards only validated manual action fields", async () => {
   const calls = [];
   const proxy = createFulfillmentDashboardProxy({ fetchImpl:async(url,options)=>{
     calls.push({ url:String(url),options });
@@ -104,12 +212,23 @@ test("fulfillment dashboard proxy forwards only validated manual review fields",
   assert.equal(calls[0].url, "http://127.0.0.1:3112/api/fulfillment/manual-reviews/recheck");
   assert.deepEqual(JSON.parse(calls[0].options.body), { shopId:"2021485965",orderId:"260728TQYWBBTD" });
 
+  const acknowledgeReq = Readable.from([JSON.stringify({ items:[
+    { shopId:"2021578358",orderId:"26072905HDE2JF",unexpected:"drop-me" },
+  ],unexpected:"drop-me" })]);
+  acknowledgeReq.method = "POST";
+  const acknowledgeResponse = proxyResponse();
+  assert.equal(await proxy(acknowledgeReq,acknowledgeResponse,
+    new URL("http://localhost/api/fulfillment-dashboard/tracking-recoveries/acknowledge")), true);
+  assert.equal(acknowledgeResponse.status, 200);
+  assert.equal(calls[1].url, "http://127.0.0.1:3112/api/fulfillment/tracking-recoveries/acknowledge");
+  assert.deepEqual(JSON.parse(calls[1].options.body), { items:[{ shopId:"2021578358",orderId:"26072905HDE2JF" }] });
+
   const invalidReq = Readable.from([JSON.stringify({ shopId:"../../bad",orderId:"x" })]);
   invalidReq.method = "POST";
   const invalidResponse = proxyResponse();
   assert.equal(await proxy(invalidReq,invalidResponse,new URL("http://localhost/api/fulfillment-dashboard/manual-reviews/recheck")), true);
   assert.equal(invalidResponse.status, 400);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test("production fulfillment configuration contains all five Indonesian Shopee shops", () => {
@@ -168,6 +287,7 @@ test("tracking recovery waits, resets only once, then distributes an existing tr
   let resubmitCalls = 0;
   let shippingRecordPending = true;
   let distributeCalls = 0;
+  const notifications = [];
   const source = { listPending:async()=>[order], getByIds:async()=>[order] };
   const executor = { fulfill:async()=>({ verified:false, trackingNumber:"", afterStatus:"待处理",
     errorCode:"TRACKING_NUMBER_PENDING", errorMessage:"审批中", timings:{ submitRequest:10, distributionRequest:0 } }) };
@@ -178,7 +298,8 @@ test("tracking recovery waits, resets only once, then distributes an existing tr
       return { submitted:true, verified:false, trackingNumber:"", afterStatus:"待处理" }; },
     distribute:async(_orderId, value)=>{ distributeCalls += 1; return { verified:true, trackingNumber:value, afterStatus:"配货中" }; },
   };
-  const service = new FulfillmentService({ config:recoveryConfig, repository, source, executor, trackingRecovery, now });
+  const service = new FulfillmentService({ config:recoveryConfig, repository, source, executor, trackingRecovery, now,
+    notifier:{ notify:(item)=>notifications.push(item) } });
   const preview = await service.createPreview();
   const batch = await service.confirmPreview(preview.previewId, preview.confirmationToken);
   assert.equal(batch.orders[0].errorCode, "TRACKING_NUMBER_PENDING");
@@ -192,6 +313,7 @@ test("tracking recovery waits, resets only once, then distributes an existing tr
   currentMs += 2 * 60000;
   assert.equal((await service.recoverPendingTrackingNumbers({ allowReset:true })).results[0].status, "resubmitted_once");
   assert.equal(resubmitCalls, 1);
+  assert.equal(notifications.filter((item)=>item.title.includes("运单号获取延迟")).length, 1);
   currentMs += 2 * 60000;
   assert.equal((await service.recoverPendingTrackingNumbers()).results[0].status, "waiting_tracking");
   assert.equal(resetCalls, 1);
@@ -219,6 +341,125 @@ test("tracking recovery stops automatically after its 24-hour deadline", async (
   const result = await service.recoverPendingTrackingNumbers();
   assert.deepEqual(result.results, [{ orderId:"LATE-1", status:"manual_attention", errorCode:"TRACKING_APPROVAL_TIMEOUT" }]);
   assert.equal(repository.listTrackingRecoveries(10, config.shopId)[0].status, "manual_attention");
+  repository.close();
+});
+
+test("a verified tracking number with no distribution request enters safe automatic recovery", async () => {
+  const repository = new FulfillmentRepository();
+  const source = { listPending:async()=>[order], getByIds:async()=>[order] };
+  const executor = { fulfill:async()=>({ verified:false,trackingNumber:"201680375094",afterStatus:"待处理",
+    errorCode:"VERIFY_FAILED",errorMessage:"发货后回查不一致",
+    timings:{ submitRequest:120,trackingWait:90000,distributionRequest:0,distributionWait:0 } }) };
+  const service = new FulfillmentService({ config:{ ...config,realSubmitEnabled:true,trackingRecoveryCheckSeconds:60,
+    trackingRecoveryDeadlineHours:24 },repository,source,executor,
+    trackingRecovery:{ inspect:async()=>({ trackingNumber:"201680375094" }),distribute:async()=>({
+      verified:true,trackingNumber:"201680375094",afterStatus:"配货中" }) } });
+
+  const preview = await service.createPreview();
+  const batch = await service.confirmPreview(preview.previewId, preview.confirmationToken);
+  const recovery = repository.listTrackingRecoveries(10, config.shopId)[0];
+  assert.equal(batch.orders[0].status,"needs_attention");
+  assert.equal(recovery.displayOrderId,batch.orders[0].displayOrderId);
+  assert.equal(recovery.status,"waiting_tracking");
+  repository.close();
+});
+
+test("an interrupted batch with an existing tracking number only resumes distribution", async () => {
+  const repository = new FulfillmentRepository();
+  const nowIso = "2026-07-30T14:00:00.000Z";
+  repository.db.prepare(`INSERT INTO fulfillment_previews
+    (id,status,shop_id,shop_name,channel_id,channel_name,confirmation_hash,expires_at,created_at)
+    VALUES ('ip','confirmed',?,?, 'c1','J&T','h',?,?)`).run(config.shopId,config.shopName,"2026-07-31T00:00:00.000Z",nowIso);
+  repository.db.prepare("INSERT INTO fulfillment_batches (id,preview_id,status,created_at) VALUES ('ib','ip','failed',?)").run(nowIso);
+  repository.db.prepare(`INSERT INTO fulfillment_batch_orders
+    (batch_id,order_key,display_order_id,status,error_code,before_status,updated_at)
+    VALUES ('ib','s1:interrupted','INT-1','needs_attention','INTERRUPTED_RECOVERY_PENDING','待处理',?)`).run(nowIso);
+  repository.db.prepare(`INSERT INTO fulfillment_idempotency (order_key,batch_id,status,completed_at)
+    VALUES ('s1:interrupted','ib','needs_attention',?)`).run(nowIso);
+  repository.registerTrackingRecovery({ orderKey:"s1:interrupted",batchId:"ib",displayOrderId:"INT-1",shopId:config.shopId,
+    submittedAt:nowIso,nextCheckAt:nowIso,deadlineAt:"2026-07-31T14:00:00.000Z",originErrorCode:"SERVICE_RESTARTED_DURING_BATCH" });
+  let distributeCalls = 0;
+  const service = new FulfillmentService({ config:{ ...config,trackingRecoveryCheckSeconds:60,trackingRecoveryDeadlineHours:24 },
+    repository,source:{},executor:{},now:()=>new Date(nowIso),trackingRecovery:{
+      inspect:async()=>({ trackingNumber:"201674516355",orderStatus:"2",shippingRecordPending:false,
+        selectedOrderMatched:true,channelMatched:true }),
+      distribute:async()=>{ distributeCalls += 1; return { verified:true,trackingNumber:"201674516355",afterStatus:"配货中" }; },
+    } });
+
+  assert.equal((await service.recoverPendingTrackingNumbers()).results[0].status,"completed");
+  assert.equal(distributeCalls,1);
+  assert.equal(repository.getBatch("ib").orders[0].status,"success");
+  repository.close();
+});
+
+test("an interrupted batch without any shipping record requires two checks before normal fulfillment is released", async () => {
+  const repository = new FulfillmentRepository();
+  let currentMs = Date.parse("2026-07-30T14:00:00.000Z");
+  const now = () => new Date(currentMs);
+  repository.db.prepare(`INSERT INTO fulfillment_previews
+    (id,status,shop_id,shop_name,channel_id,channel_name,confirmation_hash,expires_at,created_at)
+    VALUES ('up','confirmed',?,?, 'c1','J&T','h','2026-07-31T00:00:00.000Z','2026-07-30T14:00:00.000Z')`)
+    .run(config.shopId,config.shopName);
+  repository.db.prepare("INSERT INTO fulfillment_batches (id,preview_id,status,created_at) VALUES ('ub','up','failed','2026-07-30T14:00:00.000Z')").run();
+  repository.db.prepare(`INSERT INTO fulfillment_batch_orders
+    (batch_id,order_key,display_order_id,status,error_code,before_status,updated_at)
+    VALUES ('ub','s1:unsubmitted','INT-2','needs_attention','INTERRUPTED_RECOVERY_PENDING','待处理','2026-07-30T14:00:00.000Z')`).run();
+  repository.db.prepare(`INSERT INTO fulfillment_idempotency (order_key,batch_id,status,completed_at)
+    VALUES ('s1:unsubmitted','ub','needs_attention','2026-07-30T14:00:00.000Z')`).run();
+  repository.registerTrackingRecovery({ orderKey:"s1:unsubmitted",batchId:"ub",displayOrderId:"INT-2",shopId:config.shopId,
+    submittedAt:now().toISOString(),nextCheckAt:now().toISOString(),deadlineAt:"2026-07-31T14:00:00.000Z",
+    originErrorCode:"SERVICE_RESTARTED_DURING_BATCH" });
+  const service = new FulfillmentService({ config:{ ...config,trackingRecoveryCheckSeconds:60,trackingRecoveryDeadlineHours:24 },
+    repository,source:{},executor:{},now,trackingRecovery:{ inspect:async()=>({ trackingNumber:"",orderStatus:"2",
+      shippingRecordPending:false,selectedOrderMatched:true,channelMatched:true }) } });
+
+  assert.equal((await service.recoverPendingTrackingNumbers()).results[0].status,"verifying_unsubmitted");
+  assert.equal(repository.getBatch("ub").orders[0].status,"needs_attention");
+  currentMs += 61000;
+  assert.equal((await service.recoverPendingTrackingNumbers()).results[0].status,"released_for_normal_fulfillment");
+  assert.equal(repository.getBatch("ub").orders[0].status,"released");
+  assert.equal(repository.db.prepare("SELECT status FROM fulfillment_idempotency WHERE order_key='s1:unsubmitted'").get().status,"failed");
+  repository.close();
+});
+
+test("manual tracking recovery becomes awaiting confirmation after a read-only successful recheck", async () => {
+  const repository = new FulfillmentRepository();
+  const submittedAt = "2026-07-28T00:00:00.000Z";
+  const recovery = { orderKey:`${config.shopId}:MANUAL-1`,batchId:"missing-batch",displayOrderId:"MANUAL-1",shopId:config.shopId };
+  repository.registerTrackingRecovery({ ...recovery,submittedAt,nextCheckAt:submittedAt,deadlineAt:"2026-07-29T00:00:00.000Z" });
+  repository.expireTrackingRecovery(recovery, { completedAt:"2026-07-29T00:00:01.000Z",
+    errorCode:"TRACKING_APPROVAL_TIMEOUT",errorMessage:"人工处理" });
+  let distributeCalls = 0;
+  const service = new FulfillmentService({ config:{ ...config,trackingRecoveryCheckSeconds:60 },repository,
+    source:{},executor:{},trackingRecovery:{ inspect:async()=>assert.fail("manual result must use broad read-only inspection"),
+      inspectManualResolution:async()=>({ trackingNumber:"",orderStatus:"3",orderStatusText:"配货中" }),
+      distribute:async()=>{ distributeCalls += 1; } },now:()=>new Date("2026-07-29T00:02:00.000Z") });
+  const result = await service.recoverPendingTrackingNumbers();
+  assert.equal(result.results[0].status,"awaiting_manual_confirmation");
+  assert.equal(distributeCalls,0);
+  const awaiting = repository.listTrackingRecoveries(10,config.shopId)[0];
+  assert.equal(awaiting.status,"awaiting_manual_confirmation");
+  assert.equal(awaiting.trackingNumberMasked,null);
+  assert.equal(awaiting.observedOrderStatus,"配货中");
+  const acknowledged = service.acknowledgeManualTrackingResolutions(["MANUAL-1"]);
+  assert.equal(acknowledged.acknowledged.length,1);
+  assert.equal(repository.listTrackingRecoveries(10,config.shopId)[0].status,"acknowledged");
+  repository.close();
+});
+
+test("manual tracking recovery remains locked when the order is still pending", async () => {
+  const repository = new FulfillmentRepository();
+  const recovery = { orderKey:`${config.shopId}:MANUAL-2`,batchId:"missing-batch",displayOrderId:"MANUAL-2",shopId:config.shopId };
+  repository.registerTrackingRecovery({ ...recovery,submittedAt:"2026-07-28T00:00:00.000Z",
+    nextCheckAt:"2026-07-28T00:00:00.000Z",deadlineAt:"2026-07-29T00:00:00.000Z" });
+  repository.expireTrackingRecovery(recovery, { completedAt:"2026-07-29T00:00:01.000Z",
+    errorCode:"TRACKING_APPROVAL_TIMEOUT",errorMessage:"人工处理" });
+  const service = new FulfillmentService({ config:{ ...config,trackingRecoveryCheckSeconds:60 },repository,
+    source:{},executor:{},trackingRecovery:{ inspect:async()=>({ trackingNumber:"201672570083",orderStatus:"2" }) },
+    now:()=>new Date("2026-07-29T00:02:00.000Z") });
+  assert.equal((await service.recoverPendingTrackingNumbers()).results[0].status,"manual_attention");
+  assert.equal(repository.listTrackingRecoveries(10,config.shopId)[0].status,"manual_attention");
+  assert.equal(service.acknowledgeManualTrackingResolutions(["MANUAL-2"]).notReady.length,1);
   repository.close();
 });
 
@@ -278,7 +519,8 @@ test("preview exposes inventory and rejects out-of-stock orders", async () => {
     displayOrderId:"S-STOCK", tradeNumber:"S-STOCK", warehouse:"印尼泗水环亚-AD仓-1308",
     warehouses:["印尼泗水环亚-AD仓-1308"], skuCount:1,
     stockStatus:"in_stock", isOutOfStock:false, requiredQuantity:2, totalItemQuantity:2, availableQuantity:3,
-    outOfStockItemCount:0, unknownStockItemCount:0, eligible:true, exclusions:[],
+    outOfStockItemCount:0, unknownStockItemCount:0, shippingDeadlineAt:null,
+    shippingDeadlineStatus:"unknown", shippingRemainingMinutes:null, eligible:true, exclusions:[],
   });
   assert.equal(preview.excludedOrders.find((item) => item.displayOrderId === "S-OOS").isOutOfStock, true);
   assert.equal(preview.excludedOrders.find((item) => item.displayOrderId === "S-OOS").exclusions.includes("OUT_OF_STOCK"), true);
@@ -377,6 +619,22 @@ test("automatic preview prioritizes newest eligible orders without letting short
   repository.close();
 });
 
+test("automatic preview prioritizes the earliest shipping deadline before payment time", async () => {
+  const repository = new FulfillmentRepository();
+  const source = { listPending:async()=>[
+    { ...order,订单编号:"M-NONE",交易编号:"S-NONE",付款时间:"2026-07-30 15:50:00" },
+    { ...order,订单编号:"M-LATER",交易编号:"S-LATER",付款时间:"2026-07-30 15:40:00",最后发货期限:"2026-07-31 08:00:00" },
+    { ...order,订单编号:"M-FIRST",交易编号:"S-FIRST",付款时间:"2026-07-30 10:00:00",最后发货期限:"2026-07-30 17:30:00" },
+  ] };
+  const service = new FulfillmentService({ config,repository,source,executor:{},now:()=>new Date("2026-07-30T08:00:00.000Z") });
+  const preview = await service.createPreview({ limit:3 });
+  assert.deepEqual(preview.eligibleOrders.map((item)=>item.displayOrderId), ["S-FIRST","S-LATER","S-NONE"]);
+  assert.equal(preview.eligibleOrders[0].shippingDeadlineAt, "2026-07-30T09:30:00.000Z");
+  assert.equal(preview.eligibleOrders[0].shippingRemainingMinutes, 90);
+  assert.equal(preview.eligibleOrders[0].shippingDeadlineStatus, "critical");
+  repository.close();
+});
+
 test("explicit order preview validates the id list", async () => {
   const repository = new FulfillmentRepository();
   const service = new FulfillmentService({ config, repository, source:{ listPending:async()=>[] }, executor:{} });
@@ -470,6 +728,17 @@ test("real executor exposes unavailable Mabang channel as a safety error", async
       snapshot:{ sourceOrderId:"M-1", shopName:"JOJO Mall", orderStatus:"待处理", warehouses:["印尼泗水云雀-A仓-1308"] } },
     channel:{ id:"1143663", providerId:"1023359" },
   }), { code:"CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT" });
+});
+
+test("manual tracking resolution inspection uses the cross-status read-only worker action", async () => {
+  const calls = [];
+  const adapter = createMabangTrackingRecoveryAdapter({ config:{ ...config,mabangUsername:"user",mabangPassword:"secret" },
+    rootDir:process.cwd(),runWorker:async(payload)=>{ calls.push(payload);
+      return { trackNumber:"201672570083",orderStatus:"3",orderStatusText:"配货中" }; } });
+  const result = await adapter.inspectManualResolution("26072905HDE2JF");
+  assert.deepEqual(result,{ trackingNumber:"201672570083",orderStatus:"3",orderStatusText:"配货中" });
+  assert.equal(calls[0].action,"fulfillment-inspect-manual-resolution");
+  assert.equal(calls[0].commit,undefined);
 });
 
 test("confirmation stops the entire batch before submission when any order is out of stock", async () => {
@@ -970,6 +1239,111 @@ test("unlocked Mabang reads retain complete SKU groups for the newest candidate 
   assert.equal(new Set(result.map((row)=>row["订单编号"])).size, 20);
   assert.equal(result.filter((row)=>row["订单编号"] === "M-21").length, 2);
   assert.equal(result.some((row)=>row["订单编号"] === "M-0"), false);
+});
+
+test("unavailable channel enters manual review and cannot be queued repeatedly", async () => {
+  const repository = new FulfillmentRepository();
+  let executorCalls = 0;
+  const executor = { fulfill:async()=>{
+    executorCalls += 1;
+    throw Object.assign(new Error("fixed channel unavailable"), { code:"CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT" });
+  } };
+  const service = new FulfillmentService({ config:{ ...config,realSubmitEnabled:true },repository,
+    source:{ listPending:async()=>[order],getByIds:async()=>[order] },executor });
+  const preview = await service.createPreview();
+  const batch = await service.confirmPreview(preview.previewId, preview.confirmationToken);
+  assert.equal(batch.orders[0].status, "needs_attention");
+  assert.equal(repository.getManualReview(config.shopId,"S-1")?.errorCode,"CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT");
+  const repeatedPreview = await service.createPreview();
+  assert.equal(repeatedPreview.eligibleOrders.length, 0);
+  assert.equal(repeatedPreview.excludedOrders[0].exclusions.includes("ALREADY_FULFILLED"), true);
+  assert.equal(executorCalls, 1);
+  repository.close();
+});
+
+test("message-only review recovery schedules a targeted safety scan before automatic fulfillment", async () => {
+  let recoveryCalls = 0; let enqueueCalls = 0; let timerCallback = null; let timerDelay = null;
+  const previewRequests = [];
+  const service = { config:{ shopId:"1",shopName:"JOJO Mall",autoFulfillEnabled:true },getActiveBatch:()=>null,
+    getLatestPendingPreview:()=>null,listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],recordScanRun:()=>{},
+    createPreview:async(options)=>{ previewRequests.push(options); return { previewId:"P-TARGET",confirmationToken:"T-TARGET",
+      shop:{ id:"1",name:"JOJO Mall" },eligibleOrders:[{ displayOrderId:"ORDER-MESSAGE" }],excludedOrders:[] }; },
+    enqueuePreview:()=>{ enqueueCalls += 1; return { id:"B-TARGET",status:"queued" }; } };
+  const recovery = { run:async()=>{ recoveryCalls += 1; return { checked:1,
+    moved:[{ shopId:"1",platformOrderId:"ORDER-MESSAGE" }],results:[{ shopId:"1",platformOrderId:"ORDER-MESSAGE",status:"moved_to_pending" }] }; } };
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:false,autoFulfillEnabled:true,
+    schedulerIntervalSeconds:300,maxBatchSize:10,messageReviewRecoveryEnabled:true,messageReviewRecoveryLimit:3,
+    messageReviewFollowUpDelaySeconds:30 },service,services:[service],messageReviewRecovery:recovery,
+    setTimeoutFn:(callback,delay)=>{ timerCallback = callback; timerDelay = delay; return { unref() {} }; },clearTimeoutFn:()=>{} });
+  const result = await scheduler.scanNow();
+  assert.equal(recoveryCalls,1);
+  assert.equal(enqueueCalls,0);
+  assert.deepEqual(previewRequests,[]);
+  assert.equal(timerDelay,30000);
+  assert.equal(scheduler.status().messageReviewFollowUpPendingCount,1);
+  assert.equal(result.lastMessageReviewRecovery.moved[0].platformOrderId,"ORDER-MESSAGE");
+  assert.equal(result.lastMessage.includes("自动定向扫描"),true);
+  await timerCallback();
+  assert.deepEqual(previewRequests,[{ orderIds:["ORDER-MESSAGE"] }]);
+  assert.equal(enqueueCalls,1);
+  assert.equal(scheduler.status().lastOutcome,"auto_fulfillment_started");
+  assert.equal(scheduler.status().messageReviewFollowUpPendingCount,0);
+});
+
+test("message-only review recovery is disabled unless explicitly enabled", async () => {
+  let recoveryCalls = 0;
+  const service = { config:{ shopId:"1",shopName:"JOJO Mall" },getActiveBatch:()=>null,getLatestPendingPreview:()=>null,
+    listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],recordScanRun:()=>{},
+    createPreview:async()=>({ previewId:"P-EMPTY",shop:{ id:"1",name:"JOJO Mall" },eligibleOrders:[],excludedOrders:[] }) };
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:false,schedulerIntervalSeconds:300,maxBatchSize:10,
+    messageReviewRecoveryEnabled:false },service,services:[service],messageReviewRecovery:{ run:async()=>{ recoveryCalls += 1; } } });
+  await scheduler.scanNow();
+  assert.equal(recoveryCalls,0);
+});
+
+test("message-only review recovery is checked at its own thirty-minute interval", async () => {
+  let currentMs = Date.parse("2026-07-30T08:00:00.000Z");
+  let recoveryCalls = 0;
+  const service = { config:{ shopId:"1",shopName:"JOJO Mall" },getActiveBatch:()=>null,getLatestPendingPreview:()=>null,
+    listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],recordScanRun:()=>{},
+    createPreview:async()=>({ previewId:"P-EMPTY",shop:{ id:"1",name:"JOJO Mall" },eligibleOrders:[],excludedOrders:[] }) };
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:false,schedulerIntervalSeconds:300,maxBatchSize:10,
+    messageReviewRecoveryEnabled:true,messageReviewRecoveryLimit:3,messageReviewRecoveryIntervalMinutes:30 },service,services:[service],
+    now:()=>new Date(currentMs),messageReviewRecovery:{ run:async()=>{ recoveryCalls += 1; return { checked:0,moved:[],results:[] }; } } });
+
+  await scheduler.scanNow();
+  currentMs += 5 * 60000;
+  await scheduler.scanNow();
+  currentMs += 25 * 60000;
+  await scheduler.scanNow();
+  assert.equal(recoveryCalls,2);
+  assert.equal(scheduler.status().lastMessageReviewCheckAt,"2026-07-30T08:30:00.000Z");
+});
+
+test("Mabang message review adapter keeps read and mutation worker actions separate", async () => {
+  const calls = [];
+  const adapter = createMabangMessageReviewRecovery({ config:{ ...config,mabangUsername:"user",mabangPassword:"secret",
+    messageReviewRecoveryLimit:3 },shops:[{ shopId:"1",shopName:"JOJO Mall",platformId:"17" }],rootDir:".",
+    runWorker:async(payload)=>{ calls.push(payload); return payload.action.endsWith("candidates")
+      ? { records:[{ platformOrderId:"ORDER-1",eligible:true }] }
+      : { platformOrderId:"ORDER-1",movedToPending:true,afterStatus:"待处理" }; } });
+  assert.equal((await adapter.listCandidates()).length,1);
+  assert.equal((await adapter.recover("ORDER-1")).movedToPending,true);
+  assert.equal(calls[0].action,"fulfillment-message-review-candidates");
+  assert.equal(calls[0].commit,undefined);
+  assert.equal(calls[1].action,"fulfillment-message-review-recover");
+  assert.equal(calls[1].commit,"MESSAGE_REVIEW_RECOVERY_CONFIRMED");
+});
+
+test("Mabang candidate selection keeps an older order when its shipping deadline is earliest", async () => {
+  const records = Array.from({ length:25 }, (_, index) => ({ ...order,订单编号:`M-${index}`,交易编号:`S-${index}`,
+    付款时间:`2026-07-${String(index + 1).padStart(2,"0")} 10:00:00`,最后发货期限:"2026-08-02 23:59:59" }));
+  records[0].最后发货期限 = "2026-07-30 18:00:00";
+  const sourceConfig = { ...config,mabangUsername:"local-user",mabangPassword:"local-password",lookbackDays:3 };
+  const source = createMabangFulfillmentSource({ config:sourceConfig,rootDir:process.cwd(),runWorker:async()=>({ records }) });
+  const result = await source.listPending({ limit:1 });
+  assert.equal(result.some((row)=>row["订单编号"] === "M-0"), true);
+  assert.equal(new Set(result.map((row)=>row["订单编号"])).size, 20);
 });
 
 test("a failed idempotency reservation can be retried but a success cannot", async () => {

@@ -5,7 +5,7 @@ import { loadLocalEnv } from "../lib/env.mjs";
 import { resolveFulfillmentConfig } from "./config.mjs";
 import { FulfillmentRepository } from "./repository.mjs";
 import { FulfillmentError, FulfillmentService } from "./service.mjs";
-import { createDisabledFulfillmentExecutor, createMabangFulfillmentExecutor, createMabangFulfillmentPreflight, createMabangFulfillmentScanSource, createMabangFulfillmentSource, createMabangTrackingRecoveryAdapter } from "./mabang-source.mjs";
+import { createDisabledFulfillmentExecutor, createMabangFulfillmentExecutor, createMabangFulfillmentPreflight, createMabangFulfillmentScanSource, createMabangFulfillmentSource, createMabangMessageReviewRecovery, createMabangTrackingRecoveryAdapter } from "./mabang-source.mjs";
 import { createApiDocsHtml, createOpenApiDocument } from "./api-docs.mjs";
 import { FulfillmentPreviewScheduler } from "./scheduler.mjs";
 import { createWindowsNotifier } from "./notifier.mjs";
@@ -18,6 +18,8 @@ const recoveredBatches = repository.recoverInterruptedBatches(new Date().toISOSt
 if (recoveredBatches.length) console.warn(`Recovered ${recoveredBatches.length} interrupted fulfillment batch(es) as needs_attention.`);
 const quarantinedInventoryOrders = repository.quarantineFailedOrders("INVENTORY_UNKNOWN_BEFORE_SUBMIT", new Date().toISOString());
 if (quarantinedInventoryOrders) console.warn(`Moved ${quarantinedInventoryOrders} inventory-unknown order(s) to needs_attention.`);
+const quarantinedChannelOrders = repository.quarantineFailedOrders("CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT", new Date().toISOString());
+if (quarantinedChannelOrders) console.warn(`Moved ${quarantinedChannelOrders} channel-check order(s) to needs_attention.`);
 const migratedTrackingRecoveries = repository.migratePendingTrackingRecoveries({ nowIso: new Date().toISOString(),
   checkSeconds: config.trackingRecoveryCheckSeconds, deadlineHours: config.trackingRecoveryDeadlineHours });
 if (migratedTrackingRecoveries) console.warn(`Migrated ${migratedTrackingRecoveries} pending tracking order(s) to recovery queue.`);
@@ -33,7 +35,8 @@ const services = shopConfigs.map((shopConfig) => new FulfillmentService({ config
 const servicesByShopId = new Map(services.map((shopService) => [shopService.config.shopId, shopService]));
 const service = servicesByShopId.get(config.shopId) || services[0];
 const scanSource = createMabangFulfillmentScanSource({ config, shops: config.shops, rootDir });
-const scheduler = new FulfillmentPreviewScheduler({ config, service, services, scanSource, notifier });
+const messageReviewRecovery = createMabangMessageReviewRecovery({ config, shops: config.shops, rootDir });
+const scheduler = new FulfillmentPreviewScheduler({ config, service, services, scanSource, messageReviewRecovery, notifier });
 scheduler.start();
 
 function serviceForShop(shopId) {
@@ -91,6 +94,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { success: true, realSubmitEnabled: config.realSubmitEnabled,
       schedulerEnabled: config.schedulerEnabled, schedulerIntervalSeconds: config.schedulerIntervalSeconds,
       autoFulfillEnabled: config.autoFulfillEnabled,
+      messageReviewRecoveryEnabled: config.messageReviewRecoveryEnabled,
       autoFulfillShops: config.shops.filter((shop) => shop.autoFulfillEnabled)
         .map((shop) => ({ id: shop.shopId, name: shop.shopName })),
       orderConcurrency: config.orderConcurrency,
@@ -105,7 +109,8 @@ const server = http.createServer(async (req, res) => {
     if (!authorized(req)) return send(res, 401, { success: false, error: { code: "UNAUTHORIZED", message: "未授权访问" } });
     if (req.method === "GET" && url.pathname === "/api/fulfillment/dashboard") {
       const window = dashboardWindows(new Date(), url.searchParams.get("days"));
-      return send(res, 200, { success: true, data: repository.getDashboardSummary(window) });
+      return send(res, 200, { success: true, data: repository.getDashboardSummary({ ...window,
+        trackingDelayMinutes: config.trackingRecoveryResetMinutes }) });
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/notifications/test") {
       const result = await notifier.notifyAndWait({ title: "马帮自动发货通知测试", message: "通知功能正常，后台服务可以向当前 Windows 桌面发送提醒。" });
@@ -134,6 +139,22 @@ const server = http.createServer(async (req, res) => {
         throw new FulfillmentError(error.code || "MANUAL_REVIEW_RECHECK_FAILED", error.message || "人工处理订单重新核对失败", 409);
       }
     }
+    if (req.method === "GET" && url.pathname === "/api/fulfillment/message-review-recoveries/candidates") {
+      const limit = Math.min(10, Math.max(1, Number(url.searchParams.get("limit")) || config.messageReviewRecoveryLimit));
+      return send(res, 200, { success: true, data: await messageReviewRecovery.listCandidates({ limit }) });
+    }
+    if (req.method === "POST" && url.pathname === "/api/fulfillment/message-review-recoveries") {
+      const schedulerState = scheduler.status();
+      if (schedulerState.scanning || schedulerState.activeBatch) {
+        throw new FulfillmentError("FULFILLMENT_BUSY", "当前正在扫描或执行发货批次，请稍后处理待审核订单", 409);
+      }
+      const payload = await body(req);
+      if (payload.confirmation !== "MESSAGE_REVIEW_RECOVERY_CONFIRMED") {
+        throw new FulfillmentError("CONFIRMATION_INVALID", "确认标记无效", 400);
+      }
+      try { return send(res, 200, { success: true, data: await messageReviewRecovery.recover(payload.orderId) }); }
+      catch (error) { throw new FulfillmentError(error.code || "MESSAGE_REVIEW_RECOVERY_FAILED", error.message || "待审核留言订单处理失败", 409); }
+    }
     if (req.method === "GET" && url.pathname === "/api/fulfillment/batches") {
       const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
       return send(res, 200, { success: true, data: service.listRecentBatches(limit) });
@@ -142,6 +163,31 @@ const server = http.createServer(async (req, res) => {
       const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50));
       const items = repository.listTrackingRecoveries(limit);
       return send(res, 200, { success: true, data: items });
+    }
+    if (req.method === "POST" && url.pathname === "/api/fulfillment/tracking-recoveries/acknowledge") {
+      const payload = await body(req);
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (!items.length || items.length > 20) {
+        throw new FulfillmentError("INVALID_TRACKING_ACKNOWLEDGEMENTS", "请选择 1 至 20 个待确认订单");
+      }
+      const grouped = new Map();
+      for (const item of items) {
+        const shopId = String(item?.shopId || "").trim();
+        const orderId = String(item?.orderId || "").trim();
+        if (!/^\d{1,24}$/.test(shopId) || !/^[a-zA-Z0-9_-]{1,100}$/.test(orderId)) {
+          throw new FulfillmentError("INVALID_TRACKING_ACKNOWLEDGEMENT", "店铺或订单参数无效");
+        }
+        if (!grouped.has(shopId)) grouped.set(shopId, []);
+        grouped.get(shopId).push(orderId);
+      }
+      const acknowledged = [];
+      const notReady = [];
+      for (const [shopId, orderIds] of grouped) {
+        const result = serviceForShop(shopId).acknowledgeManualTrackingResolutions(orderIds);
+        acknowledged.push(...result.acknowledged);
+        notReady.push(...result.notReady);
+      }
+      return send(res, 200, { success: true, data: { acknowledged, notReady } });
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/tracking-recoveries/check") {
       const schedulerState = scheduler.status();

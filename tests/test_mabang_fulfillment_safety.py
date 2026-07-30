@@ -1,7 +1,11 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from scripts.mabang_order_source import MabangClient, extract_fulfillment_stock_flags, response_looks_unauthenticated
+from scripts.mabang_order_source import (
+    MabangClient, extract_fulfillment_stock_flags, extract_shipping_deadline,
+    is_message_only_abnormal, response_looks_unauthenticated,
+)
 
 
 class FakeResponse:
@@ -11,6 +15,75 @@ class FakeResponse:
 
 
 class MabangFulfillmentSafetyTests(unittest.TestCase):
+    def test_manual_tracking_resolution_reads_across_statuses_without_submitting(self):
+        client = MabangClient()
+        client.find_order_for_fulfillment = MagicMock(return_value={
+            'platformOrderId': '26072905HDE2JF', 'orderStatus': '3',
+            'showOrderStatusText': '配货中', 'trackNumber': '201672570083',
+        })
+        result = client.inspect_manual_tracking_resolution('26072905HDE2JF')
+        self.assertEqual(result['orderStatusText'], '配货中')
+        self.assertEqual(result['trackNumber'], '201672570083')
+        client.find_order_for_fulfillment.assert_called_once_with('26072905HDE2JF', None)
+
+    def test_only_one_message_exception_is_eligible_for_review_recovery(self):
+        self.assertTrue(is_message_only_abnormal({
+            'exceptionInfo': {'count': 1, 'latest': {'name': '有留言'}, 'all': [{'name': '有留言'}]},
+        }))
+        self.assertFalse(is_message_only_abnormal({
+            'exceptionInfo': {'count': 2, 'latest': {'name': '有留言'}, 'all': [{'name': '有留言'}, {'name': '多仓'}]},
+        }))
+        self.assertFalse(is_message_only_abnormal({'exceptionInfo': {'count': 1, 'latest': {'name': '其他异常'}}}))
+
+    def test_message_review_recovery_uses_exact_mabang_request_and_verifies_pending(self):
+        client = MabangClient()
+        candidate = {
+            'internalOrderId': '213924888', 'platformOrderId': '260730322HK667',
+            'shopId': '2021485965', 'shopName': 'JOJO Mall', 'platformId': '17',
+            'warehouse': '印尼泗水云雀-A仓-1308', 'skuCount': 2, 'eligible': True, 'exclusions': [],
+        }
+        client.inspect_message_review_candidates = MagicMock(return_value=[candidate])
+        response = MagicMock(url='https://example.test/index.php?mod=order.doProcessAbnormalOrders', text='{"success":true}')
+        response.json.return_value = {'success': True, 'successCount': 1}
+        client.session.post = MagicMock(return_value=response)
+        client.find_order_for_fulfillment = MagicMock(return_value={
+            'platformOrderId': '260730322HK667', 'shopId': '2021485965', 'orderStatus': '2',
+        })
+
+        result = client.recover_message_review_order('260730322HK667', [
+            {'shopId': '2021485965', 'shopName': 'JOJO Mall', 'platformId': '17'},
+        ])
+
+        self.assertTrue(result['movedToPending'])
+        request = client.session.post.call_args
+        self.assertTrue(request.args[0].endswith('index.php?mod=order.doProcessAbnormalOrders'))
+        self.assertEqual(request.kwargs['data'], {
+            'orderIds': '213924888', 'tableBase': '1', 'fixCategory': '3', 'isCheckSecondary': '1',
+        })
+        client.find_order_for_fulfillment.assert_called_once_with('260730322HK667', '2')
+
+    def test_mabang_remaining_shipping_time_becomes_absolute_deadline(self):
+        now = datetime(2026, 7, 30, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+        self.assertEqual(
+            extract_shipping_deadline({'closeDateType': '2', 'closeDateText': '1 天 7 小时 15 分'}, now),
+            '2026-07-31T17:15:00+08:00',
+        )
+        self.assertEqual(
+            extract_shipping_deadline({'closeDateType': '1', 'closeDay': '0 天 2 小时 5 分'}, now),
+            '2026-07-30T07:55:00+08:00',
+        )
+
+    def test_shipping_deadline_is_merged_into_every_exported_sku_row(self):
+        client = MabangClient()
+        client.remember_shipping_deadlines([
+            {'platformOrderId': 'ORDER-1', 'closeDateType': '2', 'closeDateText': '0 天 6 小时 0 分'},
+        ], datetime(2026, 7, 30, 10, 0, tzinfo=timezone(timedelta(hours=8))))
+        records = client.merge_shipping_deadlines([
+            {'订单编号': 'ORDER-1', 'SKU': 'A'}, {'订单编号': 'ORDER-1', 'SKU': 'B'},
+        ])
+        self.assertEqual(records[0]['最后发货期限'], '2026-07-30T16:00:00+08:00')
+        self.assertEqual(records[1]['最后发货期限'], '2026-07-30T16:00:00+08:00')
+
     def test_pending_tracking_channel_reset_matches_confirmed_batch_edit_request(self):
         client = MabangClient()
         pending = {
@@ -86,7 +159,7 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
         client.find_order_for_fulfillment = MagicMock(side_effect=[pending, distributed])
         client.get_fulfillment_channel_data = MagicMock(return_value={
             'success': True, '_selectedOrderMatched': True,
-            '_orderPageHtml': '<div data-mylogisticschannelid="1143663"></div>',
+            'message1': '<div data-mylogisticschannelid="1143663"></div>',
         })
         response = MagicMock()
         response.url = 'https://example.test/index.php?mod=order.doBatchDistribution'
@@ -105,7 +178,7 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
         self.assertEqual(client.session.post.call_args.kwargs['data'], {'orderIds': '213467731', 'type': '1'})
 
     @patch('scripts.mabang_order_source.time.sleep', return_value=None)
-    def test_submit_verification_gets_tracking_then_moves_order_to_distribution(self, _sleep):
+    def test_submit_verification_uses_exact_configured_channel_when_candidates_disappear(self, _sleep):
         client = MabangClient()
         client.prepare_fulfillment = MagicMock(return_value={
             'order': {'orderStatus': '2'},
@@ -132,11 +205,17 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
         ])
         client.get_fulfillment_channel_data = MagicMock(return_value={
             'success': True,
-            '_orderPageHtml': '<div data-mylogisticschannelid="1143663"></div>',
+            '_selectedOrderMatched': True,
+            'message1': '<div>selected order, but no channel candidates after tracking</div>',
+            '_orderPageHtml': (
+                '{"id":"1143663","myLogisticsId":"1023359",'
+                '"logisticsId":"1591","logisticsChannelName":"fixed-channel-name"}'
+            ),
         })
 
         result = client.submit_fulfillment(
-            '260727RCNK1BWT', 'fixed-channel-value', '1143663', verify_timeout_seconds=15
+            '260727RCNK1BWT', '1143663_1023359_fixed-channel-name_1591', '1143663',
+            verify_timeout_seconds=15
         )
 
         self.assertTrue(result['verified'])
@@ -166,7 +245,76 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
             '1143663_1023359_ID-本土-J&TExpress_1591',
         ))
 
+    def test_batch_edit_channel_cache_is_matched_exactly(self):
+        page_html = '''<script>var channels=[
+          {"id":"1143663","source":"1","logisticsId":"1591","myLogisticsId":"1023359",
+           "logisticsChannelName":"ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具",
+           "logisticsName":"shopeeV2线上发货(新)"}
+        ];</script>'''
+        expected = '1143663_1023359_ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具_1591'
+        self.assertTrue(MabangClient.configured_fulfillment_channel_available(
+            page_html, '1143663', expected,
+        ))
+        self.assertFalse(MabangClient.configured_fulfillment_channel_available(
+            page_html, '1143663', expected.replace('_1023359_', '_999999_'),
+        ))
+        self.assertFalse(MabangClient.configured_fulfillment_channel_available(
+            page_html, '1143663', expected.replace('_1591', '_9999'),
+        ))
+
+    def test_prepare_accepts_exact_batch_edit_channel_then_checks_order_reporting(self):
+        client = MabangClient()
+        expected = '1143663_1023359_ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具_1591'
+        client.find_order_for_fulfillment = MagicMock(return_value={
+            'id': '213947054', 'platformOrderId': '2607303BV291YE',
+            'shopId': '2021557966', 'platformId': '17', 'orderStatus': '2',
+            'trackNumber': '', 'hasGoods': '0', 'orderItemHasGoods': '0',
+        })
+        client.get_fulfillment_channel_data = MagicMock(return_value={
+            'success': True, '_selectedOrderMatched': True,
+            'message1': '<div data-order-id="213947054"></div>',
+            '_orderPageHtml': '''<script>var channels=[
+              {"id":"1143663","source":"1","logisticsId":"1591","myLogisticsId":"1023359",
+               "logisticsChannelName":"ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具",
+               "logisticsName":"shopeeV2线上发货(新)"}
+            ];</script>''',
+        })
+        client.post_json_with_reauth = MagicMock(return_value={
+            'success': True, 'notFoundPlatformOrderIds': [], 'isSLogisticsChannel': '1',
+            'stockHtml': '', 'propertyJson': [],
+        })
+
+        result = client.prepare_fulfillment(
+            '2607303BV291YE', expected, '1143663', '2021557966', '17', True,
+        )
+
+        self.assertTrue(result['channelMatched'])
+        client.post_json_with_reauth.assert_called_once()
+
     def test_zero_stock_flags_mean_in_stock(self):
+        current_markup = {
+            'success': True,
+            'message1': '<a onclick="$(\'#channel\').val(\'1143663_1023359_ID-JT-Local\');">select</a>',
+        }
+        self.assertTrue(MabangClient.fulfillment_channel_available(
+            current_markup, '1143663', '1143663_1023359_ID-JT-Local_1591',
+        ))
+        wrong_provider_markup = {
+            'success': True,
+            'message1': '<a onclick="$(\'#channel\').val(\'1143663_999999_ID-JT-Local\');">select</a>',
+        }
+        self.assertFalse(MabangClient.fulfillment_channel_available(
+            wrong_provider_markup, '1143663', '1143663_1023359_ID-JT-Local_1591',
+        ))
+        generic_page_only = {
+            'success': True,
+            'message1': '<div>no channel for selected order</div>',
+            '_orderPageHtml': '<div data-mylogisticschannelid="1143663"></div>',
+        }
+        self.assertFalse(MabangClient.fulfillment_channel_available(
+            generic_page_only, '1143663', '1143663_1023359_ID-JT-Local_1591',
+        ))
+
         self.assertEqual(
             MabangClient.fulfillment_stock_status({'hasGoods': 0, 'orderItemHasGoods': 0}),
             'in_stock',

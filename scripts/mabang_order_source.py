@@ -9,7 +9,7 @@ import threading
 import traceback
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests
 import pandas as pd
 from requests.exceptions import ReadTimeout, RequestException
@@ -43,6 +43,7 @@ FULFILLMENT_REPORTING_INFO_URL = BASE_URL + '/index.php?mod=order.getReportingIn
 FULFILLMENT_SUBMIT_URL = BASE_URL + '/index.php?mod=order.doReportingInformation'
 FULFILLMENT_DISTRIBUTION_URL = BASE_URL + '/index.php?mod=order.doBatchDistribution'
 FULFILLMENT_BATCH_EDIT_URL = BASE_URL + '/index.php?mod=order.all'
+FULFILLMENT_PROCESS_ABNORMAL_URL = BASE_URL + '/index.php?mod=order.doProcessAbnormalOrders'
 EXPORT_TEMPLATE_ID = '1049202'
 HEADERS_AJAX = {'Accept': 'application/json, text/javascript, */*; q=0.01', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'X-Requested-With': 'XMLHttpRequest', 'Origin': BASE_URL, 'Referer': ORDER_PAGE_URL}
 HEADERS_PAGE = {'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Referer': INITIAL_URL}
@@ -66,6 +67,49 @@ def extract_fulfillment_stock_flags(page_html, internal_id='', order_reference='
             'orderItemHasGoods': attributes.get('data-orderitemhasgoods'),
         }
     return {}
+
+
+MABANG_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def extract_shipping_deadline(order, now=None):
+    """Convert Mabang order-list remaining-time fields into an absolute UTC+8 deadline."""
+    close_type = str(order.get('closeDateType') or '').strip()
+    if close_type not in ('1', '2'):
+        return ''
+    remaining_text = str(
+        order.get('closeDay') if close_type == '1' else order.get('closeDateText')
+        or ''
+    ).strip()
+    match = re.search(
+        r'(?:(\d+)\s*天)?\s*(?:(\d+)\s*小时)?\s*(?:(\d+)\s*分(?:钟)?)?',
+        remaining_text,
+    )
+    if not match or not any(value is not None for value in match.groups()):
+        return ''
+    minutes = int(match.group(1) or 0) * 1440 + int(match.group(2) or 0) * 60 + int(match.group(3) or 0)
+    if close_type == '1':
+        minutes = -minutes
+    current = now or datetime.now(MABANG_TIMEZONE)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=MABANG_TIMEZONE)
+    deadline = current.astimezone(MABANG_TIMEZONE) + timedelta(minutes=minutes)
+    return deadline.replace(second=0, microsecond=0).isoformat()
+
+
+def is_message_only_abnormal(order):
+    info = order.get('exceptionInfo')
+    if not isinstance(info, dict):
+        return False
+    try:
+        count = int(info.get('count') or 0)
+    except (TypeError, ValueError):
+        return False
+    latest = info.get('latest') if isinstance(info.get('latest'), dict) else {}
+    all_items = info.get('all') if isinstance(info.get('all'), list) else []
+    names = [str(latest.get('name') or '').strip()]
+    names.extend(str(item.get('name') or '').strip() for item in all_items if isinstance(item, dict))
+    return count == 1 and any(name == '有留言' for name in names)
 
 class WPSLogger:
 
@@ -430,7 +474,24 @@ class MabangClient:
         self.last_page_count = None
         self.cached_export_fields = None
         self.cached_standard_version = None
+        self.shipping_deadlines_by_order = {}
         self._thread_local = threading.local()
+
+    def remember_shipping_deadlines(self, orders, now=None):
+        captured_at = now or datetime.now(MABANG_TIMEZONE)
+        for order in orders or []:
+            reference = str(order.get('platformOrderId') or order.get('salesRecordNumber') or '').strip()
+            deadline = extract_shipping_deadline(order, captured_at)
+            if reference and deadline:
+                self.shipping_deadlines_by_order[reference] = deadline
+
+    def merge_shipping_deadlines(self, records):
+        for record in records or []:
+            reference = str(record.get('订单编号') or record.get('交易编号') or '').strip()
+            deadline = self.shipping_deadlines_by_order.get(reference)
+            if deadline:
+                record['最后发货期限'] = deadline
+        return records
 
     def _new_worker_session(self):
         session = requests.Session()
@@ -545,7 +606,7 @@ class MabangClient:
         start = end - timedelta(days=92)
         params = build_order_params(1, start.strftime('%Y-%m-%d 00:00:00'), end.strftime('%Y-%m-%d 23:59:59'))
         params['rowsPerPage'] = '100'
-        params['Order.orderStatus'] = str(pending_status)
+        params['Order.orderStatus'] = '' if pending_status is None else str(pending_status)
         params['OrderSearch.fuzzySearchKey'] = 'Order.platformOrderId'
         params['OrderSearch.fuzzySearchValue'] = reference
         data = self.post_json_with_reauth(
@@ -559,6 +620,7 @@ class MabangClient:
         if po_data:
             self.last_po_data = po_data
         orders = data.get('orderDataList') or []
+        self.remember_shipping_deadlines(orders)
         for order in orders:
             candidates = [order.get('id'), order.get('orderId'), order.get('platformOrderId'), order.get('salesRecordNumber')]
             if reference in [str(value or '').strip() for value in candidates]:
@@ -572,7 +634,126 @@ class MabangClient:
                 matched_order['_fulfillmentPageHtmlLength'] = len(str(data.get('pageHtml') or ''))
                 matched_order['_fulfillmentPageContainsOrder'] = reference in str(data.get('pageHtml') or '')
                 return matched_order
+        if pending_status is None:
+            raise Exception('指定订单不存在或不在最近93天。')
         raise Exception('指定订单不存在、不是待处理状态或不在最近93天。')
+
+    def search_message_abnormal_orders(self, limit=100):
+        end = datetime.now()
+        start = end - timedelta(days=92)
+        params = build_order_params(1, start.strftime('%Y-%m-%d 00:00:00'), end.strftime('%Y-%m-%d 23:59:59'))
+        params['rowsPerPage'] = str(max(1, min(int(limit or 100), 100)))
+        params['Order.orderStatus'] = '99'
+        params['canSend'] = '2'
+        params['fixCategory[]'] = '3'
+        data = self.post_json_with_reauth(
+            ORDER_SEARCH_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data=params,
+            operation='读取待审核留言订单',
+        )
+        if not data.get('success'):
+            raise Exception(data.get('message') or '待审核留言订单查询失败。')
+        page_html = str(data.get('pageHtml') or '')
+        po_data = extract_po_data(page_html)
+        if po_data:
+            self.last_po_data = po_data
+        orders = data.get('orderDataList') or []
+        self.remember_shipping_deadlines(orders)
+        return [dict(order) for order in orders if is_message_only_abnormal(order)]
+
+    def inspect_message_review_candidates(self, shop_configs, limit=10):
+        bounded_limit = max(1, min(int(limit or 10), 10))
+        shops_by_id = {str(item.get('shopId') or ''): item for item in (shop_configs or [])}
+        shops_by_name = {str(item.get('shopName') or ''): item for item in (shop_configs or [])}
+        orders = self.search_message_abnormal_orders(100)
+        platform_ids = [str(order.get('platformOrderId') or '').strip() for order in orders]
+        platform_ids = list(dict.fromkeys(value for value in platform_ids if value))
+        records = self.export_orders_to_records(platform_ids) if platform_ids else []
+        records_by_order = {}
+        for row in records:
+            reference = str(row.get('订单编号') or row.get('交易编号') or '').strip()
+            if reference:
+                records_by_order.setdefault(reference, []).append(row)
+
+        results = []
+        for order in orders:
+            reference = str(order.get('platformOrderId') or '').strip()
+            internal_id = str(order.get('id') or order.get('orderId') or '').strip()
+            shop_id = str(order.get('shopId') or '').strip()
+            rows = records_by_order.get(reference) or []
+            row_shop_name = str((rows[0] if rows else {}).get('店铺名') or '').strip()
+            shop = shops_by_id.get(shop_id) or shops_by_name.get(row_shop_name)
+            exclusions = []
+            if not reference or not internal_id:
+                exclusions.append('MISSING_ORDER_ID')
+            if not shop:
+                exclusions.append('SHOP_NOT_CONFIGURED')
+            if str(order.get('platformId') or '') != str((shop or {}).get('platformId') or ''):
+                exclusions.append('PLATFORM_MISMATCH')
+            if str(order.get('trackNumber') or '').strip():
+                exclusions.append('HAS_TRACKING_NUMBER')
+            if not is_message_only_abnormal(order):
+                exclusions.append('NOT_MESSAGE_ONLY_ABNORMAL')
+            if self.fulfillment_stock_status(order) != 'in_stock':
+                exclusions.append('INVENTORY_FLAG_UNSAFE')
+            if not rows:
+                exclusions.append('ORDER_DETAILS_MISSING')
+            statuses = {str(row.get('订单状态') or '').strip() for row in rows if str(row.get('订单状态') or '').strip()}
+            if statuses and statuses != {'待审核'}:
+                exclusions.append('STATUS_NOT_REVIEW')
+            warehouses = {str(row.get('仓库') or '').strip() for row in rows if str(row.get('仓库') or '').strip()}
+            if len(warehouses) != 1:
+                exclusions.append('MULTI_OR_UNKNOWN_WAREHOUSE')
+            for row in rows:
+                quantity = to_number(row.get('商品数量'))
+                stock = to_number(row.get('商品库存'))
+                if quantity == '' or stock == '' or quantity <= 0 or stock < quantity:
+                    exclusions.append('INVENTORY_INSUFFICIENT_OR_UNKNOWN')
+                    break
+            results.append({
+                'internalOrderId': internal_id,
+                'platformOrderId': reference,
+                'shopId': str((shop or {}).get('shopId') or shop_id),
+                'shopName': str((shop or {}).get('shopName') or row_shop_name),
+                'platformId': str(order.get('platformId') or ''),
+                'warehouse': next(iter(warehouses), ''),
+                'skuCount': len(rows),
+                'eligible': not exclusions,
+                'exclusions': list(dict.fromkeys(exclusions)),
+            })
+        return results[:bounded_limit]
+
+    def recover_message_review_order(self, order_reference, shop_configs):
+        reference = str(order_reference or '').strip()
+        candidates = self.inspect_message_review_candidates(shop_configs, 10)
+        candidate = next((item for item in candidates if item['platformOrderId'] == reference), None)
+        if not candidate:
+            raise Exception('MESSAGE_REVIEW_ORDER_NOT_FOUND: 指定订单不在当前待审核留言列表。')
+        if not candidate['eligible']:
+            codes = ','.join(candidate['exclusions'])
+            raise Exception(f'MESSAGE_REVIEW_NOT_SAFE: 待审核留言订单未通过安全检查：{codes}')
+        response = self.session.post(
+            FULFILLMENT_PROCESS_ABNORMAL_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data={
+                'orderIds': candidate['internalOrderId'], 'tableBase': '1',
+                'fixCategory': '3', 'isCheckSecondary': '1',
+            },
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
+        if response_looks_unauthenticated(response):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_MESSAGE_REVIEW: 转待处理时登录状态失效，禁止自动重试。')
+        result = safe_json(response)
+        if response_looks_unauthenticated(response, result):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_MESSAGE_REVIEW: 转待处理时登录状态失效，禁止自动重试。')
+        if not result.get('success') or result.get('errors') or result.get('riskOrPlatformCancelsMessage'):
+            raise Exception('MESSAGE_REVIEW_TRANSITION_REJECTED: 马帮未确认订单已安全转回待处理。')
+        verified = self.find_order_for_fulfillment(reference, '2')
+        if str(verified.get('shopId') or '') != candidate['shopId']:
+            raise Exception('MESSAGE_REVIEW_VERIFY_FAILED: 转状态后店铺不一致。')
+        return {**candidate, 'movedToPending': True, 'afterStatus': '待处理'}
 
     def export_order_references_to_records(self, order_references, pending_status='2'):
         """精确查询并只导出指定订单，避免为了最多 10 单扫描整个日期范围。"""
@@ -626,7 +807,12 @@ class MabangClient:
             if isinstance(value, str):
                 yield value
             elif isinstance(value, dict):
-                for nested in value.values():
+                for key, nested in value.items():
+                    # _orderPageHtml contains the generic channel panel for the whole
+                    # account. It is useful for diagnostics but must never prove that
+                    # a channel is available for the selected order.
+                    if str(key).startswith('_'):
+                        continue
                     yield from iter_text_values(nested, depth + 1)
             elif isinstance(value, (list, tuple)):
                 for nested in value:
@@ -637,12 +823,72 @@ class MabangClient:
             re.I,
         )
         expected_value = str(channel_value or '').strip()
+        selector_value = expected_value
+        if expected_value:
+            value_without_logistics_id, separator, logistics_id = expected_value.rpartition('_')
+            if separator and logistics_id.isdigit():
+                selector_value = value_without_logistics_id
+        exact_selector_pattern = re.compile(
+            rf'(?:\.val\(\s*|value\s*=\s*)["\']{re.escape(selector_value)}["\']',
+            re.I,
+        ) if selector_value else None
         for channel_text in iter_text_values(channel_data):
+            channel_text = html.unescape(channel_text)
             if exact_id_pattern.search(channel_text):
                 return True
             if expected_value and expected_value in channel_text:
                 return True
+            # The current Mabang order selector omits the final logisticsId
+            # (for example _1591) from its value. Match the remaining selector
+            # value exactly so another provider or similarly named channel cannot
+            # be accepted accidentally.
+            if exact_selector_pattern and exact_selector_pattern.search(channel_text):
+                return True
         return False
+
+    @staticmethod
+    def configured_fulfillment_channel_available(order_page_html, channel_id, channel_value):
+        """精确核对“批量修改订单”渠道缓存，而不是误用物流交运弹窗。"""
+        expected_value = str(channel_value or '').strip()
+        expected_id = str(channel_id or '').strip()
+        page_html = html.unescape(str(order_page_html or ''))
+        if not expected_id or not expected_value or not page_html:
+            return False
+        for matched in re.finditer(r'\{[^{}]{0,3000}\}', page_html):
+            candidate_text = matched.group(0)
+            if not re.search(rf'["\']id["\']\s*:\s*["\']{re.escape(expected_id)}["\']', candidate_text):
+                continue
+            try:
+                candidate = json.loads(candidate_text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if str(candidate.get('id') or '').strip() != expected_id:
+                continue
+            provider_id = str(candidate.get('myLogisticsId') or '').strip()
+            logistics_id = str(candidate.get('logisticsId') or '').strip()
+            channel_name = str(candidate.get('logisticsChannelName') or '').strip()
+            if not provider_id or not logistics_id or not channel_name:
+                continue
+            actual_value = f'{expected_id}_{provider_id}_{channel_name}_{logistics_id}'
+            if actual_value == expected_value:
+                return True
+        return False
+
+    @classmethod
+    def fulfillment_channel_matches_order(cls, channel_data, order, channel_id, channel_value):
+        """统一核对指定订单当前渠道、候选渠道和账号内精确渠道配置。"""
+        if not channel_data.get('_selectedOrderMatched'):
+            return False
+        current_logistics_html = str(order.get('cansend1logisticsHtml') or '')
+        return bool(
+            cls.fulfillment_channel_available(channel_data, channel_id, channel_value)
+            or cls.fulfillment_channel_available(
+                {'currentOrderLogisticsHtml': current_logistics_html}, channel_id, channel_value
+            )
+            or cls.configured_fulfillment_channel_available(
+                channel_data.get('_orderPageHtml'), channel_id, channel_value
+            )
+        )
 
     @staticmethod
     def fulfillment_stock_status(order):
@@ -712,13 +958,19 @@ class MabangClient:
             and '运单号获取中' in current_logistics_html
             and bool(re.search(rf'data-id\s*=\s*["\']{re.escape(str(channel_id))}["\']', current_logistics_html, re.I))
         )
+        selected_channel_matched = self.fulfillment_channel_available(channel_data, channel_id, channel_value)
+        configured_channel_matched = self.configured_fulfillment_channel_available(
+            order_page_html, channel_id, channel_value
+        )
         return {
             'internalOrderId': internal_id,
             'platformOrderId': platform_order_id,
             'orderStatus': str(order.get('orderStatus') or order.get('status') or ''),
             'trackNumber': str(order.get('trackNumber') or ''),
             'orderFieldNames': sorted(str(key) for key in order.keys() if re.search(r'(shop|platform|status|logistic|track|channel|sync)', str(key), re.I)),
-            'channelMatched': self.fulfillment_channel_available(channel_data, channel_id, channel_value),
+            'channelMatched': bool((selected_channel_matched or configured_channel_matched) and reporting.get('success')),
+            'selectedChannelMatched': selected_channel_matched,
+            'configuredChannelMatched': configured_channel_matched,
             'channelResponseKeys': sorted(key for key in channel_data.keys() if not str(key).startswith('_')),
             'selectedOrderMatched': bool(channel_data.get('_selectedOrderMatched')),
             'channelCandidateIds': channel_candidate_ids,
@@ -742,6 +994,16 @@ class MabangClient:
             'orderPageContainsFixedChannel': self.fulfillment_channel_available(
                 {'orderPageHtml': order_page_html}, channel_id, channel_value
             ),
+        }
+
+    def inspect_manual_tracking_resolution(self, order_reference):
+        """跨订单状态只读回查人工处理结果，不读取交运参数，也不提交任何操作。"""
+        order = self.find_order_for_fulfillment(order_reference, None)
+        return {
+            'platformOrderId': str(order.get('platformOrderId') or order_reference).strip(),
+            'orderStatus': str(order.get('orderStatus') or '').strip(),
+            'orderStatusText': str(order.get('showOrderStatusText') or '').strip(),
+            'trackNumber': str(order.get('trackNumber') or '').strip(),
         }
 
     def prepare_fulfillment(self, order_reference, channel_value, channel_id, expected_shop_id='', expected_platform_id='',
@@ -771,7 +1033,7 @@ class MabangClient:
         channel_data = self.get_fulfillment_channel_data(internal_id)
         if not channel_data.get('_selectedOrderMatched'):
             raise Exception('ORDER_NOT_AVAILABLE_FOR_DELIVERY: 马帮物流交运列表未返回指定订单，已停止发货。')
-        if not self.fulfillment_channel_available(channel_data, channel_id, channel_value):
+        if not self.fulfillment_channel_matches_order(channel_data, order, channel_id, channel_value):
             raise Exception('CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT: 固定物流渠道不在该订单可用渠道列表中，已停止发货。')
 
         reporting = self.post_json_with_reauth(FULFILLMENT_REPORTING_INFO_URL, headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'}, data={
@@ -864,7 +1126,7 @@ class MabangClient:
         channel_data = self.get_fulfillment_channel_data(internal_id)
         if not channel_data.get('_selectedOrderMatched'):
             raise Exception('ORDER_NOT_AVAILABLE_FOR_DELIVERY: 马帮物流交运列表未返回指定订单，已停止转配货。')
-        if not self.fulfillment_channel_available(channel_data, channel_id, channel_value):
+        if not self.fulfillment_channel_matches_order(channel_data, order, channel_id, channel_value):
             raise Exception('CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT: 固定物流渠道不可用，已停止转配货。')
 
         response = self.session.post(
@@ -1036,7 +1298,9 @@ class MabangClient:
                 continue
             tracking_poll_count += 1
             channel_data = self.get_fulfillment_channel_data(internal_id)
-            channel_matched = self.fulfillment_channel_available(channel_data, channel_id, channel_value)
+            channel_matched = self.fulfillment_channel_matches_order(
+                channel_data, latest, channel_id, channel_value
+            )
             if str(latest.get('trackNumber') or '').strip() and channel_matched:
                 break
         tracking_wait_ms = round((time.monotonic() - tracking_started) * 1000)
@@ -1132,6 +1396,7 @@ class MabangClient:
                 if not data.get('success'):
                     raise Exception(data.get('message') or '订单接口返回失败')
                 orders = data.get('orderDataList') or []
+                self.remember_shipping_deadlines(orders)
                 if update_export_context:
                     page_html = data.get('pageHtml', '')
                     self.last_po_data = extract_po_data(page_html)
@@ -1375,7 +1640,7 @@ class MabangClient:
                 raise
             if REQUEST_INTERVAL_SECONDS > 0 and index < len(batches):
                 time.sleep(REQUEST_INTERVAL_SECONDS)
-        return all_records
+        return self.merge_shipping_deadlines(all_records)
 
 def run_sync():
     run_started = time.monotonic()

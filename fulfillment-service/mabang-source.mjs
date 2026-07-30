@@ -8,18 +8,27 @@ function orderTime(row) {
   const timestamp = Date.parse(text.includes("T") ? text : text.replace(" ", "T"));
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
+function shippingDeadlineTime(row) {
+  const text = String(row["最后发货期限"] || "").trim();
+  if (!text) return Number.POSITIVE_INFINITY;
+  const normalized = text.replaceAll("/", "-").replace(" ", "T");
+  const timestamp = Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized) ? normalized : `${normalized}+08:00`);
+  return Number.isFinite(timestamp) ? timestamp : Number.POSITIVE_INFINITY;
+}
 function newestOrderRows(records, maximumOrders) {
   const groups = new Map();
   for (const row of records) {
     const key = orderReference(row);
     if (!key) continue;
-    const group = groups.get(key) || { key, timestamp: 0, rows: [] };
+    const group = groups.get(key) || { key, timestamp: 0, shippingDeadline: Number.POSITIVE_INFINITY, rows: [] };
     group.timestamp = Math.max(group.timestamp, orderTime(row));
+    group.shippingDeadline = Math.min(group.shippingDeadline, shippingDeadlineTime(row));
     group.rows.push(row);
     groups.set(key, group);
   }
   return [...groups.values()]
-    .sort((left, right) => right.timestamp - left.timestamp || right.key.localeCompare(left.key))
+    .sort((left, right) => left.shippingDeadline - right.shippingDeadline
+      || right.timestamp - left.timestamp || right.key.localeCompare(left.key))
     .slice(0, maximumOrders)
     .flatMap((group) => group.rows);
 }
@@ -33,6 +42,8 @@ const workerSafetyCodes = [
   "TRACKING_RESET_PLATFORM_MISMATCH", "TRACKING_RESET_STATUS_CHANGED", "TRACKING_RESET_HAS_TRACKING",
   "TRACKING_RESET_INVENTORY_UNSAFE", "TRACKING_RESET_NOT_PENDING", "TRACKING_RESET_ORDER_CHANGED",
   "TRACKING_RESET_EXTRA_CONFIRMATION_REQUIRED", "TRACKING_RESET_ORDER_NOT_FOUND", "TRACKING_RESET_VERIFY_FAILED",
+  "MESSAGE_REVIEW_ORDER_NOT_FOUND", "MESSAGE_REVIEW_NOT_SAFE", "MESSAGE_REVIEW_TRANSITION_REJECTED",
+  "MESSAGE_REVIEW_VERIFY_FAILED", "MABANG_AUTH_EXPIRED_DURING_MESSAGE_REVIEW",
 ];
 function preserveWorkerSafetyCode(error) {
   const matched = workerSafetyCodes.find((code) => String(error?.message || "").includes(`${code}:`));
@@ -126,6 +137,43 @@ export function createMabangFulfillmentScanSource({ config, shops = config.shops
         recordsByShopId.set(shopId, newestOrderRows(records, Math.max(requested * 20, requested)));
       }
       return recordsByShopId;
+    },
+  };
+}
+
+export function createMabangMessageReviewRecovery({ config, shops = config.shops, rootDir, runWorker = null }) {
+  const executeWorker = runWorker || createMabangWorkerRunner({ rootDir, exportRoot: path.join(rootDir, "storage", "temp") });
+  const workerShops = (shops || []).map((shop) => ({
+    shopId: String(shop.shopId), shopName: String(shop.shopName), platformId: String(shop.platformId),
+  }));
+  const credentials = () => {
+    if (!config.mabangUsername || !config.mabangPassword) {
+      const error = new Error("请配置马帮账号和密码"); error.code = "MABANG_CREDENTIALS_MISSING"; throw error;
+    }
+    return { username: config.mabangUsername, password: config.mabangPassword };
+  };
+  return {
+    async listCandidates({ limit = config.messageReviewRecoveryLimit } = {}) {
+      const result = await executeWorker({ action: "fulfillment-message-review-candidates", ...credentials(),
+        shops: workerShops, limit: Math.max(1, Math.min(Number(limit) || 3, 10)) });
+      return result.records || [];
+    },
+    async recover(orderReference) {
+      try {
+        return await executeWorker({ action: "fulfillment-message-review-recover", ...credentials(),
+          shops: workerShops, orderReference: String(orderReference || "").trim(),
+          commit: "MESSAGE_REVIEW_RECOVERY_CONFIRMED" });
+      } catch (error) { throw preserveWorkerSafetyCode(error); }
+    },
+    async run({ limit = config.messageReviewRecoveryLimit } = {}) {
+      const candidates = await this.listCandidates({ limit });
+      const results = [];
+      for (const candidate of candidates) {
+        if (!candidate.eligible) { results.push({ ...candidate, status: "retained" }); continue; }
+        try { results.push({ ...await this.recover(candidate.platformOrderId), status: "moved_to_pending" }); }
+        catch (error) { results.push({ ...candidate, status: "failed", errorCode: error?.code || "MESSAGE_REVIEW_RECOVERY_FAILED" }); }
+      }
+      return { checked: candidates.length, moved: results.filter((item) => item.status === "moved_to_pending"), results };
     },
   };
 }
@@ -226,6 +274,14 @@ export function createMabangTrackingRecoveryAdapter({ config, rootDir, runWorker
       return { trackingNumber: String(result.trackNumber || "").trim(), orderStatus: String(result.orderStatus || ""),
         channelMatched: Boolean(result.channelMatched), selectedOrderMatched: Boolean(result.selectedOrderMatched),
         shippingRecordPending: String(result.isSLogisticsChannel || "") === "2" || Boolean(result.trackingAcquisitionPending) };
+    },
+    async inspectManualResolution(orderReference) {
+      const result = await executeWorker({
+        action: "fulfillment-inspect-manual-resolution", username: config.mabangUsername, password: config.mabangPassword,
+        orderReference,
+      });
+      return { trackingNumber: String(result.trackNumber || "").trim(),
+        orderStatus: String(result.orderStatus || "").trim(), orderStatusText: String(result.orderStatusText || "").trim() };
     },
     async resetPending(orderReference) {
       try {

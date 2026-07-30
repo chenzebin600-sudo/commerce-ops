@@ -22,6 +22,10 @@ Shopee 运单号长时间处于审批中时，系统会持久化回查；默认�
 
 主系统“发货总览”已升级为运营看板：按北京时间从完整履约数据库统计今日订单、成功率、执行中、预检异常、店铺表现、平均耗时和近 7 日趋势。同一订单的重复尝试只采用最新结果，避免把接口重试误算成多笔订单；运单审批中的订单归入执行中，不计为人工异常。
 
+发货页顶部提供异常雷达和异常中心，统一展示库存不足、多仓、发货时效、运单号延迟和马帮登录异常。严重异常优先显示，并带店铺、订单号、发现时间和建议动作；库存、多仓及运单延迟可直接进入只读重新核对。Windows 通知采用持久化冷却，同一问题不会因服务重启而频繁弹出。
+
+待处理订单会读取马帮订单列表“剩余发货”所使用的原始字段，并按 UTC+8 换算为绝对截止时间；自动扫描和预览优先选择最早到期订单，期限缺失时回退到原付款时间顺序。看板按剩余 24 小时、6 小时、2 小时和已超时分级预警，但任何时效优先都不会绕过库存、多仓、状态、运单号或物流渠道检查。
+
 自动发货的国家、店铺、平台、物流渠道、仓库范围和店铺级开关已迁移到 [fulfillment-shops.json](config/fulfillment-shops.json)。新增国家或店铺时先配置为只扫描，完成深度预检和单笔真实验证后再加入双重自动发货开关。维护说明见 [FULFILLMENT_SHOP_CONFIG.md](docs/FULFILLMENT_SHOP_CONFIG.md)。
 
 更详细的发货规则见 [fulfillment-service/README.md](fulfillment-service/README.md)，每日工作记录见 [docs/DAILY_PROGRESS.md](docs/DAILY_PROGRESS.md)。
@@ -55,7 +59,19 @@ npm.cmd run doctor
 
 ## 常用启动方式
 
-### 调整前端或主系统代码
+### 统一开发模式（推荐）
+
+```powershell
+npm.cmd run dev
+```
+
+一条命令同时启动主系统 `3101`、主系统调度器和自动发货服务 `3112`。主系统及发货服务代码保存后会自动重载，修改前端静态文件后刷新浏览器即可看到变化。按一次 `Ctrl+C` 会停止本次开发模式启动的全部进程。
+
+Windows 也可以双击 `scripts\start-development-mode.cmd`。该入口会等待扫描或真实发货批次安全结束，自动请求管理员权限停止后台正式服务，然后在当前窗口启动主系统和发货服务的代码自动重载。
+
+如果 Windows 后台任务已经占用 3101 或 3112，统一开发模式会拒绝启动重复的发货进程；使用上述一键入口即可先安全停止后台服务。
+
+### 只调整前端或主系统代码
 
 ```powershell
 npm.cmd run dev:main
@@ -71,17 +87,19 @@ npm.cmd run dev:fulfillment
 
 发货服务运行在 `3112` 端口。修改 `.env` 后需要手动重启一次。
 
-### 正常启动主系统
+### 只启动主系统
 
 ```powershell
 npm.cmd run start:main
 ```
 
-### 启动全部主系统服务
+### 正常启动整套系统
 
 ```powershell
 npm.cmd start
 ```
+
+该命令由统一守护程序管理主系统、主系统调度器和自动发货服务。单个服务异常时独立重启；已经存在健康服务时不会再启动重复进程。
 
 ### 查看项目状态
 
@@ -93,14 +111,18 @@ npm.cmd test
 
 Windows PowerShell 如果提示 `npm.ps1` 被禁止执行，直接使用本文中的 `npm.cmd`，不需要修改系统执行策略。
 
-## 发货服务后台运行
+## 整套系统后台运行
 
-自动发货服务可通过 Windows 计划任务在登录后自动启动：
+主系统和自动发货服务可通过一个 Windows 计划任务在登录后自动启动：
 
 1. 双击 `scripts\install-fulfillment-startup.cmd` 完成安装。
 2. 双击 `scripts\status-fulfillment-startup.cmd` 查看状态。
-3. 日志位于 `storage\logs\fulfillment-service.log`。
-4. 如需取消，双击 `scripts\uninstall-fulfillment-startup.cmd`。
+3. 双击 `scripts\restart-system.cmd` 重启整套系统。
+4. 双击 `scripts\stop-system.cmd` 停止后台服务，以便运行统一开发模式。
+5. 统一日志位于 `storage\logs\commerce-ops-system.log`，发货详细日志仍位于 `storage\logs\fulfillment-service.log`。
+6. 如需取消登录自启，双击 `scripts\uninstall-fulfillment-startup.cmd`。
+
+安装器会先创建新的 `ZNWX Commerce Ops` 任务，成功后再移除旧的 `ZNWX Mabang Fulfillment` 任务，避免升级时先失去自动发货守护。
 
 电脑必须保持开机、Windows 用户保持登录且网络正常。关闭浏览器或关闭显示器不会影响服务；电脑睡眠、关机或退出 Windows 登录会停止运行。
 

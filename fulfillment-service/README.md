@@ -27,6 +27,9 @@ FULFILLMENT_TRACKING_RECOVERY_CHECK_SECONDS=300
 FULFILLMENT_TRACKING_RECOVERY_RESET_MINUTES=30
 FULFILLMENT_TRACKING_RECOVERY_DEADLINE_HOURS=24
 FULFILLMENT_TRACKING_RECOVERY_RESET_ENABLED=false
+FULFILLMENT_MESSAGE_REVIEW_RECOVERY_ENABLED=false
+FULFILLMENT_MESSAGE_REVIEW_RECOVERY_LIMIT=3
+FULFILLMENT_MESSAGE_REVIEW_FOLLOW_UP_DELAY_SECONDS=30
 FULFILLMENT_AUTO_FULFILL_ENABLED=false
 FULFILLMENT_AUTO_FULFILL_SHOP_IDS=2021578358,2021485965,2021621760,2021557966
 ```
@@ -39,6 +42,8 @@ FULFILLMENT_AUTO_FULFILL_SHOP_IDS=2021578358,2021485965,2021621760,2021557966
 
 多店铺定时扫描使用一次账号级只读采集，再按稳定店铺 ID 和准确店铺名称隔离记录并分别生成预览，避免每个店铺重复登录和重复导出同一日期范围。共享采集失败时会自动退回原来的逐店扫描；该回退只影响速度，不改变库存、状态、渠道、幂等或真实提交检查。调度状态中的 `lastScanStrategy` 会显示 `shared_account_scan` 或 `per_shop_fallback`，`lastSharedCollectionMs` 是最近一次共享采集耗时。
 
+自动候选选择读取马帮订单列表接口的 `closeDateType / closeDateText / closeDay`，这与页面“剩余发货”列使用同一数据源；服务按 UTC+8 将剩余时间换算为绝对截止时间，并优先处理最早到期订单。没有有效期限时继续按付款时间从新到旧排列。预览订单会返回 `shippingDeadlineAt`、`shippingRemainingMinutes` 和 `shippingDeadlineStatus`。剩余 24 小时进入提示、6 小时进入关注、2 小时及已超时进入紧急预警；时效只改变安全合格订单的处理顺序，不会放宽任何提交检查。
+
 运行 `npm run start:fulfillment`。
 
 开发调试时运行 `npm run dev:fulfillment`。该模式会监听接口代码，保存文件后自动重启服务，无需重复按 `Ctrl+C`；修改 `.env` 后仍需手动重启一次。
@@ -47,13 +52,15 @@ FULFILLMENT_AUTO_FULFILL_SHOP_IDS=2021578358,2021485965,2021621760,2021557966
 
 ## 接口
 
-- `GET /api/fulfillment/dashboard?days=7`，只读运营看板统计；按北京时间返回今日订单、成功/执行中/异常、店铺表现、耗时、趋势和当前恢复队列
+- `GET /api/fulfillment/dashboard?days=7`，只读运营看板统计；按北京时间返回今日订单、成功/执行中/异常、店铺表现、耗时、趋势、当前恢复队列及可操作异常列表
 - `POST /api/fulfillment/previews`，请求体 `{ "limit": 10 }`
 - `POST /api/fulfillment/preflights`，请求体 `{ "orderId": "指定订单号" }`；执行全部底层检查但绝不提交
 - `GET /api/fulfillment/previews/{previewId}`
 - `POST /api/fulfillment/previews/{previewId}/confirm`
 - `GET /api/fulfillment/batches/{batchId}`
 - `POST /api/fulfillment/manual-reviews/recheck`，请求体 `{ "shopId": "店铺ID", "orderId": "订单号" }`；只重新核对并解除已修复订单的人工锁，不会立即提交发货
+- `GET /api/fulfillment/message-review-recoveries/candidates`，只读列出“待审核 + 仅有留言异常 + 有库存 + 单仓”的候选订单
+- `POST /api/fulfillment/message-review-recoveries`，单笔受控转待处理使用 `{ "orderId": "订单号", "confirmation": "MESSAGE_REVIEW_RECOVERY_CONFIRMED" }`；只转状态，不在本次请求中发货
 - `GET /api/fulfillment/tracking-recoveries`，查看跨店铺运单号审批恢复队列
 - `POST /api/fulfillment/tracking-recoveries/check`，单笔受控真实测试使用 `{ "shopId": "店铺ID", "orderId": "指定订单号", "confirmation": "TRACKING_RECOVERY_CONFIRMED" }`；确认标记只授权这一单，不会开启全局自动清空
 
@@ -65,9 +72,13 @@ FULFILLMENT_AUTO_FULFILL_SHOP_IDS=2021578358,2021485965,2021621760,2021557966
 
 Shopee 已接受交运但暂未返回运单号时，订单进入持久化恢复队列。系统默认每 5 分钟逐单回查；当 `FULFILLMENT_TRACKING_RECOVERY_RESET_ENABLED=true` 时，超过 30 分钟仍无运单号的订单会再次确认店铺、平台、待处理状态、空运单号、库存有货以及既有交运记录，然后调用马帮“批量修改订单”的空物流渠道动作。清空成功会先记录不可重复状态，再按固定物流渠道重新交运一次。第二次交运不会再次清空或再次提交；取得运单号后转入“配货中”，超过 24 小时或任何写操作结果不确定时转人工处理。该真实写操作开关默认关闭，须完成一笔受控验证后再开启。
 
+仅因“有留言”进入待审核的订单可以进入独立恢复流程。系统要求异常分类总数必须恰好为 1，且分类必须是“有留言”；同时再次检查已配置店铺、Shopee 平台、空运单号、马帮库存标志 0/0、每个 SKU 库存充足及整单只有一个仓库。通过后只调用马帮异常处理接口转回“待处理”，不会在同一轮直接发货；默认约 30 秒后只针对刚恢复的订单执行一次定向扫描，重新完成正常发货的全部安全检查，通过后才进入自动发货队列。若已有批次或预览占用，定向扫描会延后重试。`FULFILLMENT_MESSAGE_REVIEW_RECOVERY_ENABLED` 默认关闭，先通过只读候选接口和一笔单独确认测试后再开启。
+
 恢复过程中的 `ready_to_resubmit` 表示渠道已清空、等待唯一一次重新交运；`resubmitting` 表示请求可能在途，服务重启后只回查马帮现状，不会盲目重发；`waiting_after_reset` 表示重新交运已接受并继续等待运单号。这三种状态都由数据库保存，电脑或服务重启不会丢失。
 
 看板接口直接按稳定 `orderKey` 从数据库全量统计，在所选时间范围内同一订单只采用最新一次执行结果。当前处于运单恢复队列的订单归类为执行中；已经完成但仍出现在扫描结果里的订单不计入异常。接口只读，不会触发扫描、清空渠道或真实发货。
+
+看板中的 `alerts` 会归一化为库存异常、多个仓库、运单延迟和登录异常，包含严重程度、店铺、订单、发现时间、问题说明和建议动作。运单号等待超过配置的恢复阈值后才进入延迟预警；最近一轮扫描检测到登录、会话、Cookie 或验证码问题时生成账号级登录预警。Windows 通知按问题指纹持久化去重：登录异常默认 30 分钟内只提醒一次，其余业务异常默认 6 小时内只提醒一次，服务重启不会重置冷却时间。
 
 批次查询结果包含 `timings`。批次级记录提交前整批复检、逐单执行和总耗时；订单级记录安全准备、交运请求、等待运单号、转配货请求、状态回查及逐单总耗时，单位均为毫秒。该数据用于判断后续并行优化应落在哪个阶段。
 

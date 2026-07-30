@@ -13,6 +13,9 @@ export function createOpenApiDocument(config) {
       availableQuantity: { type: "number", nullable: true, description: "单 SKU 时的马帮商品库存；多 SKU 或文本库存状态时为 null" },
       outOfStockItemCount: { type: "integer", description: "缺货 SKU 种类数" },
       unknownStockItemCount: { type: "integer", description: "库存未知 SKU 种类数" },
+      shippingDeadlineAt: { type: "string", format: "date-time", nullable: true, description: "马帮最后发货期限，按 UTC+8 解析" },
+      shippingRemainingMinutes: { type: "integer", nullable: true, description: "距离最后发货期限的分钟数；负数表示已超时" },
+      shippingDeadlineStatus: { type: "string", enum: ["unknown", "normal", "due_soon", "urgent", "critical", "overdue"] },
       eligible: { type: "boolean" },
       exclusions: { type: "array", items: { type: "string" } },
     },
@@ -22,6 +25,7 @@ export function createOpenApiDocument(config) {
     properties: {
       previewId: { type: "string", format: "uuid" },
       status: { type: "string", example: "pending" },
+      createdAt: { type: "string", format: "date-time" },
       expiresAt: { type: "string", format: "date-time" },
       shop: { type: "object", properties: { id: { type: "string" }, name: { type: "string" } } },
       channel: { type: "object", properties: { id: { type: "string" }, name: { type: "string" } } },
@@ -64,7 +68,7 @@ export function createOpenApiDocument(config) {
       description: `一个马帮账号下的 ${config.shops.length} 个已配置店铺，每店铺每批最多10单。国家、平台、店铺、渠道、仓库范围和自动发货开关由独立配置文件维护；环境变量继续作为全局开关和店铺白名单。`,
     },
     servers: [{ url: `http://${config.host}:${config.port}`, description: "本机服务" }],
-    tags: [{ name: "状态" }, { name: "看板" }, { name: "定时预览" }, { name: "发货预览与确认" }, { name: "批次" }, { name: "运单恢复" }],
+    tags: [{ name: "状态" }, { name: "看板" }, { name: "定时预览" }, { name: "发货预览与确认" }, { name: "批次" }, { name: "运单恢复" }, { name: "待审核恢复" }, { name: "人工处理" }],
     components: {
       securitySchemes: { bearerAuth: { type: "http", scheme: "bearer", description: "仅在配置 FULFILLMENT_API_TOKEN 后需要" } },
       schemas: {
@@ -114,6 +118,16 @@ export function createOpenApiDocument(config) {
           } }, example: { shopId: "2021578358", orderId: "26072905HDE2JF", confirmation: "TRACKING_RECOVERY_CONFIRMED" } } } },
           responses: { 200: { description: "返回每个店铺和订单本轮处理结果" }, 409: { description: "当前正在扫描或执行发货批次" } } },
       },
+      "/api/fulfillment/tracking-recoveries/acknowledge": {
+        post: { tags: ["运单恢复"], summary: "批量确认人工处理结果已完成（只归档本地状态）", security: [{ bearerAuth: [] }],
+          description: "只接受系统已回查到订单进入配货中或后续状态的 awaiting_manual_confirmation 记录。不会调用马帮接口，不会重新交运。",
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["items"], properties: {
+            items: { type: "array", minItems: 1, maxItems: 20, items: { type: "object", required: ["shopId", "orderId"], properties: {
+              shopId: { type: "string" }, orderId: { type: "string" },
+            } } },
+          } }, example: { items: [{ shopId: "2021578358", orderId: "26072905HDE2JF" }] } } } },
+          responses: { 200: { description: "返回已归档和状态不符合的订单；本操作不修改马帮" }, 400: { description: "订单列表无效" } } },
+      },
       "/api/fulfillment/manual-reviews/recheck": {
         post: { tags: ["人工处理"], summary: "重新核对换仓后的订单并解除人工处理锁（不提交发货）", security: [{ bearerAuth: [] }],
           requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["shopId", "orderId"], properties: {
@@ -121,6 +135,20 @@ export function createOpenApiDocument(config) {
           } } } } },
           responses: { 200: { description: "仓库、库存、状态、渠道和空运单号均通过，人工锁已解除；本次不会提交发货" },
             404: { description: "没有找到对应人工处理订单" }, 409: { description: "仍为多仓、状态未恢复、深度预检失败或系统忙" } } },
+      },
+      "/api/fulfillment/message-review-recoveries/candidates": {
+        get: { tags: ["待审核恢复"], summary: "只读检查仅因留言进入待审核的安全候选", security: [{ bearerAuth: [] }],
+          parameters: [{ name: "limit", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 10, default: 3 } }],
+          description: "不改变订单状态。只返回异常分类恰好为一项且为有留言、库存标志0/0、SKU库存充足、单仓、空运单号并属于已配置店铺的订单。",
+          responses: { 200: { description: "返回候选和排除原因" } } },
+      },
+      "/api/fulfillment/message-review-recoveries": {
+        post: { tags: ["待审核恢复"], summary: "将一笔安全的留言待审核订单转回待处理", security: [{ bearerAuth: [] }],
+          description: "这是马帮写操作，但只改变订单状态，不提交发货。转状态前重新执行全部候选检查，转状态后回查必须为待处理；订单从下一轮扫描才可能进入正常发货。",
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["orderId", "confirmation"], properties: {
+            orderId: { type: "string" }, confirmation: { type: "string", enum: ["MESSAGE_REVIEW_RECOVERY_CONFIRMED"] },
+          } }, example: { orderId: "填写待测试订单号", confirmation: "MESSAGE_REVIEW_RECOVERY_CONFIRMED" } } } },
+          responses: { 200: { description: "已转为待处理并完成回查" }, 400: { description: "确认标记无效" }, 409: { description: "安全检查未通过、马帮拒绝或系统忙" } } },
       },
       "/api/fulfillment/previews": {
         post: {
