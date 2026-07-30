@@ -1,0 +1,1 @@
+import{a as e,n as t,r as n,t as r}from"./styles-CCf49ppo.js";var i=n(),a=e(t(),1),o=null,s=null;function c({element:e,authorizedFetch:t}){s!==e&&(o?.unmount(),o=(0,i.createRoot)(e),s=e),o?.render((0,a.jsx)(r,{authorizedFetch:t,embedded:!0}))}export{c as mountMabangListing};

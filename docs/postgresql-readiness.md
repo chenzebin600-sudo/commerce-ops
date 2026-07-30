@@ -2,7 +2,7 @@
 
 ## Scope and snapshot
 
-This E2 report prepares a future migration; it does not install PostgreSQL, create PostgreSQL tables, connect a driver, dual-write, or modify formal SQLite data. The read-only snapshot was taken from the configured formal database on 2026-07-16 after `PRAGMA integrity_check = ok`.
+This E2 report prepares a future migration; it does not install PostgreSQL, create PostgreSQL tables, connect a driver, dual-write, or modify formal SQLite data. Base row-count evidence was captured from the configured formal database on 2026-07-16 after `PRAGMA integrity_check = ok`; the additive schema inventory was reconciled through formal migration 022 on 2026-07-28. Row counts are planning evidence rather than a live operational dashboard.
 
 ## Current tables
 
@@ -64,11 +64,34 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 | `growth_mapping_events` | 0 | mapping business history | `id` | indexed mapping type, mapping ID and occurrence time |
 | `growth_shop_sku_observations` | 0 | historical observed facts | `id` | shop/product/batches `RESTRICT`; unique observation key |
 | `growth_shop_sku_coverage_snapshots` | 0 | reserved current-online facts | `id` | shop/product `RESTRICT`; unique shop, product, source and observation time |
+| `growth_country_mapping_sets` | 1 | versioned growth configuration | `id` | unique version and content SHA-256; partial unique active set |
+| `growth_warehouse_country_mappings` | 0 | confirmed warehouse-country configuration | `id` | mapping set `RESTRICT`; unique set, source system and normalized warehouse |
+| `growth_rule_sets` | 1 | versioned deterministic rules | `id` | unique version and content SHA-256; partial unique active set |
+| `growth_analysis_runs` | 0 | immutable growth analysis run history | `id` | inventory batch, rule set and country map `RESTRICT`; unique input fingerprint |
+| `growth_sku_daily_metrics` | 0 | published global/country SKU projections | `id` | run/product `RESTRICT`; unique run, scope and normalized SKU |
+| `growth_sku_warehouse_daily_metrics` | 0 | warehouse-grained SKU supply projections | `id` | run/product `RESTRICT`; unique run, country, warehouse and normalized SKU |
+| `growth_shop_daily_metrics` | 0 | published shop-level projections | `id` | run/shop/country map `RESTRICT`; unique run plus shop |
+| `growth_shop_sku_daily_metrics` | 0 | published shop-SKU projections | `id` | run/shop/product `RESTRICT`; unique run, shop and normalized SKU |
+| `growth_signals` | 0 | deterministic opportunity, risk and evidence signals | `id` | run/shop `RESTRICT`; unique run plus dedupe key |
+| `growth_focus_items` | 0 | durable manager operation-task lifecycle | `id` | run/signal/shop `RESTRICT`; one active task per task key; optimistic revision |
+| `growth_focus_item_events` | 0 | immutable operation-task event history | `id` | focus item/signal/run `RESTRICT`; unique item plus revision and idempotency key |
 | `mabang_sku_image_batches` | 0 | manually triggered Mabang image collection history | `id` | account and optional source batch `RESTRICT`; resumable mode/status counters |
 | `mabang_sku_image_checkpoints` | 0 | per-page image collection checkpoints | `id` | batch `CASCADE`; unique batch plus page number |
 | `mabang_sku_image_discoveries` | 0 | SKU/image discovery evidence and download state | `id` | batch `CASCADE`, asset `SET NULL`; row SKU remains authoritative |
+| `mabang_sku_image_sync_runs` | 0 | full-account Mabang image synchronization parent runs | `id` | account `RESTRICT`; durable next-page cursor and aggregate segment counters |
+| `mabang_sku_image_discovery_images` | 0 | every image candidate discovered for one SKU row | `id` | discovery `CASCADE`, asset `SET NULL`; unique discovery plus source URL hash |
 | `product_media_assets` | 0 | shared product image metadata | `id` | unique SHA-256 and relative path; physical bytes remain in file storage |
 | `product_media_links` | 0 | cross-country SKU-to-asset suggestions and confirmations | `id` | asset/product `RESTRICT`; unique asset plus product |
+| `foundation_source_systems` | 6 | unified source registry | `code` | stable ERP, marketplace and internal source identities |
+| `foundation_integration_accounts` | 2 | credential-reference registry | `id` | source system `RESTRICT`; stores references only, never credential values |
+| `foundation_account_capabilities` | 10 | account capability registry | `(account_id, capability_code)` | account `CASCADE`; explicit read/write capability state |
+| `foundation_owners` | 22 | unified owner master | `id` | source system `RESTRICT`; unique source and external owner key |
+| `foundation_warehouses` | 29 | unified warehouse master | `id` | unique canonical key; confirmed, excluded or review-required identity state |
+| `foundation_identity_links` | 24983 | cross-module identity references | `id` | unique source system, entity type and normalized external key |
+| `foundation_source_runs` | 4 | source execution projection | `id` | source/account `RESTRICT`/`SET NULL`; unique domain source reference |
+| `foundation_tasks` | 214 | unified task projection and orchestration | `id` | optional account, owner, store and warehouse references; unique domain reference and idempotency key |
+| `foundation_task_events` | 214 | immutable unified task history | `id` | task `CASCADE`; unique task version and idempotency key |
+| `foundation_task_leases` | 0 | task execution leases | `task_id` | task `CASCADE`; unique lease token and checked expiry |
 
 ## Type conversion details
 
@@ -80,7 +103,9 @@ Product field override values, detail-field preferences, and product AI input/ou
 
 Listing search keywords, selling points, usage scenarios, platform attributes, variants, pricing, media, logistics, compliance, validation results, AI adoption metadata, AI image context/prompt plans, and future publication request/response payloads are JSON text in SQLite and must become validated `jsonb`. The active listing identity is the partial unique key `(product_sku_id, platform, country, shop_key) WHERE deleted_at IS NULL`.
 
-Growth radar source scope/header/redaction documents, raw row values/types, mapping candidates, quality context, shop category scope, and mapping event snapshots are also JSON text and must become validated `jsonb`. Preserve the explicit `historical_observed` and reserved `current_online` semantic checks during conversion.
+Growth radar source scope/header/redaction documents, raw row values/types, mapping candidates, quality context, shop category scope, and mapping event snapshots are also JSON text and must become validated `jsonb`. V2 rule parameters, run quality summaries, warehouse mapping evidence, SKU metric evidence, shop metric evidence, shop-SKU metric evidence, signal evidence, focus-item evidence snapshots and focus-event evidence snapshots must also become validated `jsonb`. Preserve the explicit `historical_observed` and reserved `current_online` semantic checks during conversion.
+
+Foundation source, account, capability, owner, warehouse, identity, source-run and task evidence documents are JSON text and must become validated `jsonb`. Credential ownership remains in the original account profile or sidecar; `foundation_integration_accounts` contains only typed references and bounded non-secret metadata. Preserve task idempotency keys, state versions, immutable events, lease uniqueness and the confirmed/excluded identity states.
 
 Mabang image collection interface profiles are redacted JSON text and must become `jsonb`. The image resource layer stores only metadata and a safe relative path in the database; image bytes remain in the unified file layer. Preserve the unique SHA-256 constraint and the `(asset_id, product_id)` link identity.
 
@@ -90,15 +115,19 @@ Convert `*_at`, `lease_until`, and file-created/modified timestamps to `timestam
 
 ### Boolean fields
 
-Convert account/DingTalk/task flags, lifecycle `truncated`, `suggest_quarantine`, and `suggest_cleanup` from checked 0/1 integers to `boolean`. Reconcile with `value IN (0,1)` before import.
+Convert account/DingTalk/task flags, lifecycle `truncated`, `suggest_quarantine`, and `suggest_cleanup` from checked 0/1 integers to `boolean`. Growth Radar V2 `is_source_high_performance`, `is_new`, `eligible_saleable`, `eligible_high_performance`, `is_key_performer`, `is_growth_focus_candidate`, and task lifecycle `is_hit_in_latest_run` are also checked 0/1 integers and must become `boolean`. Reconcile with `value IN (0,1)` before import.
 
-Migration 015 introduces no new persisted boolean flag. If a PostgreSQL adapter later derives boolean state from image batch, discovery, asset, or link statuses, it must keep the status columns authoritative and must not silently collapse their multi-state semantics.
+Migrations 015 and 017 introduce no new persisted boolean flag. If a PostgreSQL adapter later derives boolean state from image run, batch, discovery, image candidate, asset, or link statuses, it must keep the status columns authoritative and must not silently collapse their multi-state semantics.
 
 ### Enums and checks
 
 Keep current status/type checks as PostgreSQL `CHECK` constraints in the first migration. Native enums can wait until values stabilize. Preserve length checks for deletion actor/reason and 64-character SHA-256 checks.
 
+For Growth Radar V2, preserve the partial unique constraints that allow only one active country mapping set and one active rule set. Keep analysis results immutable by run, retain `GRV2-METRICS-1.2.0` as the approved successor rules contract, and recreate all run-to-projection `RESTRICT` foreign keys. Preserve the country-plus-warehouse-plus-SKU grain for supply projections and task evidence. Preserve the focus-task partial unique constraint for active task keys, optimistic `revision`, the immutable one-event-per-revision history, and per-task idempotency keys. `analysis_date` and rule effective dates should become `date`; event, task and lifecycle timestamps should become `timestamptz`. Decimal quantities, rates, percentiles, and direct source sellable days should remain exact `numeric`, not floating-point approximations.
+
 For migration 015, convert collection and asset timestamps to `timestamptz`, byte counts to `bigint`, and the redacted interface profile to `jsonb`. Preserve the checkpoint `(batch_id, page_number)`, discovery row identity, asset SHA-256, safe relative path, storage file ID, and asset/product link uniqueness. Recreate `CASCADE`, `SET NULL`, and `RESTRICT` foreign-key behavior explicitly; do not store image binary content in SQLite or PostgreSQL.
+
+For migration 017, preserve the full-sync parent cursor and the unique `(sync_run_id, segment_no)` child-batch identity. Convert synchronization and image-candidate timestamps to `timestamptz`; keep counters as non-negative integers or `bigint` after sizing from production volume. Preserve the unique `(discovery_id, source_url_hash)` image-candidate identity and the exact `CASCADE`/`SET NULL` relationships. Image bytes remain in controlled file storage; PostgreSQL stores only metadata, SHA-256 identities, state, and relations.
 
 ## SQLite dialect inventory
 
@@ -125,7 +154,7 @@ Runtime-only dialect operations are now located under `lib/data/sqlite`; `script
 ## Migration sequence
 
 1. Freeze schema changes and create a verified SQLite backup plus file manifest.
-2. Build PostgreSQL migrations from the fifteen SQLite migrations, preserving keys, checks, indexes, and delete behavior.
+2. Build PostgreSQL migrations from the twenty-one recorded SQLite migrations through 022, preserving keys, checks, indexes, and delete behavior.
 3. Create PostgreSQL adapters behind the existing Provider/Repository contracts; keep SQLite as the active provider.
 4. Import reference/config tables: accounts and DingTalk configs, preserving encrypted bytes.
 5. Import task/run/event history, then export/file and lifecycle relationships in FK order.

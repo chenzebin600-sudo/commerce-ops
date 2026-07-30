@@ -14,6 +14,7 @@ import {
 } from "./lib/app-access.mjs";
 import { loadLocalEnv } from "./lib/env.mjs";
 import { createMabangWorkerRunner } from "./lib/mabang-worker-runner.mjs";
+import { createMabangDataPersistenceService } from "./lib/mabang-data/persistence-service.mjs";
 import { openCommerceDataAccess } from "./lib/data/data-access.mjs";
 import { createMabangSchedulerApi } from "./lib/mabang-scheduler/api.mjs";
 import { createAdServiceProxy, resolveAdServiceProxyConfig } from "./lib/ad-service-proxy.mjs";
@@ -65,6 +66,13 @@ import { resolveLifecyclePolicy } from "./lib/files/file-lifecycle-policy.mjs";
 import { FileReviewService, resolveFileReviewPolicy } from "./lib/files/file-review-service.mjs";
 import { createFileReviewApi } from "./lib/files/file-review-api.mjs";
 import { createAdServiceManager } from "./lib/ad-service-manager.mjs";
+import { createMabangListingServiceManager } from "./lib/mabang-listing-service-manager.mjs";
+import {
+  createMabangListingProxy,
+  resolveMabangListingProxyConfig,
+} from "./lib/mabang-listing-proxy.mjs";
+import { resolveMabangListingInternalToken } from "./lib/mabang-listing-token.mjs";
+import { createMabangWpsAssistantManager } from "./lib/mabang-wps-assistant-manager.mjs";
 import { resolveChromeRuntime } from "./lib/chrome-runtime.mjs";
 import { resolveRuntimeConfig, runtimeEnvironment } from "./lib/runtime-config.mjs";
 import { resolveAdServiceInternalToken } from "./lib/ad-service-token.mjs";
@@ -82,17 +90,22 @@ import { ProductImageGenerationService } from "./lib/product-center/product-imag
 import { GrowthRadarService } from "./lib/growth-radar/growth-radar-service.mjs";
 import { createGrowthRadarApi } from "./lib/growth-radar/growth-radar-api.mjs";
 import { createGrowthRadarAccessPolicy } from "./lib/growth-radar/growth-radar-access-policy.mjs";
+import { GrowthRadarV2Service } from "./lib/growth-radar/v2/growth-radar-v2-service.mjs";
+import { createGrowthRadarV2Api } from "./lib/growth-radar/v2/growth-radar-v2-api.mjs";
+import { SalesAssortmentService } from "./lib/sales-assortment/sales-assortment-service.mjs";
+import { createSalesAssortmentApi } from "./lib/sales-assortment/sales-assortment-api.mjs";
 import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
 import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
 import { MODULE_IDS } from "./lib/contracts/module-ids.mjs";
 import { createIdentifier } from "./lib/contracts/identifiers.mjs";
-import { MabangInventoryBrowserSession } from "./lib/mabang-images/browser-session.mjs";
+import { MabangInventoryWorkerSession } from "./lib/mabang-images/worker-session.mjs";
 import { MabangImageAssetService } from "./lib/mabang-images/image-assets.mjs";
 import { createMabangImageAuditRecord, MabangSkuImageCollectorService } from "./lib/mabang-images/service.mjs";
 import { createMabangImageAccessPolicy } from "./lib/mabang-images/access-policy.mjs";
 import { createMabangImageApi } from "./lib/mabang-images/api.mjs";
 import { createFulfillmentDashboardProxy } from "./lib/fulfillment-dashboard-proxy.mjs";
+import { decryptSecret } from "./lib/mabang-scheduler/crypto.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -174,6 +187,51 @@ const proxyAdServiceRequest = createAdServiceProxy({
 const proxyFulfillmentDashboard = createFulfillmentDashboardProxy({
   baseUrl: process.env.FULFILLMENT_DASHBOARD_BASE_URL || "http://127.0.0.1:3112",
   apiToken: process.env.FULFILLMENT_API_TOKEN || "",
+});
+const mabangListingProxyConfig = resolveMabangListingProxyConfig(runtimeEnv);
+const mabangListingInternalToken = await resolveMabangListingInternalToken({
+  configuredToken: process.env.MABANG_LISTING_INTERNAL_TOKEN,
+  tokenFile: runtimeConfig.mabangListingTokenFile,
+});
+const mabangListingPython = resolvePythonRuntime({
+  appRoot: runtimeConfig.appRoot,
+  env: {
+    ...runtimeEnv,
+    PYTHON_EXECUTABLE: runtimeConfig.pythonExecutable,
+    PYTHON_VENV_DIR: runtimeConfig.pythonVenvDir,
+  },
+  requiredModules: ["requests"],
+});
+const mabangListingServiceManager = createMabangListingServiceManager({
+  mode: runtimeConfig.mabangListingServiceMode,
+  serviceDir: runtimeConfig.mabangListingServiceDir,
+  storageRoot: runtimeConfig.mabangListingStorageRoot,
+  baseUrl: mabangListingProxyConfig.baseUrl,
+  host: mabangListingProxyConfig.host,
+  port: mabangListingProxyConfig.port,
+  internalToken: mabangListingInternalToken,
+  pythonExecutable: mabangListingPython.ok
+    ? mabangListingPython.executable
+    : null,
+  env: runtimeEnv,
+});
+const proxyMabangListingRequest = createMabangListingProxy({
+  baseUrl: mabangListingProxyConfig.baseUrl,
+  internalToken: mabangListingInternalToken,
+});
+const mabangWpsPython = resolvePythonRuntime({
+  appRoot: runtimeConfig.appRoot,
+  env: {
+    ...runtimeEnv,
+    PYTHON_EXECUTABLE: runtimeConfig.pythonExecutable,
+    PYTHON_VENV_DIR: runtimeConfig.pythonVenvDir,
+  },
+  requiredModules: ["openpyxl", "pandas", "requests", "tkinter"],
+});
+const mabangWpsAssistantManager = createMabangWpsAssistantManager({
+  serviceDir: runtimeConfig.mabangListingServiceDir,
+  pythonExecutable: mabangWpsPython.ok ? mabangWpsPython.executable : null,
+  env: runtimeEnv,
 });
 const chromeAllowedHosts = resolveAllowedHosts(
   Object.values(DEFAULT_CHROME_ALLOWED_HOSTS_BY_PLATFORM).flat(),
@@ -355,27 +413,65 @@ const handleGrowthRadarApi = createGrowthRadarApi({
   accessPolicy: growthRadarAccessPolicy,
   maxUploadBytes: fileStorageConfig.maxUploadBytes,
 });
+const growthRadarV2Service = new GrowthRadarV2Service({
+  repository: dataAccess.repositories.growthRadarV2,
+});
+const handleGrowthRadarV2Api = createGrowthRadarV2Api({
+  service: growthRadarV2Service,
+  accessPolicy: growthRadarAccessPolicy,
+});
+const salesAssortmentService = new SalesAssortmentService({
+  repository: dataAccess.repositories.salesAssortment,
+});
+const handleSalesAssortmentApi = createSalesAssortmentApi({
+  service: salesAssortmentService,
+  accessPolicy: growthRadarAccessPolicy,
+});
+const runMabangWorker = createMabangWorkerRunner({
+  rootDir: runtimeConfig.appRoot,
+  exportRoot: fileStorageConfig.tempRoot,
+  runtimeConfig,
+  env: runtimeEnv,
+});
 const mabangImageRoot = path.join(fileStorageConfig.storageRoot, "product-media");
+const mabangImageMaxBytes = Number(process.env.MABANG_IMAGE_MAX_BYTES || 10 * 1024 * 1024);
+const mabangImageMaxPages = Number(process.env.MABANG_IMAGE_SAFE_MAX_PAGES || 10000);
+const mabangImageMaxSkus = Number(process.env.MABANG_IMAGE_MAX_SKUS_PER_BATCH || 100);
+const mabangImageFullSyncSegmentSkus = Number(process.env.MABANG_IMAGE_FULL_SYNC_SEGMENT_SKUS || 500);
 const mabangImageAssetService = new MabangImageAssetService({
   repository: dataAccess.repositories.mabangImages,
   tempRoot: fileStorageConfig.tempRoot,
   imageRoot: mabangImageRoot,
-  maxBytes: Number(process.env.MABANG_IMAGE_MAX_BYTES || 10 * 1024 * 1024),
+  maxBytes: mabangImageMaxBytes,
 });
 const mabangImageService = new MabangSkuImageCollectorService({
   repository: dataAccess.repositories.mabangImages,
   assetService: mabangImageAssetService,
   accountRepository: dataAccess.repositories.accounts,
-  browserFactory: async () => new MabangInventoryBrowserSession({
-    targetProvider: getChromeTargets,
-    connectCdp,
-    maxPages: Number(process.env.MABANG_IMAGE_SAFE_MAX_PAGES || 10000),
-    preferredTargetId: process.env.MABANG_IMAGE_TARGET_ID || null,
-  }),
-  concurrency: Number(process.env.MABANG_IMAGE_DOWNLOAD_CONCURRENCY || 4),
+  browserFactory: async ({ accountId, startPage = 1, maxSkus = mabangImageMaxSkus }) => {
+    const profile = dataAccess.repositories.accounts.get(accountId, { includeSecret: true });
+    if (!profile?.encryptedPassword) {
+      const error = new Error("所选马帮账号没有可用的加密密码。");
+      error.code = "MABANG_ACCOUNT_CREDENTIALS_MISSING";
+      error.status = 409;
+      throw error;
+    }
+    return new MabangInventoryWorkerSession({
+      runWorker: runMabangWorker,
+      username: profile.username,
+      password: decryptSecret(profile.encryptedPassword),
+      maxPages: mabangImageMaxPages,
+      maxSkus,
+      startPage,
+      maxImageBytes: mabangImageMaxBytes,
+      onVerification: (status, message) => dataAccess.repositories.accounts.updateVerification(accountId, status, message),
+    });
+  },
+  concurrency: Number(process.env.MABANG_IMAGE_DOWNLOAD_CONCURRENCY || 8),
   retryAttempts: Number(process.env.MABANG_IMAGE_RETRY_ATTEMPTS || 4),
-  maxPages: Number(process.env.MABANG_IMAGE_SAFE_MAX_PAGES || 10000),
-  maxSkusPerBatch: Number(process.env.MABANG_IMAGE_MAX_SKUS_PER_BATCH || 100),
+  maxPages: mabangImageMaxPages,
+  maxSkusPerBatch: mabangImageMaxSkus,
+  fullSyncSegmentSkus: mabangImageFullSyncSegmentSkus,
   audit: async (event) => auditService.recordSafely(createMabangImageAuditRecord(event)),
 });
 await mabangImageService.recoverInterruptedBatches();
@@ -384,6 +480,7 @@ const handleMabangImageApi = createMabangImageApi({
   repository: dataAccess.repositories.mabangImages,
   accountRepository: dataAccess.repositories.accounts,
   imageRoot: mabangImageRoot,
+  maxImageBytes: mabangImageMaxBytes,
   accessPolicy: createMabangImageAccessPolicy(process.env),
 });
 auditService.recordSafely({
@@ -394,11 +491,10 @@ auditService.recordSafely({
   errorSummary: startupTempCleanup.errors ? "Temporary file cleanup completed with errors" : null,
   metadata: { cleanupDeleted: startupTempCleanup.removed, result: startupTempCleanup.errors ? "partial" : "complete" },
 });
-const runMabangWorker = createMabangWorkerRunner({
-  rootDir: runtimeConfig.appRoot,
-  exportRoot: fileStorageConfig.tempRoot,
-  runtimeConfig,
-  env: runtimeEnv,
+const mabangDataPersistence = createMabangDataPersistenceService({
+  growthRadarService,
+  runWorker: runMabangWorker,
+  tempRoot: fileStorageConfig.tempRoot,
 });
 const lifecyclePolicy = resolveLifecyclePolicy(process.env);
 const lifecycleRepository = dataAccess.repositories.fileLifecycle;
@@ -483,6 +579,7 @@ function paginateMabangTask(task, { page = 1, pageSize = 50, query = "", field =
     kind: task.kind,
     columns: task.columns,
     summary: task.summary,
+    persistence: task.persistence || null,
     total: filtered.length,
     unfilteredTotal: task.records.length,
     page: safePage,
@@ -2282,6 +2379,12 @@ async function handleApi(req, res, url) {
   const auditHandled = await handleAuditApi(req, res, url);
   if (auditHandled) return true;
 
+  const growthRadarV2Handled = await handleGrowthRadarV2Api(req, res, url);
+  if (growthRadarV2Handled) return true;
+
+  const salesAssortmentHandled = await handleSalesAssortmentApi(req, res, url);
+  if (salesAssortmentHandled) return true;
+
   const growthRadarHandled = await handleGrowthRadarApi(req, res, url);
   if (growthRadarHandled) return true;
 
@@ -2305,6 +2408,50 @@ async function handleApi(req, res, url) {
 
   if (url.pathname.startsWith("/api/ads/")) {
     return proxyAdServiceRequest(req, res, url, "api");
+  }
+
+  if (url.pathname === "/api/mabang-listing/service/status") {
+    if (req.method !== "GET" && req.method !== "POST") {
+      return json(res, 405, { success: false, message: "Method not allowed" });
+    }
+    const status = await mabangListingServiceManager.ensure();
+    return json(res, status.ok ? 200 : 503, {
+      success: status.ok,
+      ...status,
+    });
+  }
+
+  if (url.pathname.startsWith("/api/mabang-listing/")) {
+    const status = await mabangListingServiceManager.ensure();
+    if (!status.ok) {
+      return json(res, 503, {
+        success: false,
+        message: status.error || "Mabang listing service is unavailable",
+        errorCode: status.errorCode,
+      });
+    }
+    return proxyMabangListingRequest(req, res, url);
+  }
+
+  if (url.pathname === "/api/mabang-wps/status") {
+    if (req.method !== "GET") {
+      return json(res, 405, { ok: false, error: "Method not allowed" });
+    }
+    return json(res, 200, { ok: true, ...mabangWpsAssistantManager.status() });
+  }
+
+  if (url.pathname === "/api/mabang-wps/launch") {
+    if (req.method !== "POST") {
+      return json(res, 405, { ok: false, error: "Method not allowed" });
+    }
+    if (!isLoopbackBindHost(req.socket?.remoteAddress)) {
+      return json(res, 403, {
+        ok: false,
+        error: "WPS assistant can only be opened from this computer",
+      });
+    }
+    const result = mabangWpsAssistantManager.launch();
+    return json(res, result.ok ? 200 : 503, result);
   }
 
   const schedulerHandled = await handleMabangSchedulerApi(req, res, url);
@@ -2413,6 +2560,31 @@ async function handleApi(req, res, url) {
         endDate: body.endDate,
         orderFilters: kind === "orders" ? body.orderFilters : undefined,
       });
+      const collectedAt = new Date().toISOString();
+      let persistence;
+      try {
+        persistence = await mabangDataPersistence.persistCollected({
+          kind,
+          columns: Array.isArray(result.columns) ? result.columns : [],
+          records: Array.isArray(result.records) ? result.records : [],
+          summary: result.summary || {},
+          collectedAt,
+          sourceScope: kind === "orders"
+            ? {
+                queryType: "manual_collect",
+                dateFrom: body.startDate || null,
+                dateTo: body.endDate || null,
+              }
+            : {
+                queryType: "manual_collect",
+                snapshotAt: result.summary?.cacheUpdateTime || collectedAt,
+              },
+          actorLabel: "mabang_manual_collect",
+        });
+      } catch (error) {
+        error.persistenceStage = "persist_collected_data";
+        throw error;
+      }
       const taskId = createIdentifier();
       const task = {
         id: taskId,
@@ -2420,18 +2592,31 @@ async function handleApi(req, res, url) {
         columns: Array.isArray(result.columns) ? result.columns : [],
         records: Array.isArray(result.records) ? result.records : [],
         summary: result.summary || {},
+        persistence,
         message: result.message || "采集完成。",
         createdAt: Date.now(),
       };
       mabangTasks.set(taskId, task);
       pruneMabangTasks();
+      req.auditContext?.annotate({
+        metadata: {
+          kind,
+          persistenceStatus: persistence.status,
+          sourceBatchId: persistence.batchId,
+          persistedRows: persistence.rowCount,
+        },
+      });
       return json(res, 200, {
         ok: true,
         message: task.message,
         ...paginateMabangTask(task),
       });
     } catch (error) {
-      req.auditContext?.annotate({ errorStage: kind === "inventory" ? "fetch_inventory" : "fetch_orders", errorCode: error.code || "MABANG_FETCH_FAILED", errorSummary: error });
+      req.auditContext?.annotate({
+        errorStage: error.persistenceStage || (kind === "inventory" ? "fetch_inventory" : "fetch_orders"),
+        errorCode: error.code || (error.persistenceStage ? "MABANG_PERSIST_FAILED" : "MABANG_FETCH_FAILED"),
+        errorSummary: error,
+      });
       return json(res, 400, { ok: false, error: error.message });
     }
   }
@@ -2789,6 +2974,8 @@ async function shutdown() {
   const forceExit = setTimeout(() => process.exit(0), 3000);
   forceExit.unref();
   await mabangImageService.shutdown({ timeoutMs: 2000 });
+  await mabangWpsAssistantManager.stop();
+  await mabangListingServiceManager.stop();
   await adServiceManager.stop();
   if (ownedChromeChild && ownedChromeChild.exitCode == null && !ownedChromeChild.killed) ownedChromeChild.kill();
   dataAccess.close();

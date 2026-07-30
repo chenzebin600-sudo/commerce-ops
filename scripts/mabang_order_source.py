@@ -128,7 +128,8 @@ class WPSLogger:
 logger = WPSLogger()
 TARGET_FIELDS = ['订单编号', '交易编号', '交运时间', '物流渠道', '店铺名', '平台', '店长', '订单状态', '仓库', 'SKU总数量', '所属地区（省/州）', '所属城市', 'SKU', '商品数量', '商品库存', '商品中文名称', '货运单号', '付款方式', 'SKU明细', '客户账号', '客户姓名', '邮寄地址1(按逗号分隔导出2列)', '商品销售单价', '原始商品销售单价', '商品总金额', '原始运费金额', '运费收入', '原始商品总金额', '订单原始总金额', '订单总金额', '优惠金额（人民币）', '优惠金额（原始货币）', '订单核算金额（人民币）', '订单核算金额（原始货币）', '汇率（原始货币）', '订单商品名称', '采购在途量', '付款时间', '平台SKU', '买家自选物流方式', '最后发货期限', '订单自定义分类', '发货时间', '是否转WMS发货', '退货原因', '退货备注', '作废时间', '作废前状态', '电话1', '电话2', '订单备注', '平台订单仓库', '是否测评', '测评费用', '邮政编码', 'tiktok样品订单', '签收时间', '实付金额']
 NUMERIC_FIELDS = ['商品总金额', '原始商品总金额', '订单核算金额（原始货币）']
-REQUIRED_AMOUNT_FIELDS = ['商品总金额', '原始商品总金额']
+REQUIRED_AMOUNT_FIELDS = ['商品总金额']
+ORIGINAL_AMOUNT_ZERO_EVIDENCE_FIELDS = ['原始商品销售单价', '商品总金额', '订单原始总金额', '订单总金额', '订单核算金额（原始货币）']
 COMMON_FILL_FIELDS = ['订单编号', '交易编号', '交运时间', '物流渠道', '店铺名', '平台', '店长', '订单状态', 'SKU总数量', '所属地区（省/州）', '所属城市', '货运单号', '付款方式', '客户账号', '客户姓名', '邮寄地址1(按逗号分隔导出2列)', '商品总金额', '原始商品总金额', '原始运费金额', '运费收入', '订单原始总金额', '订单总金额', '优惠金额（人民币）', '优惠金额（原始货币）', '订单核算金额（人民币）', '订单核算金额（原始货币）', '汇率（原始货币）', '付款时间', '平台SKU', '买家自选物流方式', '最后发货期限', '订单自定义分类', '发货时间', '是否转WMS发货', '退货原因', '退货备注', '作废时间', '作废前状态', '电话1', '电话2', '订单备注', '平台订单仓库', '是否测评', '测评费用', '邮政编码', 'tiktok样品订单', '签收时间', '实付金额']
 FALLBACK_EXPORT_FIELD_MAP = [('订单编号', 'uq101'), ('交易编号', 'uq102'), ('交运时间', 'uq219'), ('物流渠道', 'uq128'), ('店铺名', 'uq135'), ('平台', 'uq205'), ('店长', 'uq172'), ('订单状态', 'uq136'), ('仓库', 'uq137'), ('SKU总数量', 'uq202'), ('所属地区（省/州）', 'uq108'), ('所属城市', 'uq109'), ('SKU', 'uq119'), ('商品数量', 'uq121'), ('商品库存', 'uq142'), ('商品中文名称', 'uq158'), ('货运单号', 'uq130'), ('付款方式', 'uq268'), ('SKU明细', 'uq254'), ('客户账号', 'uq103'), ('客户姓名', 'uq104'), ('邮寄地址1(按逗号分隔导出2列)', 'uq257'), ('商品销售单价', 'uq122'), ('原始商品销售单价', 'uq123'), ('商品总金额', 'uq124'), ('原始运费金额', 'uq125'), ('运费收入', 'uq126'), ('原始商品总金额', 'uq146'), ('订单原始总金额', 'uq147'), ('订单总金额', 'uq148'), ('优惠金额（人民币）', 'uq244'), ('优惠金额（原始货币）', 'uq245'), ('订单核算金额（人民币）', 'uq251'), ('订单核算金额（原始货币）', 'uq252'), ('汇率（原始货币）', 'uq259'), ('订单商品名称', 'uq120'), ('采购在途量', 'uq233'), ('付款时间', 'uq115'), ('平台SKU', 'uq196'), ('买家自选物流方式', 'uq129'), ('最后发货期限', 'uq258'), ('订单自定义分类', 'uq226'), ('发货时间', 'uq149'), ('是否转WMS发货', 'uq316'), ('退货原因', 'uq174'), ('退货备注', 'uq206'), ('作废时间', 'uq241'), ('作废前状态', 'uq267'), ('电话1', 'uq105'), ('电话2', 'uq106'), ('订单备注', 'uq113'), ('平台订单仓库', 'uq365'), ('是否测评', 'uq363'), ('测评费用', 'uq340'), ('邮政编码', 'uq110'), ('tiktok样品订单', 'uq371'), ('签收时间', 'uq443'), ('实付金额', 'uq341')]
 
@@ -136,6 +137,11 @@ def to_number(value):
     if value is None:
         return ''
     if isinstance(value, (int, float)):
+        try:
+            if pd.isna(value):
+                return ''
+        except Exception:
+            pass
         return float(value)
     text = html.unescape(str(value)).strip()
     text = text.replace(',', '')
@@ -178,6 +184,12 @@ def normalize_platform_sku(value):
     return text.strip()
 
 def normalize_numeric_fields(row):
+    original_amount = clean_value(row.get('原始商品总金额'))
+    if not original_amount and all(
+        clean_value(row.get(field)) != '' and to_number(row.get(field)) == 0
+        for field in ORIGINAL_AMOUNT_ZERO_EVIDENCE_FIELDS
+    ):
+        row['原始商品总金额'] = 0
     for field in NUMERIC_FIELDS:
         row[field] = to_number(row.get(field))
     return row
@@ -1585,7 +1597,9 @@ class MabangClient:
             payload.append(('map-uq[]', uq))
             payload.append(('map-text[]', ''))
         payload.append(('tableBase', '1'))
-        payload.append(('hbddgyxx', '1'))
+        # Match Mabang's default export UI: do not merge common order fields.
+        # mergeShow is intentionally omitted so multi-product rows stay unmerged too.
+        payload.append(('hbddgyxx', '2'))
         payload.append(('step1', '1'))
         logger.info('提交导出 step1')
         response = self.session.post(EXPORT_DATA_URL, headers=self.private_headers(), data=payload, timeout=REQUEST_TIMEOUT, allow_redirects=True)

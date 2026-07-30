@@ -1,0 +1,34 @@
+{
+  "_App-BclENy2Y.css": {
+    "file": "assets/App-BclENy2Y.css",
+    "src": "_App-BclENy2Y.css"
+  },
+  "_App-Dt40etUc.js": {
+    "file": "assets/App-Dt40etUc.js",
+    "name": "App",
+    "css": [
+      "assets/App-BclENy2Y.css"
+    ]
+  },
+  "index.html": {
+    "file": "assets/standalone-C4-ORUjG.js",
+    "name": "standalone",
+    "src": "index.html",
+    "isEntry": true,
+    "imports": [
+      "_App-Dt40etUc.js"
+    ],
+    "css": [
+      "assets/standalone-B5BXDqMa.css"
+    ]
+  },
+  "src/embed.tsx": {
+    "file": "assets/embed-ytko7doN.js",
+    "name": "embed",
+    "src": "src/embed.tsx",
+    "isEntry": true,
+    "imports": [
+      "_App-Dt40etUc.js"
+    ]
+  }
+}

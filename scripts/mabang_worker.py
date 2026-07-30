@@ -4,6 +4,8 @@ import math
 import os
 import re
 import sys
+import time
+from urllib.parse import urlencode
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -47,6 +49,17 @@ def json_safe(value):
     except Exception:
         pass
     return value
+
+
+def is_missing_source_value(value):
+    if value is None:
+        return True
+    try:
+        if isinstance(value, (float, Decimal)) and math.isnan(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip().lower() in {"", "nan", "none", "null"}
 
 
 def require_credentials(payload):
@@ -220,10 +233,17 @@ def collect_orders(payload):
     collected_records = json_safe(collected_records)
     records = filter_order_records(collected_records, conditions)
     filtered_order_count = count_order_records(records) if conditions else len(order_ids)
+    missing_original_amount_count = sum(
+        1
+        for record in records
+        if is_missing_source_value(record.get("原始商品总金额"))
+    )
     if conditions:
         message = f"订单采集完成，日期范围内共 {len(order_ids)} 个订单、{len(collected_records)} 行明细；{len(conditions)} 项条件筛选后保留 {filtered_order_count} 个订单、{len(records)} 行明细。"
     else:
         message = f"订单采集完成，共 {len(order_ids)} 个订单、{len(records)} 行明细。"
+    if missing_original_amount_count:
+        message += f" 其中 {missing_original_amount_count} 行马帮未提供原始商品总金额，系统保留为“来源未提供”，未按 0 处理。"
     return {
         "ok": True,
         "kind": "orders",
@@ -235,6 +255,7 @@ def collect_orders(payload):
             "rows": len(records),
             "collectedOrders": len(order_ids),
             "collectedRows": len(collected_records),
+            "missingOriginalItemAmountCount": missing_original_amount_count,
             "orderFilterCount": len(conditions),
             "orderFilterDescription": describe_order_filters(conditions),
             "startDate": paid_start,
@@ -417,6 +438,61 @@ def clear_pending_tracking_channel(payload):
     return {"ok": True, "kind": "fulfillment-tracking-reset", **json_safe(result)}
 
 
+def collect_inventory_image_pages(payload):
+    username, password = require_credentials(payload)
+    max_skus = max(1, min(int(payload.get("maxSkus") or 100), 10000))
+    max_pages = max(1, min(int(payload.get("maxPages") or 10000), 10000))
+    start_page = max(1, int(payload.get("startPage") or 1))
+    page_size = min(100, max(20, int(payload.get("pageSize") or inventory_source.SEARCH_ROWS_PER_PAGE)))
+
+    client = inventory_source.MabangInventoryClient()
+    client.login(username, password)
+    client.open_inventory_page()
+    client.initialize_default_search()
+    record_count = client.get_record_count()
+    total_pages = max(1, math.ceil(record_count / page_size)) if record_count else 0
+
+    # The Node collector enforces the exact unique-SKU limit. The worker reads a
+    # small bounded surplus so duplicate warehouse rows cannot starve the batch.
+    discovery_page_cap = max(1, math.ceil(max_skus / page_size) * 5)
+    page_limit = min(max_pages, max(0, total_pages - start_page + 1), discovery_page_cap)
+    pages = []
+    for page_number in range(start_page, start_page + page_limit):
+        params = client.build_default_search_params()
+        params["page"] = str(page_number)
+        params["rowsPerPage"] = str(page_size)
+        response = client.session.post(
+            inventory_source.STOCK_SEARCH_URL,
+            headers=client.private_ajax_headers(),
+            data=params,
+            timeout=inventory_source.REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
+        result = inventory_source.safe_json(response)
+        if not result.get("success"):
+            raise Exception(result.get("message") or f"库存图片第 {page_number} 页查询失败。")
+        pages.append({
+            "pageNumber": page_number,
+            "payload": result,
+            "request": {
+                "url": inventory_source.STOCK_SEARCH_URL,
+                "method": "POST",
+                "postData": urlencode(params),
+            },
+        })
+        time.sleep(inventory_source.REQUEST_INTERVAL_SECONDS)
+
+    return {
+        "ok": True,
+        "kind": "inventory-images",
+        "message": f"库存图片页读取完成，共 {len(pages)} 页。",
+        "recordCount": record_count,
+        "totalPages": total_pages,
+        "collectedPages": len(pages),
+        "pages": pages,
+    }
+
+
 def write_xlsx(payload):
     output_path = Path(str(payload.get("outputPath") or "")).resolve()
     allowed_root = Path(os.environ.get("MABANG_EXPORT_DIR") or output_path.parent).resolve()
@@ -440,7 +516,14 @@ def write_xlsx(payload):
     detail.append([sanitize_excel_text(column, stats=detail_stats) for column in columns])
     for record in records:
         detail.append([
-            sanitize_excel_text(json_safe(record.get(column, "")), stats=detail_stats)
+            sanitize_excel_text(
+                "来源未提供"
+                if kind == "orders"
+                and column == "原始商品总金额"
+                and is_missing_source_value(record.get(column))
+                else json_safe(record.get(column, "")),
+                stats=detail_stats,
+            )
             for column in columns
         ])
 
@@ -526,6 +609,8 @@ def dispatch(payload):
         return distribute_existing_fulfillment(payload)
     if action == "fulfillment-clear-pending-channel":
         return clear_pending_tracking_channel(payload)
+    if action == "inventory-images":
+        return collect_inventory_image_pages(payload)
     if action == "write-xlsx":
         return write_xlsx(payload)
     if action == "fields":

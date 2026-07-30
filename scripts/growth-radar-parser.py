@@ -16,9 +16,11 @@ ORDER_SHEET_HINTS = ("订单明细", "订单")
 INVENTORY_SHEET_HINTS = ("库存明细", "库存")
 ORDER_ALLOWED_HEADERS = frozenset({
     "订单编号",
+    "交易编号",
     "交运时间",
     "店铺名",
     "平台",
+    "店长",
     "订单状态",
     "仓库",
     "SKU总数量",
@@ -33,6 +35,18 @@ ORDER_ALLOWED_HEADERS = frozenset({
     "SKU明细",
     "作废时间",
 })
+ORDER_CONTINUATION_HEADERS = (
+    "订单编号",
+    "交易编号",
+    "交运时间",
+    "店铺名",
+    "平台",
+    "店长",
+    "订单状态",
+    "仓库",
+    "付款时间",
+    "作废时间",
+)
 PII_ORDER_HEADER_PATTERN = re.compile(
     r"所属地区|所属城市|客户|买家|收件|收货|地址|电话|手机|邮箱|邮编|邮政编码|身份证|证件|联系人|账号|"
     r"customer|buyer|receiver|recipient|address|phone|mobile|email|postcode|postal|identity|contact|account",
@@ -289,6 +303,7 @@ def parse_workbook(filename, domain, max_rows):
             }
         rows = []
         formula_count = 0
+        order_context = {}
         for excel_row_number, cells in enumerate(iterator, start=2):
             if len(rows) >= max_rows:
                 raise ValueError("GROWTH_RADAR_ROW_LIMIT_EXCEEDED")
@@ -311,6 +326,19 @@ def parse_workbook(filename, domain, max_rows):
                 else:
                     raw_values[key] = json_value(cell.value) if cell is not None else None
                 raw_types[key] = cell_type
+            if domain == "order":
+                has_order_id = normalized_text(raw_values.get("订单编号")) is not None
+                if has_order_id:
+                    order_context = {
+                        header: raw_values.get(header)
+                        for header in ORDER_CONTINUATION_HEADERS
+                        if raw_values.get(header) is not None
+                    }
+                elif normalized_text(raw_values.get("SKU")) is not None and order_context:
+                    for header in ORDER_CONTINUATION_HEADERS:
+                        if raw_values.get(header) is None and header in order_context:
+                            raw_values[header] = order_context[header]
+                            raw_types[header] = "inherited"
             normalized = order_normalized(raw_values) if domain == "order" else inventory_normalized(raw_values)
             issue_codes = row_issue_codes(domain, normalized, formula_fields)
             parse_status = "rejected" if any(code.endswith("_MISSING") or code.endswith("_INVALID") for code in issue_codes) else (

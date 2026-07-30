@@ -6,9 +6,11 @@ import {
 } from "./auth-client.mjs";
 import { createAdFrameBridge } from "./ad-frame-bridge.mjs";
 import { createAuditPage } from "./audit-page.mjs";
-import { createProductCenterPage } from "./product-center-page.mjs?v=20260721-ui-delete-ai-1";
-import { createGrowthRadarPage } from "./growth-radar-page.mjs?v=20260722-g1b2-1";
-import { createMabangImagesPage } from "./mabang-images-page.mjs?v=20260722-mabang-images-2";
+import { createProductCenterPage } from "./product-center-page.mjs?v=20260724-mabang-image-manager-1";
+import { createGrowthRadarWorkspace } from "./growth-radar-workspace.mjs?v=20260725-direction-1";
+import { createSalesAssortmentDashboard } from "./sales-assortment-dashboard-loader.mjs?v=20260730-1";
+import { createMabangImagesPage } from "./mabang-images-page.mjs?v=20260724-mabang-full-sync-1";
+import { createMabangListingPage } from "./mabang-listing-loader.mjs?v=20260728-nav-1";
 import { createFulfillmentPage } from "./fulfillment-page.mjs?v=20260729-4";
 import { createExcelHtmlRenderer } from "/excel-cell-policy.mjs";
 
@@ -26,8 +28,10 @@ let adsFrameBridge = null;
 let auditPage = null;
 let productCenterPage = null;
 let growthRadarPage = null;
+let salesAssortmentDashboard = null;
 let mabangImagesPage = null;
 let fulfillmentPage = null;
+let mabangListingPage = null;
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
@@ -123,6 +127,33 @@ function showAuthGate(message = "") {
   requestAnimationFrame(() => $("authToken").focus());
 }
 
+function routeParts(hash = location.hash) {
+  return String(hash || "")
+    .replace(/^#\/?/, "")
+    .split("/")
+    .filter(Boolean);
+}
+
+function pageFromHash(hash = location.hash) {
+  const page = routeParts(hash)[0] || "link";
+  return page === "mabang-images" ? "mabang" : page;
+}
+
+function mabangViewFromHash(hash = location.hash) {
+  const parts = routeParts(hash);
+  if (parts[0] === "mabang-images") return "images";
+  if (parts[0] !== "mabang") return "orders";
+  return ["orders", "inventory", "images", "scheduled", "files"].includes(parts[1])
+    ? parts[1]
+    : "orders";
+}
+
+function growthRadarRouteFromHash(hash = location.hash) {
+  const parts = routeParts(hash);
+  if (parts[0] !== "growth-radar") return "today";
+  return parts[1] || "today";
+}
+
 function initializeApplication() {
   if (applicationInitialized) return;
   applicationInitialized = true;
@@ -138,8 +169,12 @@ function initializeApplication() {
   $("scheduledTaskMonthDay").innerHTML = Array.from({ length: 31 }, (_, index) => `<option value="${index + 1}">${index + 1} 日</option>`).join("") + '<option value="last">每月最后一天</option>';
   updateScheduledFormVisibility();
   setOrderDatePreset("7");
-  switchMabangView("orders");
-  switchPage(location.hash.slice(1) || "link");
+  const mabangImagesPanel = $("mabangImagesPanel");
+  if (mabangImagesPanel && mabangImagesPanel.parentElement !== $("page-mabang")) {
+    $("page-mabang").append(mabangImagesPanel);
+  }
+  switchMabangView(mabangViewFromHash());
+  switchPage(pageFromHash());
 }
 
 function showApplication() {
@@ -168,11 +203,18 @@ auditPage = createAuditPage({
 auditPage.initialize();
 productCenterPage = createProductCenterPage({ authorizedFetch, onStatus: setStatus });
 productCenterPage.initialize();
-growthRadarPage = createGrowthRadarPage({ authorizedFetch, onStatus: setStatus });
+growthRadarPage = createGrowthRadarWorkspace({ authorizedFetch, onStatus: setStatus });
 growthRadarPage.initialize();
+salesAssortmentDashboard = createSalesAssortmentDashboard({ authorizedFetch, onStatus: setStatus });
+salesAssortmentDashboard.initialize();
 mabangImagesPage = createMabangImagesPage({ authorizedFetch, apiJson, setStatus });
 fulfillmentPage = createFulfillmentPage({ authorizedFetch, setStatus });
 fulfillmentPage.initialize();
+mabangListingPage = createMabangListingPage({
+  authorizedFetch,
+  onStatus: setStatus,
+});
+mabangListingPage.initialize();
 adsFrameBridge = createAdFrameBridge({
   windowObject: window,
   frame: $("adsFrame"),
@@ -220,15 +262,11 @@ const PAGE_META = {
   },
   mabang: {
     title: "马帮数据",
-    subtitle: "按账号权限获取订单和库存明细，在线预览并导出标准 Excel。",
-  },
-  "mabang-images": {
-    title: "马帮 SKU 图片",
-    subtitle: "从库存查询采集 SKU 图片，写入统一文件层，并以建议素材关联产品中心。",
+    subtitle: "统一获取订单、库存与 SKU 图片，管理定时任务和标准化导出。",
   },
   ads: {
-    title: "Lazada 广告分析",
-    subtitle: "读取 Sponsored Max 报表，诊断计划、产品系列和推广链接表现。",
+    title: "广告分析",
+    subtitle: "读取广告报表，诊断计划、产品系列和推广链接表现。",
   },
   audit: {
     title: "操作记录",
@@ -239,8 +277,16 @@ const PAGE_META = {
     subtitle: "导入公司商品中台产品包，完成字段映射、质量校验、人工确认和来源留痕。",
   },
   "growth-radar": {
-    title: "确定性货盘增长雷达",
-    subtitle: "管理订单、库存、店铺范围与来源语义；当前节点不提供机会评分或店铺推荐。",
+    title: "超级店长运营助手",
+    subtitle: "从最新货盘与有效订单中收敛异常、机会和今日运营任务。",
+  },
+  "sales-assortment": {
+    title: "销售与货盘驾驶舱",
+    subtitle: "统一比较货盘表现与我方销售，按国家、类目、款名和店铺定位经营机会。",
+  },
+  "mabang-listing": {
+    title: "马帮刊登",
+    subtitle: "查询授权店铺商品，预览并确认价格、库存和刊登资料变更。",
   },
   fulfillment: {
     title: "履约中心",
@@ -348,13 +394,31 @@ function switchPage(page, { skipProductClose = false } = {}) {
   if (page === "keyword" && currentReport?.discovery) renderReport(currentReport);
   if (page === "mabang" && currentMabangView !== "scheduled" && currentMabangTask) renderMabangResult(currentMabangTask);
   if (page === "mabang" && currentMabangView === "scheduled") refreshScheduledData({ quiet: true }).catch(() => {});
-  if (page === "mabang-images") mabangImagesPage?.load().catch((error) => setStatus(error.message, "error"));
+  if (page === "mabang" && currentMabangView === "images") {
+    mabangImagesPage?.load().catch((error) => setStatus(error.message, "error"));
+  }
+  if (page === "mabang-listing") {
+    mabangListingPage?.load().catch((error) => setStatus(error.message, "error"));
+  }
   if (page === "ads") loadAdsAnalyzer();
   if (page === "audit") auditPage.load();
   if (page === "products") productCenterPage.load().catch((error) => setStatus(error.message, "error"));
-  if (page === "growth-radar") growthRadarPage.load().catch((error) => setStatus(error.message, "error"));
-  if (page === "fulfillment") fulfillmentPage.load().catch((error) => setStatus(error.message, "error"));
-  if (location.hash !== `#${page}`) history.replaceState(null, "", `#${page}`);
+  if (page === "growth-radar") {
+    growthRadarPage.load({ route: growthRadarRouteFromHash() })
+      .catch((error) => setStatus(error.message, "error"));
+  }
+  if (page === "sales-assortment") {
+    salesAssortmentDashboard.load().catch((error) => setStatus(error.message, "error"));
+  }
+  if (page === "fulfillment") {
+    fulfillmentPage.load().catch((error) => setStatus(error.message, "error"));
+  }
+  const nextHash = page === "growth-radar"
+    ? `#/growth-radar/${growthRadarRouteFromHash()}`
+    : page === "mabang"
+      ? `#/mabang/${currentMabangView}`
+      : `#${page}`;
+  if (location.hash !== nextHash) history.replaceState(null, "", nextHash);
 }
 
 async function loadAdsAnalyzer({ force = false } = {}) {
@@ -368,7 +432,7 @@ async function loadAdsAnalyzer({ force = false } = {}) {
     frame.src = "about:blank";
   }
   reconnectButton.hidden = true;
-  status.textContent = "正在启动 Lazada 广告分析子项目…";
+  status.textContent = "正在启动广告分析服务…";
   try {
     const data = await postJson("/api/ad-analyzer/status", {});
     const url = new URL(data.url || "/ads/", window.location.origin).href;
@@ -733,6 +797,9 @@ function mabangSummaryEntries(task) {
         ["采集条件", `${summary.orderFilterCount} 项`],
       );
     }
+    if (Number(summary.missingOriginalItemAmountCount || 0) > 0) {
+      entries.push(["来源未提供原始商品总金额", `${summary.missingOriginalItemAmountCount} 行`]);
+    }
     entries.push(
       ["开始日期", String(summary.startDate || "-").slice(0, 10)],
       ["结束日期", String(summary.endDate || "-").slice(0, 10)],
@@ -1042,7 +1109,7 @@ async function applyMabangFilters() {
 }
 
 function switchMabangView(view) {
-  currentMabangView = ["orders", "inventory", "scheduled", "files"].includes(view) ? view : "orders";
+  currentMabangView = ["orders", "inventory", "images", "scheduled", "files"].includes(view) ? view : "orders";
   document.querySelectorAll(".mabang-view-tab").forEach((button) => {
     const active = button.dataset.mabangView === currentMabangView;
     button.classList.toggle("active", active);
@@ -1050,10 +1117,21 @@ function switchMabangView(view) {
   });
   $("mabangOrdersPanel").hidden = currentMabangView !== "orders";
   $("mabangInventoryPanel").hidden = currentMabangView !== "inventory";
+  $("mabangImagesPanel").hidden = currentMabangView !== "images";
   $("mabangScheduledPanel").hidden = currentMabangView !== "scheduled";
   $("mabangFilesPanel").hidden = currentMabangView !== "files";
-  $("mabangCredentialSection").hidden = ["scheduled", "files"].includes(currentMabangView);
-  $("mabangTaskState").hidden = ["scheduled", "files"].includes(currentMabangView);
+  $("mabangIntegrationToolbar").hidden = currentMabangView === "images";
+  $("mabangCredentialSection").hidden = ["images", "scheduled", "files"].includes(currentMabangView);
+  $("mabangTaskState").hidden = ["images", "scheduled", "files"].includes(currentMabangView);
+  if (pageFromHash() === "mabang") {
+    history.replaceState(null, "", `#/mabang/${currentMabangView}`);
+  }
+  if (currentMabangView === "images") {
+    currentMabangTask = null;
+    $("mabangResultPanel").hidden = true;
+    mabangImagesPage?.load().catch((error) => setStatus(error.message, "error"));
+    return;
+  }
   if (currentMabangView === "scheduled") {
     currentMabangTask = null;
     $("mabangResultPanel").hidden = true;
@@ -2271,6 +2349,25 @@ $("openChromeBtn").addEventListener("click", async () => {
   }
 });
 
+$("mabangWpsLaunchBtn").addEventListener("click", async () => {
+  const button = $("mabangWpsLaunchBtn");
+  const status = $("mabangWpsStatus");
+  button.disabled = true;
+  status.textContent = "正在启动本机 WPS 同步助手…";
+  try {
+    const result = await postJson("/api/mabang-wps/launch", {});
+    status.textContent = result.started
+      ? "WPS 同步助手已在本机打开"
+      : "WPS 同步助手已经在运行";
+    setStatus(status.textContent, "success");
+  } catch (error) {
+    status.textContent = error.message || "WPS 同步助手启动失败";
+    setStatus(status.textContent, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
+
 function setActionButtonsDisabled(disabled) {
   $("fetchOnlyBtn").disabled = disabled;
   $("extractBtn").disabled = disabled;
@@ -2698,7 +2795,7 @@ $("competitorUrls").addEventListener("input", () => {
   $("competitorUrls").setAttribute("aria-invalid", "false");
 });
 
-window.addEventListener("hashchange", () => switchPage(location.hash.slice(1) || "link"));
+window.addEventListener("hashchange", () => switchPage(pageFromHash()));
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !$("serverVerifyModal").hidden && !$("modalActions").hidden) {

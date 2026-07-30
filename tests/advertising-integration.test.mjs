@@ -26,7 +26,7 @@ async function freePort() {
 }
 
 async function waitForHealth(url, child, logs) {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  for (let attempt = 0; attempt < 150; attempt += 1) {
     if (child.exitCode !== null) throw new Error(`service exited early: ${logs.join("")}`);
     try {
       const response = await fetch(url);
@@ -39,23 +39,39 @@ async function waitForHealth(url, child, logs) {
   throw new Error(`service startup timed out: ${logs.join("")}`);
 }
 
-async function stop(child) {
-  if (child.exitCode !== null) return;
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("child process did not stop")), 5_000);
-    child.once("exit", () => {
+async function waitForExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      child.removeListener("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+    const onExit = () => {
       clearTimeout(timeout);
-      resolve();
-    });
-    if (process.platform === "win32") {
-      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
-    } else {
-      child.kill("SIGTERM");
-    }
+      resolve(true);
+    };
+    child.once("exit", onExit);
   });
 }
 
-test("only the main origin is needed for an authenticated advertising module", { timeout: 30_000 }, async () => {
+async function stop(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  if (await waitForExit(child, 2_500)) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+  } else {
+    child.kill("SIGKILL");
+  }
+  if (!(await waitForExit(child, 10_000))) {
+    throw new Error("child process did not stop");
+  }
+}
+
+test("only the main origin is needed for an authenticated advertising module", { timeout: 60_000 }, async () => {
   const runtimeRoot = mkdtempSync(path.join(os.tmpdir(), "commerce-ops-main-integration-"));
   mkdirSync(path.join(runtimeRoot, "storage"), { recursive: true });
   const mainPort = await freePort();

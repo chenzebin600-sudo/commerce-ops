@@ -1,0 +1,2 @@
+import{a as e,i as t,n,r,t as i}from"./App-Dt40etUc.js";var a=e(),o=r(),s=new WeakMap;function c({element:e,styleContainer:r,popupContainer:c,authorizedFetch:l,initialView:u=`today`,onViewChange:d}){n({fetchImpl:l});let f=s.get(e);f||(f=(0,a.createRoot)(e),s.set(e,f)),f.render((0,o.jsx)(t,{container:r,children:(0,o.jsx)(i,{embedded:!0,initialView:u,onViewChange:d,popupContainer:c})}))}function l(e){let t=s.get(e);t&&(t.unmount(),s.delete(e))}export{c as mountGrowthRadarV2,l as unmountGrowthRadarV2};
+//# sourceMappingURL=embed-ytko7doN.js.map

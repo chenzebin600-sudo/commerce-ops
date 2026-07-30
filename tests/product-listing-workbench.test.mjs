@@ -80,6 +80,36 @@ test("migration 011 adds listing drafts and publish records without changing pro
   } finally { await context.close(); }
 });
 
+test("product-center model query returns every country SKU as one listing source", async () => {
+  const context = await fixture();
+  try {
+    const db = context.access.provider.connection;
+    db.prepare(`INSERT INTO product_models (
+      id,source_system,source_main_sku,category_id,canonical_name,identity_status,
+      first_seen_batch_id,last_seen_batch_id,revision,created_at,updated_at
+    ) VALUES (?,?,?,?,?,'confirmed',?,?,1,?,?)`).run(
+      "model-listing-1", "company_product_center", "MAIN-001", "listing-l2",
+      "跨国床品基础款", "batch-listing", "batch-listing", now, now,
+    );
+    db.prepare("UPDATE product_skus SET model_id=?").run("model-listing-1");
+
+    const result = await context.access.repositories.productCatalog.listModels({
+      keyword: "基础款",
+      page: 1,
+      pageSize: 10,
+    });
+
+    assert.equal(result.total, 1);
+    assert.equal(result.models[0].id, "model-listing-1");
+    assert.equal(result.models[0].variants.length, 2);
+    assert.deepEqual(
+      result.models[0].variants.map((item) => item.country).sort(),
+      ["菲律宾", "马来"],
+    );
+    assert.equal(result.models[0].variants[0].sku, "SHARED-SKU");
+  } finally { await context.close(); }
+});
+
 test("saving a listing draft does not write product package facts or manual overrides", async () => {
   const context = await fixture();
   try {

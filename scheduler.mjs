@@ -2,9 +2,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadLocalEnv } from "./lib/env.mjs";
 import { createMabangWorkerRunner } from "./lib/mabang-worker-runner.mjs";
+import { createMabangDataPersistenceService } from "./lib/mabang-data/persistence-service.mjs";
 import { openCommerceDataAccess } from "./lib/data/data-access.mjs";
 import { createTaskExecutor } from "./lib/mabang-scheduler/executor.mjs";
 import { MabangSchedulerService } from "./lib/mabang-scheduler/service.mjs";
+import { GrowthRadarService } from "./lib/growth-radar/growth-radar-service.mjs";
 import {
   cleanupTemporaryFiles,
   ensureFileStorageRoots,
@@ -13,6 +15,7 @@ import {
 import { createOperationAuditService } from "./lib/security/audit-service.mjs";
 import { resolveRuntimeConfig, runtimeEnvironment } from "./lib/runtime-config.mjs";
 import { createExportFileService } from "./lib/files/export-file-service.mjs";
+import { pythonRuntimeError, resolvePythonRuntime } from "./lib/python-runtime.mjs";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 loadLocalEnv(rootDir);
@@ -42,7 +45,34 @@ const runWorker = createMabangWorkerRunner({
   runtimeConfig,
   env: runtimeEnv,
 });
-const executor = createTaskExecutor({ db, runWorker, exportRoot, tempRoot: fileStorage.tempRoot, audit, fileService: exportFileService });
+const growthRadarPython = resolvePythonRuntime({
+  appRoot: runtimeConfig.appRoot,
+  env: runtimeEnv,
+  requiredModules: ["openpyxl"],
+});
+if (!growthRadarPython.ok) throw pythonRuntimeError(growthRadarPython, "Mabang data persistence");
+const growthRadarService = new GrowthRadarService({
+  repository: dataAccess.repositories.growthRadar,
+  pythonExecutable: growthRadarPython.executable,
+  parserScript: path.join(runtimeConfig.appRoot, "scripts", "growth-radar-parser.py"),
+  fileStorageConfig: fileStorage,
+  maxRows: Number(process.env.GROWTH_RADAR_IMPORT_MAX_ROWS || 200000),
+  parseTimeoutMs: Number(process.env.GROWTH_RADAR_IMPORT_PARSE_TIMEOUT_MS || 600000),
+});
+const mabangDataPersistence = createMabangDataPersistenceService({
+  growthRadarService,
+  runWorker,
+  tempRoot: fileStorage.tempRoot,
+});
+const executor = createTaskExecutor({
+  db,
+  runWorker,
+  exportRoot,
+  tempRoot: fileStorage.tempRoot,
+  audit,
+  fileService: exportFileService,
+  persistCollectedData: (input) => mabangDataPersistence.persistFile(input),
+});
 const scheduler = new MabangSchedulerService({ db, executor, exportRoot, audit });
 
 scheduler.start();

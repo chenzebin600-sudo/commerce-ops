@@ -104,6 +104,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     currentProduct: null,
     pendingDeleteProduct: null,
     capabilities: {},
+    mabangCapabilities: {},
     aiStatus: { configured: false },
     aiGenerated: null,
     aiHistoryContents: [],
@@ -113,6 +114,9 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     aiContextBaseline: null,
     aiContextStale: false,
     aiAbortController: null,
+    mabangPreviewObjectUrl: null,
+    mabangPreviewAbortController: null,
+    mabangImageManagerProduct: null,
     imageGenerationTask: null,
     imageObjectUrls: new Set(),
     listingDrafts: [],
@@ -358,13 +362,16 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
   }
 
   async function loadCapabilities() {
-    const [capabilities, aiStatus] = await Promise.all([
+    const [capabilities, aiStatus, mabangCapabilities] = await Promise.all([
       responseJson(await authorizedFetch("/api/product-center/capabilities")),
       responseJson(await authorizedFetch("/api/product-center/ai/status")),
+      responseJson(await authorizedFetch("/api/mabang-images/capabilities")),
     ]);
     state.capabilities = capabilities.permissions || {};
+    state.mabangCapabilities = mabangCapabilities.permissions || {};
     state.aiStatus = aiStatus;
     byId("productDeletedFilterField").hidden = !can("product.restore");
+    byId("matchMabangImagesBtn").hidden = !state.mabangCapabilities["mabang_images.link"];
   }
 
   function catalogQuery() {
@@ -400,12 +407,16 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     byId("productCatalogPrevBtn").disabled = state.catalogPage <= 1;
     byId("productCatalogNextBtn").disabled = state.catalogPage >= state.catalogTotalPages;
     byId("productCatalogTable").innerHTML = products.length ? `<table class="product-center-table product-catalog-table">
-      <thead><tr><th>素材</th><th>SKU / 商品</th><th>国家 / 主 SKU</th><th>类目 / 规格</th><th>状态</th><th>更新</th><th>操作</th></tr></thead>
+      <thead><tr><th>马帮图片</th><th>SKU / 商品</th><th>国家 / 主 SKU</th><th>类目 / 规格</th><th>状态</th><th>更新</th><th>操作</th></tr></thead>
       <tbody>${products.map((product) => `<tr>
-        <td>${product.image?.primaryImageId
-          ? `<img class="product-thumbnail-image" alt="${esc(product.productName)}" data-product-image-product="${esc(product.id)}" data-product-image-id="${esc(product.image.primaryImageId)}" />`
-          : '<div class="product-thumbnail-placeholder"><span>无图</span><small>可上传</small></div>'}</td>
-        <td><strong>${esc(product.sku)}</strong><small class="product-name-cell">${esc(product.productName)}</small></td>
+        <td>${product.image?.mabangAssetId
+          ? `<div class="product-mabang-thumbnail"><button class="mabang-image-preview-trigger" type="button" data-mabang-preview-asset="${esc(product.image.mabangAssetId)}" data-mabang-preview-label="${esc(`${product.sku} · ${product.productName}`)}" aria-label="预览 ${esc(product.sku)} 的马帮图片" title="点击预览"><img class="product-thumbnail-image" alt="${esc(product.productName)}" data-mabang-image-asset="${esc(product.image.mabangAssetId)}" /></button><small>${esc(product.image.mabangCount)} 张</small></div>`
+          : '<div class="product-thumbnail-placeholder"><span>未匹配</span><small>马帮图片</small></div>'}</td>
+        <td><div class="product-sku-line"><strong>${esc(product.sku)}</strong>
+          ${state.mabangCapabilities["mabang_images.link"] && !product.deletedAt
+            ? `<button class="sku-image-manage-button" type="button" data-manage-mabang-product="${esc(product.id)}">修改马帮图片</button>`
+            : ""}
+        </div><small class="product-name-cell">${esc(product.productName)}</small></td>
         <td><strong>${esc(product.country)}</strong><small>${esc(product.mainSku || "无主 SKU")}</small></td>
         <td><strong>${esc([product.categoryL1, product.categoryL2].filter(Boolean).join(" / "))}</strong><small>${esc(product.salesSpec)}</small></td>
         <td><span class="product-status ${product.deletedAt ? "deleted" : `lifecycle-${esc(String(product.lifecycleStatus || "unknown").toLowerCase())}`}">${product.deletedAt ? "已删除" : esc(LIFECYCLE_LABELS[product.lifecycleStatus] || product.sourceStatus)}</span><small>${product.deletedAt ? esc(formatDate(product.deletedAt)) : product.operationalEligible ? "运营池" : "仅历史查询"}</small></td>
@@ -417,7 +428,33 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
           ${can("product.restore") && product.deletedAt ? `<button class="button-tertiary" type="button" data-product-restore-id="${esc(product.id)}">恢复</button>` : ""}
         </div></td>
       </tr>`).join("")}</tbody></table>` : '<p class="product-empty">没有符合条件的产品。导入并入库产品包后会显示在这里。</p>';
-    hydrateImages(byId("productCatalogTable"));
+    hydrateMabangImages(byId("productCatalogTable"));
+  }
+
+  async function matchMabangImages() {
+    const button = byId("matchMabangImagesBtn");
+    const confirmed = documentObject.defaultView?.confirm?.(
+      "将按采集记录中的 SKU 精确匹配马帮图片。该操作不会覆盖人工图片，是否继续？",
+    );
+    if (confirmed === false) return;
+    button.disabled = true;
+    const originalLabel = button.textContent;
+    button.textContent = "匹配中…";
+    try {
+      const data = await responseJson(await authorizedFetch("/api/mabang-images/match-products", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }));
+      const result = data.result || {};
+      onStatus(`马帮图片匹配完成：${formatNumber(result.matchedSkus || 0)} 个 SKU，新增 ${formatNumber(result.linksCreated || 0)} 条关联，${formatNumber(result.unmatchedSkus || 0)} 个 SKU 未匹配。`, "success");
+      await loadCatalog();
+    } catch (error) {
+      onStatus(error.message, "error");
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
   }
 
   async function hydrateImages(root) {
@@ -466,11 +503,17 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     </div>`).join("")}</div>`;
   }
 
-  function renderMabangProductImages(product) {
-    if (!product.mabangImages?.length) return '<p class="product-empty">暂无马帮来源图片。</p>';
-    return `<div class="product-image-list">${product.mabangImages.map((image) => `<div class="product-image-item mabang-linked-image">
-      <img alt="${esc(image.originalFilename)}" data-mabang-image-asset="${esc(image.assetId)}" />
-      <span class="source-badge central">马帮 · ${image.mediaRole === "primary" ? "正式主图" : image.mediaRole === "suggested_primary" ? "建议主图" : "图库"}</span>
+  function renderMabangProductImages(product, { confirmed = false } = {}) {
+    const images = (product.mabangImages || []).filter((image) => (image.mappingStatus === "confirmed") === confirmed);
+    if (!images.length) return `<p class="product-empty">${confirmed ? "暂无已加入产品图库的马帮图片。" : "暂无马帮参考图片。"}</p>`;
+    return `<div class="product-image-list">${images.map((image) => `<div class="product-image-item mabang-linked-image">
+      <button class="mabang-image-preview-trigger" type="button" data-mabang-preview-asset="${esc(image.assetId)}" data-mabang-preview-label="${esc(`${image.sourceSku} · ${image.originalFilename}`)}" aria-label="预览 ${esc(image.sourceSku)} 的马帮图片" title="点击预览"><img alt="${esc(image.originalFilename)}" data-mabang-image-asset="${esc(image.assetId)}" /></button>
+      <span class="source-badge central">马帮 · ${confirmed ? "已加入产品图片" : "参考素材"}</span>
+      <small>${esc(image.sourceSku)} · ${esc(formatDate(image.linkedAt))}</small>
+      <div class="mabang-reference-actions">
+        ${confirmed ? "" : `<button class="button-secondary" type="button" data-confirm-mabang-gallery="${esc(image.linkId)}">加入产品图片</button>`}
+        <button class="button-tertiary" type="button" data-reject-mabang-link="${esc(image.linkId)}">移除关联</button>
+      </div>
     </div>`).join("")}</div>`;
   }
 
@@ -484,6 +527,156 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
         image.src = objectUrl;
       } catch { image.classList.add("image-unavailable"); }
     }));
+  }
+
+  function releaseMabangPreview() {
+    state.mabangPreviewAbortController?.abort();
+    state.mabangPreviewAbortController = null;
+    if (state.mabangPreviewObjectUrl) URL.revokeObjectURL(state.mabangPreviewObjectUrl);
+    state.mabangPreviewObjectUrl = null;
+    const image = byId("mabangImagePreviewImage");
+    image.removeAttribute("src");
+    image.hidden = true;
+  }
+
+  function closeMabangImagePreview() {
+    releaseMabangPreview();
+    const dialog = byId("mabangImagePreviewDialog");
+    if (dialog.open) dialog.close();
+  }
+
+  async function openMabangImagePreview(assetId, label = "马帮 SKU 图片") {
+    if (!assetId) return;
+    releaseMabangPreview();
+    const dialog = byId("mabangImagePreviewDialog");
+    const image = byId("mabangImagePreviewImage");
+    const status = byId("mabangImagePreviewStatus");
+    byId("mabangImagePreviewMeta").textContent = label;
+    image.alt = `${label}预览`;
+    status.textContent = "正在加载图片…";
+    status.hidden = false;
+    if (!dialog.open) dialog.showModal();
+    const controller = new AbortController();
+    state.mabangPreviewAbortController = controller;
+    try {
+      const response = await authorizedFetch(`/api/mabang-images/assets/${encodeURIComponent(assetId)}/content`, {
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("马帮图片加载失败");
+      const objectUrl = URL.createObjectURL(await response.blob());
+      if (controller.signal.aborted) {
+        URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      state.mabangPreviewObjectUrl = objectUrl;
+      image.src = objectUrl;
+      image.hidden = false;
+      status.hidden = true;
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        status.textContent = "图片加载失败，请稍后重试。";
+        status.hidden = false;
+      }
+    } finally {
+      if (state.mabangPreviewAbortController === controller) state.mabangPreviewAbortController = null;
+    }
+  }
+
+  function renderMabangImageManager(product) {
+    const images = product.mabangImages || [];
+    state.mabangImageManagerProduct = product;
+    byId("mabangImageManagerTitle").textContent = `修改马帮图片 · ${product.sku}`;
+    byId("mabangImageManagerMeta").textContent = `${product.country || "-"} · ${product.productName || product.sku} · ${images.length} 张`;
+    byId("mabangImageManagerList").innerHTML = images.length
+      ? images.map((image) => `<article class="mabang-image-manager-item">
+        <button class="mabang-image-preview-trigger" type="button" data-mabang-preview-asset="${esc(image.assetId)}"
+          data-mabang-preview-label="${esc(`${product.sku} · ${image.originalFilename}`)}" aria-label="预览 ${esc(image.originalFilename)}">
+          <img alt="${esc(image.originalFilename)}" data-mabang-image-asset="${esc(image.assetId)}" />
+        </button>
+        <div class="mabang-image-manager-item-copy">
+          <strong>${esc(image.originalFilename)}</strong>
+          <span>${image.sourceSystem === "manual_mabang" ? "用户上传" : "马帮采集"} · ${esc(image.width)} × ${esc(image.height)}</span>
+          <small>${esc(formatDate(image.linkedAt))}</small>
+        </div>
+        <button class="button-danger-text" type="button" data-delete-managed-mabang-link="${esc(image.linkId)}">删除</button>
+      </article>`).join("")
+      : '<p class="product-empty">当前 SKU 暂无马帮图片，可在上方上传。</p>';
+    hydrateMabangImages(byId("mabangImageManagerList"));
+  }
+
+  async function refreshMabangImageManager() {
+    if (!state.mabangImageManagerProduct?.id) return;
+    renderMabangImageManager(await fetchProduct(state.mabangImageManagerProduct.id));
+  }
+
+  async function openMabangImageManager(productId) {
+    renderMabangImageManager(await fetchProduct(productId));
+    byId("mabangImageUploadInput").value = "";
+    const dialog = byId("mabangImageManagerDialog");
+    if (!dialog.open) dialog.showModal();
+  }
+
+  function closeMabangImageManager() {
+    state.mabangImageManagerProduct = null;
+    byId("mabangImageUploadInput").value = "";
+    const dialog = byId("mabangImageManagerDialog");
+    if (dialog.open) dialog.close();
+  }
+
+  async function uploadManagedMabangImages() {
+    const product = state.mabangImageManagerProduct;
+    if (!product?.id) return;
+    const input = byId("mabangImageUploadInput");
+    const files = [...(input.files || [])];
+    if (!files.length) throw new Error("请选择需要上传的图片。");
+    const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+    for (const file of files) {
+      if (!allowedTypes.has(file.type)) throw new Error(`${file.name} 不是支持的图片格式。`);
+      if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name} 超过 10MB。`);
+    }
+    const button = byId("uploadMabangImagesBtn");
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    try {
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        button.textContent = `上传中 ${index + 1}/${files.length}`;
+        await responseJson(await authorizedFetch(`/api/mabang-images/products/${encodeURIComponent(product.id)}/assets`, {
+          method: "POST",
+          headers: {
+            "content-type": file.type,
+            "x-file-name": encodeURIComponent(file.name),
+          },
+          body: file,
+        }));
+      }
+      input.value = "";
+      await refreshMabangImageManager();
+      await loadCatalog();
+      if (state.currentProduct?.id === product.id) renderProductDetail(await fetchProduct(product.id));
+      onStatus(`已为 ${product.sku} 上传 ${files.length} 张马帮图片。`, "success");
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+  }
+
+  async function deleteManagedMabangImage(linkId) {
+    const product = state.mabangImageManagerProduct;
+    if (!product?.id) return;
+    const confirmed = documentObject.defaultView?.confirm?.(
+      "确认从当前 SKU 删除这张马帮图片吗？只会解除当前关联，不会删除其他 SKU 共用的素材文件。",
+    );
+    if (confirmed === false) return;
+    await responseJson(await authorizedFetch(`/api/mabang-images/links/${encodeURIComponent(linkId)}/reject`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }));
+    await refreshMabangImageManager();
+    await loadCatalog();
+    if (state.currentProduct?.id === product.id) renderProductDetail(await fetchProduct(product.id));
+    onStatus(`已从 ${product.sku} 删除马帮图片关联。`, "success");
   }
 
   function renderProductDetail(product) {
@@ -501,7 +694,8 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       </div>`).join("")}</div></section>`).join("");
     byId("productDrawerContent").innerHTML = `${sections}
       <section><h3>用户上传图片</h3>${renderProductImages(product)}</section>
-      <section><h3>马帮来源素材</h3>${renderMabangProductImages(product)}</section>
+      <section><h3>已加入的马帮产品图片</h3>${renderMabangProductImages(product, { confirmed: true })}</section>
+      <section><h3>马帮参考图片</h3>${renderMabangProductImages(product)}</section>
       <section><h3>仓库明细</h3>${product.inventories?.length ? `<div class="product-inventory-list">${product.inventories.map((item) => `<div><strong>${esc(item.warehouse)}</strong><span>库存 ${esc(formatNumber(item.stock))}</span><small>${esc(item.plannedWarehouse || "无计划仓")}</small></div>`).join("")}</div>` : '<p class="product-empty">暂无仓库记录。</p>'}</section>
       <section><h3>人工修改记录</h3>${product.overrideEvents?.length ? `<div class="product-change-history">${product.overrideEvents.map((event) => `<div><strong>${esc(event.fieldCode)}</strong><span>原值：${esc(displayFieldValue(event.previousValue))}</span><span>人工值：${esc(displayFieldValue(event.nextValue))}</span><small>${esc(event.operatorLabel)} · ${esc(formatDate(event.occurredAt))}</small></div>`).join("")}</div>` : '<p class="product-empty">暂无人工修改。</p>'}</section>
       <section><h3>已确认 AI 内容</h3>${renderConfirmedAiContent(product.confirmedAiContent)}</section>
@@ -539,6 +733,18 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
     renderProductDetail(await fetchProduct(id));
     const drawer = byId("productCatalogDrawer");
     if (!drawer.open) drawer.showModal();
+  }
+
+  async function updateMabangReference(linkId, action) {
+    if (!state.currentProduct?.id) return;
+    const endpoint = action === "confirm" ? "confirm-gallery" : "reject";
+    await responseJson(await authorizedFetch(`/api/mabang-images/links/${encodeURIComponent(linkId)}/${endpoint}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }));
+    renderProductDetail(await fetchProduct(state.currentProduct.id));
+    onStatus(action === "confirm" ? "马帮参考图片已加入产品图片。" : "马帮参考图片关联已移除。", "success");
   }
 
   function openFieldSettings() {
@@ -1841,6 +2047,7 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       byId("productCatalogSearchForm").reset();
       loadCatalog({ resetPage: true }).catch((error) => onStatus(error.message, "error"));
     });
+    byId("matchMabangImagesBtn").addEventListener("click", () => matchMabangImages());
     byId("productCatalogPageSize").addEventListener("change", (event) => {
       state.catalogPageSize = Number(event.target.value || 30);
       loadCatalog({ resetPage: true }).catch((error) => onStatus(error.message, "error"));
@@ -1854,6 +2061,18 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       loadCatalog().catch((error) => onStatus(error.message, "error"));
     });
     byId("productCatalogTable").addEventListener("click", (event) => {
+      const manageImages = event.target.closest("[data-manage-mabang-product]");
+      if (manageImages) {
+        openMabangImageManager(manageImages.dataset.manageMabangProduct)
+          .catch((error) => onStatus(error.message, "error"));
+        return;
+      }
+      const imagePreview = event.target.closest("[data-mabang-preview-asset]");
+      if (imagePreview) {
+        openMabangImagePreview(imagePreview.dataset.mabangPreviewAsset, imagePreview.dataset.mabangPreviewLabel)
+          .catch((error) => onStatus(error.message, "error"));
+        return;
+      }
       const deleteButton = event.target.closest("[data-product-delete-id]");
       if (deleteButton) {
         openDeleteDialog(deleteButton.dataset.productDeleteId).catch((error) => onStatus(error.message, "error"));
@@ -2001,6 +2220,56 @@ export function createProductCenterPage({ authorizedFetch, documentObject = docu
       if (button) deleteProductImage(button.dataset.deleteProductImage).catch((error) => onStatus(error.message, "error"));
     });
     byId("closeProductDrawerBtn").addEventListener("click", () => byId("productCatalogDrawer").close());
+    byId("productDrawerContent").addEventListener("click", (event) => {
+      const imagePreview = event.target.closest("[data-mabang-preview-asset]");
+      if (imagePreview) {
+        openMabangImagePreview(imagePreview.dataset.mabangPreviewAsset, imagePreview.dataset.mabangPreviewLabel)
+          .catch((error) => onStatus(error.message, "error"));
+        return;
+      }
+      const confirm = event.target.closest("[data-confirm-mabang-gallery]");
+      if (confirm) {
+        updateMabangReference(confirm.dataset.confirmMabangGallery, "confirm").catch((error) => onStatus(error.message, "error"));
+        return;
+      }
+      const reject = event.target.closest("[data-reject-mabang-link]");
+      if (reject && window.confirm("确认从该产品移除这张马帮参考图片关联？图片资产不会被删除。")) {
+        updateMabangReference(reject.dataset.rejectMabangLink, "reject").catch((error) => onStatus(error.message, "error"));
+      }
+    });
+    byId("closeMabangImagePreviewBtn").addEventListener("click", closeMabangImagePreview);
+    byId("mabangImagePreviewDialog").addEventListener("cancel", (event) => {
+      event.preventDefault();
+      closeMabangImagePreview();
+    });
+    byId("mabangImagePreviewDialog").addEventListener("click", (event) => {
+      if (event.target === byId("mabangImagePreviewDialog")) closeMabangImagePreview();
+    });
+    byId("closeMabangImageManagerBtn").addEventListener("click", closeMabangImageManager);
+    byId("doneMabangImageManagerBtn").addEventListener("click", closeMabangImageManager);
+    byId("mabangImageManagerDialog").addEventListener("cancel", (event) => {
+      event.preventDefault();
+      closeMabangImageManager();
+    });
+    byId("mabangImageManagerDialog").addEventListener("click", (event) => {
+      if (event.target === byId("mabangImageManagerDialog")) closeMabangImageManager();
+    });
+    byId("uploadMabangImagesBtn").addEventListener("click", () => {
+      uploadManagedMabangImages().catch((error) => onStatus(error.message, "error"));
+    });
+    byId("mabangImageManagerList").addEventListener("click", (event) => {
+      const preview = event.target.closest("[data-mabang-preview-asset]");
+      if (preview) {
+        openMabangImagePreview(preview.dataset.mabangPreviewAsset, preview.dataset.mabangPreviewLabel)
+          .catch((error) => onStatus(error.message, "error"));
+        return;
+      }
+      const remove = event.target.closest("[data-delete-managed-mabang-link]");
+      if (remove) {
+        deleteManagedMabangImage(remove.dataset.deleteManagedMabangLink)
+          .catch((error) => onStatus(error.message, "error"));
+      }
+    });
     byId("productDeleteForm").addEventListener("submit", (event) => deleteProduct(event).catch((error) => onStatus(error.message, "error")));
     byId("cancelProductAiBtn").addEventListener("click", () => state.aiAbortController?.abort());
     byId("showProductAiHistoryBtn").addEventListener("click", () => showAiHistory("selling_points").catch((error) => onStatus(error.message, "error")));
