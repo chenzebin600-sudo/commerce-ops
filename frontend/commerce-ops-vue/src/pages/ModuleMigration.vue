@@ -17,7 +17,7 @@ const modules: Record<string, { title: string; description: string; legacy: stri
   audit: { title: "操作记录", description: "关键操作、失败原因与任务关联审计。", legacy: "#audit", phase: "第三阶段" },
 };
 const module = computed(() => modules[String(route.params.module)] || modules.products);
-const legacyUrl = computed(() => `/${module.value.legacy}`);
+const legacyUrl = computed(() => `/legacy/${module.value.legacy}`);
 </script>
 
 <template>

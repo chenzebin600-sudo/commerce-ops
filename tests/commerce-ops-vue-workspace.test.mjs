@@ -23,14 +23,27 @@ test("Vue workspace uses the approved operations dashboard stack", () => {
   assert.ok(fs.existsSync(path.join(vueRoot, "src", "App.vue")));
 });
 
-test("Vue shell preserves production while building an isolated preview", () => {
+test("Vue shell builds to production with a legacy fallback", () => {
   const viteConfig = read("frontend/commerce-ops-vue/vite.config.ts");
   const rootPackage = JSON.parse(read("package.json"));
   assert.match(viteConfig, /public\/vue-preview/);
   assert.match(viteConfig, /base:\s*["']\/vue-preview\//);
   assert.match(rootPackage.scripts["build:vue"], /commerce-ops-vue/);
   assert.match(rootPackage.scripts.build, /build:vue/);
-  assert.match(read("server.mjs"), /decodedPath\.endsWith\(["']\/["']\)/);
+  const server = read("server.mjs");
+  assert.match(server, /url\.pathname === ["']\/["'][\s\S]*vue-preview\/index\.html/);
+  assert.match(server, /decodedPath === ["']\/legacy["'][\s\S]*["']\/index\.html["']/);
+});
+
+test("Vue shell reuses the production authentication contract", () => {
+  const app = read("frontend/commerce-ops-vue/src/App.vue");
+  const api = read("frontend/commerce-ops-vue/src/services/api.ts");
+  assert.match(app, /getAuthenticationStatus/);
+  assert.match(app, /AuthGate/);
+  assert.match(api, /commerce-ops-access-token/);
+  assert.match(api, /\/api\/auth\/status/);
+  assert.match(api, /\/api\/auth\/verify/);
+  assert.match(api, /\/api\/auth\/logout/);
 });
 
 test("Vue overview reads real sales and fulfillment APIs", () => {
@@ -42,6 +55,36 @@ test("Vue overview reads real sales and fulfillment APIs", () => {
   assert.doesNotMatch(overviewPage, /Math\.random|mock|fixture/i);
   assert.match(read("frontend/commerce-ops-vue/src/pages/SalesAssortmentPage.vue"), /loadSalesDashboard/);
   assert.match(read("frontend/commerce-ops-vue/src/pages/FulfillmentPage.vue"), /runFulfillmentScan/);
+});
+
+test("every active navigation destination has a Vue page and real API contract", () => {
+  const router = read("frontend/commerce-ops-vue/src/router/index.ts");
+  const sidebar = read("frontend/commerce-ops-vue/src/components/OpsSidebar.vue");
+  const expectedPages = [
+    ["/overview", "OperationsOverview.vue"],
+    ["/sales-assortment", "SalesAssortmentPage.vue"],
+    ["/products", "ProductCenterPage.vue"],
+    ["/link-analysis", "CompetitorAnalysisPage.vue"],
+    ["/keyword-analysis", "CompetitorAnalysisPage.vue"],
+    ["/growth-radar", "GrowthRadarPage.vue"],
+    ["/advertising", "AdvertisingPage.vue"],
+    ["/mabang", "MabangPage.vue"],
+    ["/mabang-listing", "MabangListingPage.vue"],
+    ["/fulfillment", "FulfillmentPage.vue"],
+    ["/audit", "AuditPage.vue"],
+  ];
+  for (const [route, page] of expectedPages) {
+    assert.match(sidebar, new RegExp(route.replace("/", "\\/")));
+    assert.match(router, new RegExp(page.replace(".", "\\.")));
+    assert.ok(fs.existsSync(path.join(vueRoot, "src", "pages", page)));
+  }
+  assert.doesNotMatch(router, /:module\(products|:module\(link-analysis|:module\(advertising/);
+
+  const serviceSources = ["products.ts", "competitor.ts", "growth.ts", "advertising.ts", "mabang.ts", "listing.ts", "audit.ts"]
+    .map((file) => read(`frontend/commerce-ops-vue/src/services/${file}`)).join("\n");
+  for (const api of ["/api/product-center/", "/api/extract-and-analyze", "/api/growth-radar/v2/", "/api/ad-analyzer/status", "/api/mabang/", "/api/mabang-listing", "/api/audit/"]) {
+    assert.match(serviceSources, new RegExp(api.replaceAll("/", "\\/")));
+  }
 });
 
 test("Vue design system includes responsive and accessibility gates", () => {
