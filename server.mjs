@@ -2896,7 +2896,12 @@ async function serveStatic(req, res, url) {
       return res.end("Not found");
     }
   }
-  const requested = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
+  const decodedPath = decodeURIComponent(url.pathname);
+  const requested = url.pathname === "/"
+    ? "/index.html"
+    : decodedPath.endsWith("/")
+      ? `${decodedPath}index.html`
+      : decodedPath;
   const filePath = path.normalize(path.join(publicDir, requested));
   if (!filePath.startsWith(publicDir)) {
     res.writeHead(403);
