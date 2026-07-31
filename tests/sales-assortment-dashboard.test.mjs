@@ -222,21 +222,23 @@ test("order parser inherits only common fields for multiline order rows and keep
   }
 });
 
-test("sales assortment frontend stays an isolated React island in the unified shell", async () => {
-  const [html, app, loader, packageJson, dashboardApp] = await Promise.all([
+test("sales assortment is active in Vue while the former React island remains a frozen fallback", async () => {
+  const [html, app, loader, policy, vuePage, vueService] = await Promise.all([
     fs.readFile(path.join(root, "public", "index.html"), "utf8"),
     fs.readFile(path.join(root, "public", "app.js"), "utf8"),
     fs.readFile(path.join(root, "public", "sales-assortment-dashboard-loader.mjs"), "utf8"),
-    fs.readFile(path.join(root, "frontend", "sales-assortment-dashboard", "package.json"), "utf8"),
-    fs.readFile(path.join(root, "frontend", "sales-assortment-dashboard", "src", "App.tsx"), "utf8"),
+    fs.readFile(path.join(root, "frontend", "frontend-policy.json"), "utf8"),
+    fs.readFile(path.join(root, "frontend", "commerce-ops-vue", "src", "pages", "SalesAssortmentPage.vue"), "utf8"),
+    fs.readFile(path.join(root, "frontend", "commerce-ops-vue", "src", "services", "sales-automation.ts"), "utf8"),
   ]);
+  assert.equal(JSON.parse(policy).activeWorkspace, "commerce-ops-vue");
   assert.match(html, /data-page="sales-assortment"/);
   assert.match(html, /id="salesAssortmentDashboardRoot"/);
   assert.match(app, /createSalesAssortmentDashboard/);
   assert.match(loader, /mountSalesAssortmentDashboard/);
-  assert.match(packageJson, /"echarts"/);
   assert.doesNotMatch(loader, /iframe/i);
-  assert.match(dashboardApp, /自动采集与智能分析/);
-  assert.match(dashboardApp, /DeepSeek 经营分析/);
-  assert.match(dashboardApp, /钉钉机器人/);
+  assert.match(vuePage, /自动采集与智能分析/);
+  assert.match(vuePage, /DeepSeek 经营分析/);
+  assert.match(vuePage, /钉钉机器人/);
+  assert.match(vueService, /\/api\/sales-assortment\/analyze/);
 });

@@ -27,6 +27,19 @@
 - 产品中心已接入目录、筛选、详情、编辑、软删除和恢复；马帮模块已接入即时采集、调度任务、执行记录和图片任务。
 - 广告分析继续调用隔离侧车服务，Vue 页面负责服务连接、统一认证、文件治理和入口呈现。
 - Vue 已复用原有访问密钥和浏览器会话规则；旧版通过 `/legacy/` 提供显式回退路径。
+- 根入口和所有活动导航统一由 `frontend/commerce-ops-vue` 提供，默认构建不再编译 React 工作区。
+- 销售与货盘已在 Vue 中接入马帮订单/库存定时采集、钉钉通知和 DeepSeek 确定性数据分析。
+- 历史 React 工作区仅作为迁移期冻结回退，不接受新功能；后续模块必须在 Vue 路由、服务和组件边界内实现。
+
+## 新增模块规范
+
+1. 页面放入 `frontend/commerce-ops-vue/src/pages` 并使用 `<script setup lang="ts">`。
+2. 路由登记在 `src/router/index.ts`，导航登记在 `src/components/OpsSidebar.vue`。
+3. API 访问必须通过 `src/services/api.ts` 的统一认证与错误处理。
+4. 跨页面状态使用 Pinia；页面私有状态留在页面组件内。
+5. 图表使用 ECharts，通用控件使用 Element Plus，图标使用 Lucide Vue。
+6. 禁止新增 React、JSX、TSX、iframe 或独立前端工程。
+7. `npm run check:frontend` 是提交和构建前必过门禁。
 
 ## 质量门禁
 

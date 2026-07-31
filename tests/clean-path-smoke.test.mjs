@@ -81,8 +81,12 @@ test("a clean neutral directory starts without reading the formal runtime", { ti
   try {
     await waitFor(`http://127.0.0.1:${port}/api/health`);
     const page = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
+    assert.match(page, /id=["']app["']/);
+    assert.match(page, /\/vue-preview\/assets\/index-[^"']+\.js/);
+
+    const legacyPage = await fetch(`http://127.0.0.1:${port}/legacy/`).then((response) => response.text());
     for (const marker of ["page-link", "page-keyword", "page-ads", "page-mabang"]) {
-      assert.match(page, new RegExp(`id=[\"']${marker}[\"']`));
+      assert.match(legacyPage, new RegExp(`id=[\"']${marker}[\"']`));
     }
     assert.equal(output.includes(sourceRoot), false);
     assert.equal(await fs.stat(path.join(dataRoot, "test.sqlite")).then(() => true), true);

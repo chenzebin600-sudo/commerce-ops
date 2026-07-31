@@ -96,3 +96,35 @@ test("Vue design system includes responsive and accessibility gates", () => {
   assert.match(design, /375、768、1024 和 1440/);
   assert.match(design, /后端生成正式文件/);
 });
+
+test("Vue is the only active frontend and new modules are policy-gated", () => {
+  const policy = JSON.parse(read("frontend/frontend-policy.json"));
+  const rootPackage = JSON.parse(read("package.json"));
+  const activePackage = JSON.parse(read("frontend/commerce-ops-vue/package.json"));
+  const checker = read("scripts/check-frontend-framework.mjs");
+  assert.equal(policy.activeWorkspace, "commerce-ops-vue");
+  assert.equal(activePackage.dependencies.react, undefined);
+  assert.equal(activePackage.dependencies["react-dom"], undefined);
+  assert.match(rootPackage.scripts.build, /check:frontend/);
+  assert.match(rootPackage.scripts.build, /build:vue/);
+  assert.doesNotMatch(rootPackage.scripts.build, /build:growth-radar:v2|build:sales-assortment|build:mabang-listing/);
+  assert.match(checker, /React source is not allowed/);
+  assert.match(checker, /New modules belong in/);
+});
+
+test("Vue sales assortment page owns scheduler, DingTalk and DeepSeek workflows", () => {
+  const page = read("frontend/commerce-ops-vue/src/pages/SalesAssortmentPage.vue");
+  const service = read("frontend/commerce-ops-vue/src/services/sales-automation.ts");
+  for (const label of ["自动采集与智能分析", "订单定时", "库存定时", "钉钉机器人", "DeepSeek 经营分析"]) {
+    assert.match(page, new RegExp(label));
+  }
+  for (const endpoint of [
+    "/api/mabang/scheduled-tasks",
+    "/api/notifications/dingtalk/configs",
+    "/api/sales-assortment/ai-status",
+    "/api/sales-assortment/analyze",
+  ]) {
+    assert.match(service, new RegExp(endpoint.replaceAll("/", "\\/")));
+  }
+  assert.match(page, /Math\.abs\(number\) <= 1 \? number \* 100 : number/);
+});

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const exceptions = JSON.parse(await fs.readFile(path.join(rootDir, "config", "portable-path-exceptions.json"), "utf8"));
-const excluded = new Set([".git", ".venv", ".venv-mabang", "node_modules", "storage", "data", "backups", "ui-check", "dist", "build"]);
+const excluded = new Set([".git", ".venv", ".venv-mabang", "node_modules", "storage", "data", "backups", "ui-check", "dist", "build", "packaged-skills"]);
 const extensions = new Set([".js", ".mjs", ".cjs", ".json", ".md", ".py", ".ps1", ".sh"]);
 const patterns = [
   { name: "Windows drive path", regex: /(^|[^A-Za-z])(?:[A-Za-z]:[\\/])/m },

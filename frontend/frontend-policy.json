@@ -1,0 +1,24 @@
+{
+  "version": "1.0.0",
+  "activeWorkspace": "commerce-ops-vue",
+  "moduleDirectory": "frontend/commerce-ops-vue/src/pages",
+  "componentDirectory": "frontend/commerce-ops-vue/src/components",
+  "serviceDirectory": "frontend/commerce-ops-vue/src/services",
+  "legacyWorkspaces": [
+    "growth-radar-v2",
+    "mabang-listing",
+    "sales-assortment-dashboard"
+  ],
+  "requiredDependencies": [
+    "vue",
+    "vue-router",
+    "pinia",
+    "element-plus",
+    "echarts"
+  ],
+  "forbiddenActiveDependencies": [
+    "react",
+    "react-dom",
+    "@vitejs/plugin-react"
+  ]
+}
