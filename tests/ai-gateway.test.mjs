@@ -85,7 +85,7 @@ test("stable module IDs and compatible API response helpers are additive", () =>
   assert.deepEqual(MODULE_ID_VALUES, [
     "competitor_link", "competitor_keyword", "advertising", "mabang_orders",
     "mabang_inventory", "scheduled_exports", "file_management", "operation_audit",
-    "product_center",
+    "product_center", "fulfillment_agent",
   ]);
   assert.deepEqual(successResponse({ value: 1 }, { requestId: "r1", legacy: { ok: true } }), {
     success: true, data: { value: 1 }, request_id: "r1", error: null, ok: true,

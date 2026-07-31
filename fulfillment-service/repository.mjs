@@ -55,6 +55,11 @@ export class FulfillmentRepository {
         reset_count INTEGER NOT NULL DEFAULT 0,last_reset_at TEXT,last_error_code TEXT,last_error_message TEXT,
         completed_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS fulfillment_agent_runs (
+        id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,status TEXT NOT NULL,model TEXT NOT NULL,
+        step_count INTEGER NOT NULL DEFAULT 0,tool_trace_json TEXT NOT NULL DEFAULT '[]',
+        error_code TEXT,started_at TEXT NOT NULL,finished_at TEXT
+      );
     `);
     const previewOrderColumns = new Set(this.db.prepare("PRAGMA table_info(fulfillment_preview_orders)").all().map((row) => row.name));
     if (!previewOrderColumns.has("priority")) {
@@ -70,6 +75,24 @@ export class FulfillmentRepository {
     this.db.exec("BEGIN IMMEDIATE");
     try { const result = callback(); this.db.exec("COMMIT"); return result; }
     catch (error) { try { this.db.exec("ROLLBACK"); } catch {} throw error; }
+  }
+
+  startAgentRun({ id, conversationId, model, startedAt }) {
+    this.db.prepare(`INSERT INTO fulfillment_agent_runs
+      (id,conversation_id,status,model,started_at) VALUES (?,?,'running',?,?)`)
+      .run(id, conversationId, model, startedAt);
+  }
+
+  finishAgentRun({ id, status, stepCount = 0, toolTrace = [], errorCode = null, finishedAt }) {
+    this.db.prepare(`UPDATE fulfillment_agent_runs SET status=?,step_count=?,tool_trace_json=?,error_code=?,finished_at=?
+      WHERE id=?`).run(status, stepCount, json(toolTrace), errorCode, finishedAt, id);
+  }
+
+  getAgentRun(id) {
+    const row = this.db.prepare("SELECT * FROM fulfillment_agent_runs WHERE id=?").get(id);
+    return row ? { id: row.id, conversationId: row.conversation_id, status: row.status, model: row.model,
+      stepCount: Number(row.step_count || 0), toolTrace: parse(row.tool_trace_json, []), errorCode: row.error_code,
+      startedAt: row.started_at, finishedAt: row.finished_at } : null;
   }
 
   createPreview(preview, orders) {
@@ -129,13 +152,14 @@ export class FulfillmentRepository {
   }
 
   migratePendingTrackingRecoveries({ nowIso, checkSeconds = 300, deadlineHours = 24 }) {
-    const candidates = this.db.prepare(`SELECT o.batch_id,o.order_key,o.display_order_id,o.updated_at,o.timings_json,p.shop_id
+    const candidates = this.db.prepare(`SELECT o.batch_id,o.order_key,o.display_order_id,o.tracking_number_masked,
+      o.updated_at,o.timings_json,p.shop_id
       FROM fulfillment_batch_orders o
       JOIN fulfillment_batches b ON b.id=o.batch_id
       JOIN fulfillment_previews p ON p.id=b.preview_id
       JOIN fulfillment_idempotency i ON i.order_key=o.order_key AND i.batch_id=o.batch_id
       WHERE o.status='needs_attention' AND i.status='needs_attention' AND o.error_code='VERIFY_FAILED'
-      AND o.tracking_number_masked IS NULL AND COALESCE(o.after_status,'') LIKE '%待处理%'`).all().filter((row) => {
+      AND COALESCE(o.after_status,'') LIKE '%待处理%'`).all().filter((row) => {
         const timings = parse(row.timings_json, {});
         return Number(timings?.submitRequest || 0) > 0 && Number(timings?.distributionRequest || 0) === 0;
       });
@@ -146,9 +170,15 @@ export class FulfillmentRepository {
         const submittedAt = row.updated_at || nowIso;
         const nextCheckAt = new Date(Math.max(Date.parse(nowIso), Date.parse(submittedAt) + checkSeconds * 1000)).toISOString();
         const deadlineAt = new Date(Date.parse(submittedAt) + deadlineHours * 3600000).toISOString();
-        this.db.prepare(`UPDATE fulfillment_batch_orders SET error_code='TRACKING_NUMBER_PENDING',
-          error_message='交运已提交，Shopee 运单号审批中；系统将持续回查，禁止重复交运。'
-          WHERE batch_id=? AND order_key=? AND error_code='VERIFY_FAILED'`).run(row.batch_id, row.order_key);
+        const hasTracking = Boolean(String(row.tracking_number_masked || '').trim());
+        this.db.prepare(`UPDATE fulfillment_batch_orders SET error_code=?,error_message=?
+          WHERE batch_id=? AND order_key=? AND error_code='VERIFY_FAILED'`).run(
+            hasTracking ? 'DISTRIBUTION_PENDING' : 'TRACKING_NUMBER_PENDING',
+            hasTracking
+              ? '已取得运单号，等待按固定物流渠道转入配货中。'
+              : '交运已提交，Shopee 运单号审批中；系统将持续回查，禁止重复交运。',
+            row.batch_id, row.order_key,
+          );
         this.db.prepare(`INSERT INTO fulfillment_tracking_recoveries
           (order_key,batch_id,display_order_id,shop_id,status,submitted_at,next_check_at,deadline_at)
           VALUES (?,?,?,?,'waiting_tracking',?,?,?) ON CONFLICT(order_key) DO NOTHING`)

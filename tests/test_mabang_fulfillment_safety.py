@@ -81,12 +81,15 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
             'id': '213467731', 'platformOrderId': '260727RCNK1BWT',
             'shopId': '2021485965', 'platformId': '17',
             'trackNumber': '201672570083', 'showOrderStatusText': '待处理',
+            'cansend1logisticsHtml': '<div data-id="1143663">ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具</div>',
         }
         distributed = {**pending, 'showOrderStatusText': '配货中'}
         client.find_order_for_fulfillment = MagicMock(side_effect=[pending, distributed])
         client.get_fulfillment_channel_data = MagicMock(return_value={
             'success': True, '_selectedOrderMatched': True,
-            '_orderPageHtml': '<div data-mylogisticschannelid="1143663"></div>',
+            '_orderPageHtml': '''<script>var highSearch_myLogisticsChannelCache = [
+              {"id":"1143663","myLogisticsId":"1023359","logisticsChannelName":"ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具"}
+            ];</script>''',
         })
         response = MagicMock()
         response.url = 'https://example.test/index.php?mod=order.doBatchDistribution'
@@ -95,7 +98,8 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
         client.session.post = MagicMock(return_value=response)
 
         result = client.distribute_existing_fulfillment(
-            '260727RCNK1BWT', '201672570083', 'fixed-channel-value', '1143663',
+            '260727RCNK1BWT', '201672570083',
+            '1143663_1023359_ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具_1591', '1143663',
             '2021485965', '17', verify_timeout_seconds=15,
         )
 
@@ -123,20 +127,20 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
                 'trackNumber': '201600000083',
                 'showOrderStatusText': '待处理',
                 'isSyncLogistics': '3',
+                'cansend1logisticsHtml': '<div data-id="1143663">ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具</div>',
             },
             {
                 'trackNumber': '201600000083',
                 'showOrderStatusText': '配货中',
                 'isSyncLogistics': '3',
+                'cansend1logisticsHtml': '<div data-id="1143663">ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具</div>',
             },
         ])
-        client.get_fulfillment_channel_data = MagicMock(return_value={
-            'success': True,
-            '_orderPageHtml': '<div data-mylogisticschannelid="1143663"></div>',
-        })
 
         result = client.submit_fulfillment(
-            '260727RCNK1BWT', 'fixed-channel-value', '1143663', verify_timeout_seconds=15
+            '260727RCNK1BWT',
+            '1143663_1023359_ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具_1591',
+            '1143663', verify_timeout_seconds=15
         )
 
         self.assertTrue(result['verified'])
@@ -148,9 +152,20 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
             'distributionWait', 'total', 'trackingPollCount', 'distributionPollCount',
         })
         self.assertGreaterEqual(result['timingsMs']['total'], 0)
-        client.get_fulfillment_channel_data.assert_called_once_with('213467731')
         distribution_call = client.session.post.call_args_list[1]
         self.assertEqual(distribution_call.kwargs['data'], {'orderIds': '213467731', 'type': '1'})
+
+    def test_post_submit_channel_confirmation_requires_order_id_and_exact_name(self):
+        order = {
+            'cansend1logisticsHtml':
+                '<div data-id="1143663">ID-本土-J&amp;TExpress【shopeeV2线上发货(新)】印尼家具</div>',
+        }
+        channel_value = '1143663_1023359_ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具_1591'
+        self.assertTrue(MabangClient.fulfillment_order_channel_selected(order, '1143663', channel_value))
+        self.assertFalse(MabangClient.fulfillment_order_channel_selected(order, '9999999', channel_value))
+        self.assertFalse(MabangClient.fulfillment_order_channel_selected(
+            {'cansend1logisticsHtml': '<div data-id="1143663">其他渠道</div>'}, '1143663', channel_value
+        ))
 
     def test_nested_channel_html_is_recognized(self):
         response = {
@@ -164,6 +179,50 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
             response,
             '1143663',
             '1143663_1023359_ID-本土-J&TExpress_1591',
+        ))
+
+    def test_batch_edit_channel_list_is_the_pre_submit_source_of_truth(self):
+        response = {
+            'success': True,
+            '_orderPageHtml': '''
+                <ul id="BatchEdit_myLogisticsChannelModifyUl" role="menu">
+                  <li><a onclick="$('#BatchEdit_myLogisticsChannelId').val(
+                    '1143663_1023359_ID-本土-J&amp;TExpress【shopeeV2线上发货(新)】印尼家具');">J&amp;T</a></li>
+                </ul>
+            ''',
+        }
+        self.assertTrue(MabangClient.batch_edit_channel_available(
+            response,
+            '1143663',
+            '1143663_1023359_ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具_1591',
+        ))
+        self.assertFalse(MabangClient.batch_edit_channel_available(
+            {'_orderPageHtml': '<ul id="BatchEdit_myLogisticsChannelModifyUl"></ul>'},
+            '1143663',
+            '1143663_1023359_ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具_1591',
+        ))
+
+    def test_batch_edit_channel_cache_is_the_raw_http_source_of_truth(self):
+        response = {
+            '_orderPageHtml': r'''
+                <script>
+                var highSearch_myLogisticsChannelCache = [
+                  {"id":"1143663","source":"1","logisticsId":"1591",
+                   "myLogisticsId":"1023359",
+                   "logisticsChannelName":"ID-\u672c\u571f-J&TExpress\u3010shopeeV2\u7ebf\u4e0a\u53d1\u8d27(\u65b0)\u3011\u5370\u5c3c\u5bb6\u5177",
+                   "logisticsName":"Shopee"}
+                ];
+                </script>
+                <ul id="BatchEdit_myLogisticsChannelModifyUl"></ul>
+            ''',
+        }
+        self.assertEqual(MabangClient.batch_edit_channel_values(response), [
+            '1143663_1023359_ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具',
+        ])
+        self.assertTrue(MabangClient.batch_edit_channel_available(
+            response,
+            '1143663',
+            '1143663_1023359_ID-本土-J&TExpress【shopeeV2线上发货(新)】印尼家具_1591',
         ))
 
     def test_zero_stock_flags_mean_in_stock(self):

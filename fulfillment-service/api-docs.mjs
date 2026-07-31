@@ -64,7 +64,7 @@ export function createOpenApiDocument(config) {
       description: `一个马帮账号下的 ${config.shops.length} 个已配置店铺，每店铺每批最多10单。国家、平台、店铺、渠道、仓库范围和自动发货开关由独立配置文件维护；环境变量继续作为全局开关和店铺白名单。`,
     },
     servers: [{ url: `http://${config.host}:${config.port}`, description: "本机服务" }],
-    tags: [{ name: "状态" }, { name: "看板" }, { name: "定时预览" }, { name: "发货预览与确认" }, { name: "批次" }, { name: "运单恢复" }],
+    tags: [{ name: "状态" }, { name: "只读 Agent" }, { name: "看板" }, { name: "定时预览" }, { name: "发货预览与确认" }, { name: "批次" }, { name: "运单恢复" }],
     components: {
       securitySchemes: { bearerAuth: { type: "http", scheme: "bearer", description: "仅在配置 FULFILLMENT_API_TOKEN 后需要" } },
       schemas: {
@@ -78,6 +78,20 @@ export function createOpenApiDocument(config) {
     paths: {
       "/health": {
         get: { tags: ["状态"], summary: "检查服务状态", responses: { 200: { description: "服务正常" } } },
+      },
+      "/api/fulfillment/agent/status": {
+        get: { tags: ["只读 Agent"], summary: "查看发货 Agent 状态与只读工具清单", security: [{ bearerAuth: [] }],
+          responses: { 200: { description: "返回 enabled、configured、mode、模型、提示词版本和工具清单" } } },
+      },
+      "/api/fulfillment/agent/chat": {
+        post: { tags: ["只读 Agent"], summary: "与马帮发货运营 Agent 对话", security: [{ bearerAuth: [] }],
+          description: "第一阶段只读 Agent。可以查询看板、调度状态、预览、批次并执行安全预检；没有确认发货、异常恢复、清空渠道或修改配置工具。",
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["message"],
+            properties: { message: { type: "string", minLength: 1, maxLength: 4000 },
+              conversationId: { type: "string", description: "可选；用于本进程内的短期连续对话" } } } } } },
+          responses: { 200: { description: "返回中文答复、只读模式以及本轮工具审计摘要" },
+            409: { description: "Agent 已关闭、模型未配置或达到步数上限" },
+            502: { description: "模型响应或上游服务异常" } } },
       },
       "/api/fulfillment/notifications/test": {
         post: { tags: ["状态"], summary: "发送 Windows 测试通知", security: [{ bearerAuth: [] }],
