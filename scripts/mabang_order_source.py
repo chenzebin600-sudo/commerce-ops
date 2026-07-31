@@ -622,7 +622,8 @@ class MabangClient:
         )
         channel_data['_selectedOrderMatched'] = str(internal_id) in selected_order_markup
         channel_data['_orderPageHtml'] = self.get_text_with_reauth(
-            ORDER_PAGE_URL, headers=HEADERS_PAGE, operation='读取物流渠道面板'
+            f'{ORDER_PAGE_URL}&Order_orderStatus=2', headers=HEADERS_PAGE,
+            operation='读取批量修改订单物流渠道缓存'
         )
         return channel_data
 
@@ -655,6 +656,85 @@ class MabangClient:
             if expected_value and expected_value in channel_text:
                 return True
         return False
+
+    @staticmethod
+    def batch_edit_channel_values(channel_data):
+        """Read channel values from UI: Batch actions -> Batch edit orders -> Set logistics channel."""
+        order_page_html = str(
+            channel_data.get('_orderPageHtml')
+            or channel_data.get('orderPageHtml')
+            or ''
+        ) if isinstance(channel_data, dict) else ''
+        # The server-rendered pending-order page exposes the same cache used by
+        # "Batch actions -> Batch edit orders -> Set logistics channel". The
+        # <ul> itself is filled by JavaScript, so raw HTTP clients must read the
+        # cache rather than wait for browser-side DOM hydration.
+        channel_cache = re.search(
+            r'var\s+highSearch_myLogisticsChannelCache\s*=\s*(\[.*?\])\s*;',
+            order_page_html,
+            re.I | re.S,
+        )
+        if channel_cache:
+            try:
+                channels = json.loads(channel_cache.group(1))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                channels = []
+            values = []
+            for channel in channels if isinstance(channels, list) else []:
+                if not isinstance(channel, dict):
+                    continue
+                channel_id = str(channel.get('id') or '').strip()
+                logistics_id = str(channel.get('myLogisticsId') or '').strip()
+                channel_name = str(channel.get('logisticsChannelName') or '').strip()
+                if channel_id and logistics_id and channel_name:
+                    values.append(f'{channel_id}_{logistics_id}_{channel_name}')
+            if values:
+                return list(dict.fromkeys(values))
+
+        # Compatibility with captured/hydrated browser HTML and test fixtures.
+        channel_list = re.search(
+            r'<ul[^>]*id=["\']BatchEdit_myLogisticsChannelModifyUl["\'][^>]*>(.*?)</ul>',
+            order_page_html,
+            re.I | re.S,
+        )
+        if not channel_list:
+            return []
+        values = re.findall(
+            r"BatchEdit_myLogisticsChannelId[^;]{0,80}?\.val\(\s*['\"]([^'\"]+)['\"]\s*\)",
+            channel_list.group(1),
+            re.I | re.S,
+        )
+        return list(dict.fromkeys(html.unescape(value).strip() for value in values if value.strip()))
+
+    @classmethod
+    def batch_edit_channel_available(cls, channel_data, channel_id, channel_value=''):
+        channel_id = str(channel_id or '').strip()
+        expected = str(channel_value or '').strip()
+        suffix = expected.rpartition('_')
+        batch_edit_value = suffix[0] if suffix[2].isdigit() else expected
+        if not channel_id or not batch_edit_value:
+            return False
+        return any(
+            value == batch_edit_value and value.startswith(f'{channel_id}_')
+            for value in cls.batch_edit_channel_values(channel_data)
+        )
+
+    @staticmethod
+    def fulfillment_order_channel_selected(order, channel_id, channel_value=''):
+        """Confirm the channel actually selected on the order row after submission."""
+        current_logistics_html = html.unescape(str(order.get('cansend1logisticsHtml') or ''))
+        channel_id = str(channel_id or '').strip()
+        expected = str(channel_value or '').strip()
+        suffix = expected.rpartition('_')
+        if suffix[2].isdigit():
+            expected = suffix[0]
+        expected_name = expected.split('_', 2)[-1] if '_' in expected else expected
+        if not current_logistics_html or not channel_id or not expected_name:
+            return False
+        return bool(
+            re.search(rf'data-id\s*=\s*["\']{re.escape(channel_id)}["\']', current_logistics_html, re.I)
+            and expected_name in current_logistics_html
+        )
 
     @staticmethod
     def fulfillment_stock_status(order):
@@ -718,6 +798,12 @@ class MabangClient:
             re.I,
         )))
         current_logistics_html = str(order.get('cansend1logisticsHtml') or '')
+        expected_channel_name = str(channel_value or '').strip()
+        expected_suffix = expected_channel_name.rpartition('_')
+        if expected_suffix[2].isdigit():
+            expected_channel_name = expected_suffix[0]
+        expected_channel_name = expected_channel_name.split('_', 2)[-1] if '_' in expected_channel_name else expected_channel_name
+        decoded_logistics_html = html.unescape(current_logistics_html)
         tracking_acquisition_pending = (
             not str(order.get('trackNumber') or '').strip()
             and str(order.get('isSyncLogistics') or '').strip() == '1'
@@ -730,7 +816,10 @@ class MabangClient:
             'orderStatus': str(order.get('orderStatus') or order.get('status') or ''),
             'trackNumber': str(order.get('trackNumber') or ''),
             'orderFieldNames': sorted(str(key) for key in order.keys() if re.search(r'(shop|platform|status|logistic|track|channel|sync)', str(key), re.I)),
-            'channelMatched': self.fulfillment_channel_available(channel_data, channel_id, channel_value),
+            'channelMatched': self.batch_edit_channel_available(channel_data, channel_id, channel_value),
+            'deliveryPanelChannelMatched': self.fulfillment_channel_available(channel_data, channel_id, channel_value),
+            'batchEditChannelMatched': self.batch_edit_channel_available(channel_data, channel_id, channel_value),
+            'batchEditChannelCount': len(self.batch_edit_channel_values(channel_data)),
             'channelResponseKeys': sorted(key for key in channel_data.keys() if not str(key).startswith('_')),
             'selectedOrderMatched': bool(channel_data.get('_selectedOrderMatched')),
             'channelCandidateIds': channel_candidate_ids,
@@ -743,6 +832,14 @@ class MabangClient:
             'autoApi': str(reporting.get('autoApi') or ''),
             'isSLogisticsChannel': str(reporting.get('isSLogisticsChannel') or ''),
             'isSyncLogistics': str(order.get('isSyncLogistics') or ''),
+            'orderLogisticsMarkupLength': len(current_logistics_html),
+            'orderLogisticsContainsChannelId': bool(re.search(
+                rf'data-id\s*=\s*["\']{re.escape(str(channel_id))}["\']', current_logistics_html, re.I
+            )),
+            'orderLogisticsContainsConfiguredName': bool(
+                expected_channel_name and expected_channel_name in decoded_logistics_html
+            ),
+            'orderLogisticsContainsJtExpress': 'J&TExpress' in decoded_logistics_html,
             'trackingAcquisitionPending': tracking_acquisition_pending,
             'propertyJson': property_json,
             'hasDeclarationRows': bool(str(reporting.get('stockHtml') or '').strip()),
@@ -751,7 +848,7 @@ class MabangClient:
             'stockFlagSource': str(order.get('_fulfillmentStockFlagSource') or ''),
             'pageHtmlLength': int(order.get('_fulfillmentPageHtmlLength') or 0),
             'pageContainsOrder': bool(order.get('_fulfillmentPageContainsOrder')),
-            'orderPageContainsFixedChannel': self.fulfillment_channel_available(
+            'orderPageContainsFixedChannel': self.batch_edit_channel_available(
                 {'orderPageHtml': order_page_html}, channel_id, channel_value
             ),
         }
@@ -783,8 +880,8 @@ class MabangClient:
         channel_data = self.get_fulfillment_channel_data(internal_id)
         if not channel_data.get('_selectedOrderMatched'):
             raise Exception('ORDER_NOT_AVAILABLE_FOR_DELIVERY: 马帮物流交运列表未返回指定订单，已停止发货。')
-        if not self.fulfillment_channel_available(channel_data, channel_id, channel_value):
-            raise Exception('CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT: 固定物流渠道不在该订单可用渠道列表中，已停止发货。')
+        if not self.batch_edit_channel_available(channel_data, channel_id, channel_value):
+            raise Exception('CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT: 固定物流渠道不在“批量修改订单”的物流渠道列表中，已停止发货。')
 
         reporting = self.post_json_with_reauth(FULFILLMENT_REPORTING_INFO_URL, headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'}, data={
             'orderId': internal_id, 'tableBase': '1', 'myLogisticsChannelId': channel_value, 'orderLogisticsSearchId': ''
@@ -876,8 +973,10 @@ class MabangClient:
         channel_data = self.get_fulfillment_channel_data(internal_id)
         if not channel_data.get('_selectedOrderMatched'):
             raise Exception('ORDER_NOT_AVAILABLE_FOR_DELIVERY: 马帮物流交运列表未返回指定订单，已停止转配货。')
-        if not self.fulfillment_channel_available(channel_data, channel_id, channel_value):
+        if not self.batch_edit_channel_available(channel_data, channel_id, channel_value):
             raise Exception('CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT: 固定物流渠道不可用，已停止转配货。')
+        if not self.fulfillment_order_channel_selected(order, channel_id, channel_value):
+            raise Exception('TRACKING_CHANNEL_MISMATCH_BEFORE_DISTRIBUTION: 当前订单实际物流渠道与固定渠道不一致，已停止转配货。')
 
         response = self.session.post(
             FULFILLMENT_DISTRIBUTION_URL,
@@ -1047,8 +1146,7 @@ class MabangClient:
             except Exception:
                 continue
             tracking_poll_count += 1
-            channel_data = self.get_fulfillment_channel_data(internal_id)
-            channel_matched = self.fulfillment_channel_available(channel_data, channel_id, channel_value)
+            channel_matched = self.fulfillment_order_channel_selected(latest, channel_id, channel_value)
             if str(latest.get('trackNumber') or '').strip() and channel_matched:
                 break
         tracking_wait_ms = round((time.monotonic() - tracking_started) * 1000)

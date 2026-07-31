@@ -116,5 +116,8 @@ export function resolveFulfillmentConfig({ rootDir, env = process.env } = {}) {
     autoFulfillEnabled,
     autoFulfillShopIds: Object.freeze([...autoFulfillShopIds]),
     windowsNotificationsEnabled: flag(env.FULFILLMENT_WINDOWS_NOTIFICATIONS_ENABLED),
+    fulfillmentAgentEnabled: flag(env.FULFILLMENT_AGENT_ENABLED ?? "true"),
+    fulfillmentAgentModel: String(env.FULFILLMENT_AGENT_MODEL || env.DEEPSEEK_MODEL || "deepseek-chat").trim(),
+    fulfillmentAgentMaxSteps: integer(env.FULFILLMENT_AGENT_MAX_STEPS, 6, { min: 1, max: 8 }),
   });
 }

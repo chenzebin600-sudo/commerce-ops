@@ -9,6 +9,10 @@ import { createDisabledFulfillmentExecutor, createMabangFulfillmentExecutor, cre
 import { createApiDocsHtml, createOpenApiDocument } from "./api-docs.mjs";
 import { FulfillmentPreviewScheduler } from "./scheduler.mjs";
 import { createWindowsNotifier } from "./notifier.mjs";
+import { AiGateway } from "../lib/ai/ai-gateway.mjs";
+import { DeepSeekProvider, resolveDeepSeekEndpoint } from "../lib/ai/providers/deepseek-provider.mjs";
+import { FulfillmentAgent } from "./agent.mjs";
+import { FulfillmentAgentTools } from "./agent-tools.mjs";
 
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 loadLocalEnv(rootDir);
@@ -85,6 +89,20 @@ function dashboardWindows(now = new Date(), days = 7) {
   };
 }
 
+const fulfillmentAgentTools = new FulfillmentAgentTools({ repository, scheduler, serviceForShop, serviceForPreview, dashboardWindows });
+const fulfillmentAgentApiKey = String(process.env.DEEPSEEK_API_KEY || "").trim();
+const fulfillmentAgent = new FulfillmentAgent({
+  enabled: config.fulfillmentAgentEnabled,
+  model: config.fulfillmentAgentModel,
+  maxSteps: config.fulfillmentAgentMaxSteps,
+  repository,
+  tools: fulfillmentAgentTools,
+  gateway: fulfillmentAgentApiKey ? new AiGateway({
+    provider: new DeepSeekProvider({ apiKey: fulfillmentAgentApiKey,
+      endpoint: resolveDeepSeekEndpoint(process.env.DEEPSEEK_BASE_URL) }),
+  }) : null,
+});
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
@@ -94,6 +112,7 @@ const server = http.createServer(async (req, res) => {
       autoFulfillShops: config.shops.filter((shop) => shop.autoFulfillEnabled)
         .map((shop) => ({ id: shop.shopId, name: shop.shopName })),
       orderConcurrency: config.orderConcurrency,
+      fulfillmentAgent: fulfillmentAgent.status(),
       windowsNotificationsEnabled: config.windowsNotificationsEnabled, supervised: process.env.FULFILLMENT_SUPERVISED === "1",
       shopCount: config.shops.length, shops: config.shops.map((shop) => ({ id: shop.shopId, name: shop.shopName,
         platform: shop.platform, platformId: shop.platformId, countryCode: shop.countryCode,
@@ -103,6 +122,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && (url.pathname === "/docs" || url.pathname === "/docs/")) return sendHtml(res, 200, createApiDocsHtml(config));
     if (req.method === "GET" && url.pathname === "/openapi.json") return send(res, 200, createOpenApiDocument(config));
     if (!authorized(req)) return send(res, 401, { success: false, error: { code: "UNAUTHORIZED", message: "未授权访问" } });
+    if (req.method === "GET" && url.pathname === "/api/fulfillment/agent/status") {
+      return send(res, 200, { success: true, data: fulfillmentAgent.status() });
+    }
+    if (req.method === "POST" && url.pathname === "/api/fulfillment/agent/chat") {
+      const payload = await body(req);
+      return send(res, 200, { success: true, data: await fulfillmentAgent.chat(payload) });
+    }
     if (req.method === "GET" && url.pathname === "/api/fulfillment/dashboard") {
       const window = dashboardWindows(new Date(), url.searchParams.get("days"));
       return send(res, 200, { success: true, data: repository.getDashboardSummary(window) });

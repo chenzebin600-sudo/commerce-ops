@@ -142,6 +142,32 @@ test("fulfillment order concurrency cannot be configured above two", () => {
   }}), /1-2/);
 });
 
+test("legacy verify failure with a tracking number migrates to distribution recovery", () => {
+  const repository = new FulfillmentRepository();
+  repository.db.prepare(`INSERT INTO fulfillment_previews
+    (id,status,shop_id,shop_name,channel_id,channel_name,confirmation_hash,expires_at,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run("p-legacy","confirmed",config.shopId,config.shopName,config.channelId,
+      config.channelName,"hash","2026-08-01T00:00:00.000Z","2026-07-31T00:00:00.000Z");
+  repository.db.prepare("INSERT INTO fulfillment_batches (id,preview_id,status,created_at) VALUES (?,?,?,?)")
+    .run("b-legacy","p-legacy","failed","2026-07-31T00:00:00.000Z");
+  repository.db.prepare(`INSERT INTO fulfillment_batch_orders
+    (batch_id,order_key,display_order_id,status,tracking_number_masked,error_code,error_message,
+     before_status,after_status,timings_json,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .run("b-legacy","legacy:o1","O-LEGACY","needs_attention","2016****8685","VERIFY_FAILED",
+      "发货后回查不一致","待处理","待处理",'{"submitRequest":10,"distributionRequest":0}',
+      "2026-07-31T00:01:00.000Z");
+  repository.db.prepare("INSERT INTO fulfillment_idempotency (order_key,batch_id,status,completed_at) VALUES (?,?,?,?)")
+    .run("legacy:o1","b-legacy","needs_attention","2026-07-31T00:01:00.000Z");
+
+  assert.equal(repository.migratePendingTrackingRecoveries({
+    nowIso:"2026-07-31T00:02:00.000Z",checkSeconds:300,deadlineHours:24,
+  }), 1);
+  const migrated = repository.getBatch("b-legacy").orders[0];
+  assert.equal(migrated.errorCode, "DISTRIBUTION_PENDING");
+  assert.equal(repository.listTrackingRecoveries(10, config.shopId)[0].status, "waiting_tracking");
+  repository.close();
+});
+
 test("fulfillment shop catalog fails closed on duplicate stable shop ids", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "fulfillment-shop-config-"));
   try {

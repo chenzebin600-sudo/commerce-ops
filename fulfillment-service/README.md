@@ -47,6 +47,8 @@ FULFILLMENT_AUTO_FULFILL_SHOP_IDS=2021578358,2021485965,2021621760,2021557966
 
 ## 接口
 
+- `GET /api/fulfillment/agent/status`，查看只读 Agent 是否启用、模型是否配置、提示词版本和工具白名单
+- `POST /api/fulfillment/agent/chat`，请求体 `{ "message": "检查今天有没有发货异常", "conversationId": "可选会话ID" }`；Agent 只允许查询看板、调度状态、预览、批次和执行深度预检
 - `GET /api/fulfillment/dashboard?days=7`，只读运营看板统计；按北京时间返回今日订单、成功/执行中/异常、店铺表现、耗时、趋势和当前恢复队列
 - `POST /api/fulfillment/previews`，请求体 `{ "limit": 10 }`
 - `POST /api/fulfillment/preflights`，请求体 `{ "orderId": "指定订单号" }`；执行全部底层检查但绝不提交
@@ -56,6 +58,20 @@ FULFILLMENT_AUTO_FULFILL_SHOP_IDS=2021578358,2021485965,2021621760,2021557966
 - `POST /api/fulfillment/manual-reviews/recheck`，请求体 `{ "shopId": "店铺ID", "orderId": "订单号" }`；只重新核对并解除已修复订单的人工锁，不会立即提交发货
 - `GET /api/fulfillment/tracking-recoveries`，查看跨店铺运单号审批恢复队列
 - `POST /api/fulfillment/tracking-recoveries/check`，单笔受控真实测试使用 `{ "shopId": "店铺ID", "orderId": "指定订单号", "confirmation": "TRACKING_RECOVERY_CONFIRMED" }`；确认标记只授权这一单，不会开启全局自动清空
+
+## 只读发货 Agent
+
+第一阶段 Agent 复用项目现有 DeepSeek AI 网关。配置 `DEEPSEEK_API_KEY` 后即可按需调用；也可以通过 `FULFILLMENT_AGENT_ENABLED=false` 完全关闭。可选配置为：
+
+```env
+FULFILLMENT_AGENT_ENABLED=true
+FULFILLMENT_AGENT_MODEL=deepseek-chat
+FULFILLMENT_AGENT_MAX_STEPS=6
+```
+
+Agent 与现有自动发货调度器相互隔离。它不能调用 `/scheduler/scan`，因为该接口在生产开关开启时可能自动创建真实批次；Agent 的“检查订单”只会按店铺生成预览。工具层不包含确认发货、领取确认令牌、运单恢复、留言恢复、渠道清空、配置修改或开关修改能力，预览返回的确认令牌也会在进入模型前移除。
+
+每次 Agent 运行只在 `fulfillment_agent_runs` 中保存运行 ID、会话 ID、模型、步骤数、工具名称与参数字段名、状态和错误码。用户原始消息、模型最终答复、工具结果、订单号参数值和密钥不会写入该审计表。短期对话上下文仅保存在当前服务进程内，重启后清空。
 
 主系统 `http://127.0.0.1:3101/#fulfillment` 的“发货任务”页通过本机只读代理展示恢复队列。它只读取状态，不暴露恢复写操作，适合日常观察审批中、重新交运后等待、恢复成功和需要人工处理的订单。
 
@@ -73,7 +89,7 @@ Shopee 已接受交运但暂未返回运单号时，订单进入持久化恢复�
 
 真实基线、阶段耗时和并发验收标准见 `fulfillment-service/PERFORMANCE.md`。
 
-真实提交前还会重新读取该订单的可用物流渠道列表，并精确匹配固定渠道 ID `1143663`。渠道查询失败或列表中不存在该渠道时返回 `CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT`，不会调用交运提交接口。
+真实提交前会读取马帮“批处理功能 → 批量修改订单 → 设置物流渠道”弹窗中的渠道列表，并精确匹配固定渠道 ID `1143663` 及完整渠道值。列表读取失败或不存在该渠道时返回 `CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT`，不会调用交运提交接口。交运弹窗接口仅用于确认目标订单仍可交运，不再作为渠道列表来源。
 
 马帮订单原始库存标志中 `0` 表示有货、`2` 表示缺货、`3` 表示同一订单中的 SKU 分属不同仓库并需要进入待审核处理。任一标志为 `2` 时停止提交；标志为 `3` 或预览检测到多个仓库时标记为 `MULTI_WAREHOUSE_REQUIRES_REVIEW`；标志缺失或出现其他未识别值时按库存未知停止，不作乐观推断。
 

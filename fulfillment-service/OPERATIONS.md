@@ -15,6 +15,8 @@
 
 日志文件：`storage\logs\fulfillment-service.log`。单个日志超过 5 MB 时自动归档，历史日志不会被自动删除。
 
+只读发货 Agent 状态可通过 `http://127.0.0.1:3112/api/fulfillment/agent/status` 查看；交互测试入口位于 `http://127.0.0.1:3112/docs`。Agent 未配置 DeepSeek 时不会影响扫描和自动发货服务。
+
 ## 停止开机自启
 
 双击项目目录下的 `scripts\uninstall-fulfillment-startup.cmd`。卸载会删除计划任务或“启动”文件夹入口，不删除订单数据库和日志。
