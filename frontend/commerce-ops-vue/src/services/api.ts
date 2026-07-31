@@ -49,7 +49,8 @@ export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok || payload.ok === false || payload.success === false) {
     const error = payload.error as { message?: string } | string | undefined;
-    const message = typeof error === "string" ? error : error?.message;
+    const responseMessage = typeof payload.message === "string" ? payload.message : "";
+    const message = (typeof error === "string" ? error : error?.message) || responseMessage;
     throw new ApiError(message || `请求失败 (${response.status})`, response.status);
   }
   return ((payload.data ?? payload.dashboard ?? payload) as T);

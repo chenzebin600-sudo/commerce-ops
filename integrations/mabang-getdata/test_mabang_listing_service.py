@@ -2623,6 +2623,60 @@ class ListingServiceTests(unittest.TestCase):
         )
         self.assertEqual(preview["batch_preview"]["target_count"], 1)
 
+    def test_ai_scope_clears_resolved_model_scope_question(self):
+        self.client = ShopeeTikTokListingClient()
+        with service.SESSION_LOCK:
+            service.SESSION["client"] = self.client
+
+        preview = service.create_ai_scope_preview(
+            {
+                "active_platform": "shopee",
+                "parsed_command": {
+                    "action": "stock_update",
+                    "target": {"sku": "SKU-A"},
+                    "scope": {"platforms": []},
+                    "operation": {
+                        "mode": "set",
+                        "value": 99,
+                        "unit": "quantity",
+                    },
+                    "need_confirm": True,
+                    "risks": [],
+                    "clarifications": [
+                        "未指定具体平台、店铺或国家，请确认范围。",
+                    ],
+                    "confidence": 0.99,
+                },
+            }
+        )
+
+        self.assertEqual(preview["command"]["scope"]["platforms"], ["shopee"])
+        self.assertEqual(preview["command"]["clarifications"], [])
+        self.assertEqual(preview["batch_preview"]["target_count"], 1)
+
+    def test_ai_scope_keeps_non_scope_clarifications(self):
+        command = service.validate_ai_command(
+            {
+                "action": "stock_update",
+                "target": {"sku": "SKU-A"},
+                "scope": {"platforms": []},
+                "operation": {
+                    "mode": "set",
+                    "value": 99,
+                    "unit": "quantity",
+                },
+                "need_confirm": True,
+                "risks": [],
+                "clarifications": ["请确认目标仓库。"],
+                "confidence": 0.99,
+            }
+        )
+
+        contextualized = service._apply_ai_platform_context([command], "shopee")
+
+        self.assertEqual(contextualized[0]["scope"]["platforms"], ["shopee"])
+        self.assertEqual(contextualized[0]["clarifications"], ["请确认目标仓库。"])
+
     def test_ai_scope_keeps_explicit_platform_over_page_context(self):
         command = service.validate_ai_command(
             {

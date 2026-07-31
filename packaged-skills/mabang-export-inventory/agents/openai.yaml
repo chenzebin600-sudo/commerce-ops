@@ -1,0 +1,4 @@
+interface:
+  display_name: "马帮库存信息导出"
+  short_description: "Export complete Mabang inventory snapshots safely."
+  default_prompt: "Use $mabang-export-inventory to export the current Mabang inventory snapshot to an XLSX file."

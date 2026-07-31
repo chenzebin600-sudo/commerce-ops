@@ -1,6 +1,29 @@
-import { apiJson } from "./api";
+import { apiJson, authorizedFetch } from "./api";
 
-export type MabangSyncTaskType = "order_export" | "inventory_export";
+export type MabangSyncTaskType = "order_export" | "inventory_export" | "daily_report";
+
+export interface MabangOrderField {
+  id: string;
+  label: string;
+}
+
+export interface MabangOrderFilter {
+  fieldId: string;
+  operator: "equals" | "contains" | "notEquals" | "notContains" | "empty" | "notEmpty";
+  values: string[];
+}
+
+export interface MabangFilterOptions {
+  managers?: string[];
+  shops?: string[];
+  platforms?: string[];
+  regions?: string[];
+  warehouses?: string[];
+  orderStatuses?: string[];
+  skus?: string[];
+  logisticsChannels?: string[];
+  managerShops?: Record<string, string[]>;
+}
 
 export interface MabangAccountProfile {
   id: string;
@@ -57,18 +80,54 @@ export interface MabangScheduledRun {
   taskId: string;
   taskName: string;
   taskType: MabangSyncTaskType;
+  triggerType: string;
   status: string;
   scheduledRunAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  paymentStartDate: string | null;
+  paymentEndDate: string | null;
+  rawOrderCount: number;
+  filteredOrderCount: number;
   detailRowCount: number;
+  exportFileId: string | null;
+  filename: string | null;
+  notificationStatus: string | null;
   errorCode: string | null;
   errorMessage: string | null;
+  logSummary?: {
+    dataPersistence?: {
+      status?: string;
+      batchId?: string | null;
+      rowCount?: number;
+    } | null;
+    executionOptions?: Record<string, unknown> | null;
+  };
+}
+
+export interface MabangRunEvent {
+  id: number;
+  stage: string;
+  status: string;
+  attempt: number;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  message: string;
+  errorCode: string | null;
+}
+
+export interface MabangRunDetail extends MabangScheduledRun {
+  events: MabangRunEvent[];
+  task: MabangScheduledTask;
 }
 
 export interface AutomationOverview {
   scheduler: { online: boolean; leaseUntil: string | null; updatedAt: string | null };
   encryptionConfigured: boolean;
+  fields: MabangOrderField[];
+  primaryFilterIds: string[];
+  paymentDateModes: string[];
   accounts: MabangAccountProfile[];
   dingtalkConfigs: DingtalkConfig[];
   tasks: MabangScheduledTask[];
@@ -97,6 +156,14 @@ export interface AiRecommendation {
   evidence: string[];
 }
 
+export interface AiModuleAnalysis {
+  headline: string;
+  summary: string;
+  findings: AiInsight[];
+  recommendations: AiRecommendation[];
+  dataLimitations: string[];
+}
+
 export interface SalesAssortmentAnalysis {
   id: string;
   generatedAt: string;
@@ -114,12 +181,19 @@ export interface SalesAssortmentAnalysis {
     recommendations: AiRecommendation[];
     risks: AiInsight[];
     dataLimitations: string[];
+    modules: Partial<Record<"trend" | "dataQuality" | "hierarchy" | "opportunities" | "products" | "stores" | "storeDeclines" | "storeGrowth" | "styleDeclines" | "styleGrowth" | "businessOpportunities" | "inventory" | "dailyReport", AiModuleAnalysis | null>>;
   };
 }
 
 export async function loadAutomationOverview(signal?: AbortSignal): Promise<AutomationOverview> {
   const [meta, accounts, dingtalk, tasks, runs] = await Promise.all([
-    apiJson<{ scheduler: AutomationOverview["scheduler"]; encryptionConfigured?: boolean }>("/api/mabang/scheduler-meta", { signal }),
+    apiJson<{
+      scheduler: AutomationOverview["scheduler"];
+      encryptionConfigured?: boolean;
+      fields?: MabangOrderField[];
+      primaryFilterIds?: string[];
+      paymentDateModes?: string[];
+    }>("/api/mabang/scheduler-meta", { signal }),
     apiJson<{ profiles?: MabangAccountProfile[] }>("/api/mabang/account-profiles", { signal }),
     apiJson<{ configs?: DingtalkConfig[] }>("/api/notifications/dingtalk/configs", { signal }),
     apiJson<{ tasks?: MabangScheduledTask[] }>("/api/mabang/scheduled-tasks", { signal }),
@@ -128,9 +202,12 @@ export async function loadAutomationOverview(signal?: AbortSignal): Promise<Auto
   return {
     scheduler: meta.scheduler,
     encryptionConfigured: Boolean(meta.encryptionConfigured),
+    fields: meta.fields || [],
+    primaryFilterIds: meta.primaryFilterIds || [],
+    paymentDateModes: meta.paymentDateModes || [],
     accounts: accounts.profiles || [],
     dingtalkConfigs: dingtalk.configs || [],
-    tasks: (tasks.tasks || []).filter((task) => task.taskType === "order_export" || task.taskType === "inventory_export"),
+    tasks: (tasks.tasks || []).filter((task) => ["order_export", "inventory_export", "daily_report"].includes(task.taskType)),
     runs: runs.runs || [],
   };
 }
@@ -159,7 +236,9 @@ export function saveDailySyncTask(input: {
       name: input.name,
       description: existing?.description || (input.taskType === "order_export"
         ? "销售与货盘驾驶舱每日订单事实同步"
-        : "销售与货盘驾驶舱每日库存快照同步"),
+        : input.taskType === "inventory_export"
+          ? "销售与货盘驾驶舱每日库存快照同步"
+          : "生成销售与货盘经营日报并推送钉钉"),
       accountProfileId: input.accountProfileId,
       dingtalkConfigId: input.dingtalkConfigId || null,
       scheduleType: "daily",
@@ -184,12 +263,48 @@ export function setSyncTaskEnabled(taskId: string, enabled: boolean) {
   });
 }
 
-export function runSyncTask(taskId: string) {
+export function runSyncTask(taskId: string, executionOptions?: {
+  paymentDateMode: string;
+  paymentDateConfig: Record<string, unknown>;
+  filters: MabangOrderFilter[];
+}) {
   return apiJson(`/api/mabang/scheduled-tasks/${encodeURIComponent(taskId)}/run-now`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: "{}",
+    body: JSON.stringify(executionOptions || {}),
   });
+}
+
+export async function loadMabangFilterOptions(accountProfileId: string, signal?: AbortSignal) {
+  const payload = await apiJson<{ options?: MabangFilterOptions }>(
+    `/api/mabang/scheduler-filter-options?accountProfileId=${encodeURIComponent(accountProfileId)}`,
+    { signal },
+  );
+  return payload.options || {};
+}
+
+export async function loadMabangRunDetail(runId: string, signal?: AbortSignal) {
+  const payload = await apiJson<{ run: MabangRunDetail }>(
+    `/api/mabang/scheduled-runs/${encodeURIComponent(runId)}`,
+    { signal },
+  );
+  return payload.run;
+}
+
+export async function downloadMabangExport(fileId: string, filename = "马帮订单导出.xlsx") {
+  const response = await authorizedFetch(`/api/mabang/export-files/${encodeURIComponent(fileId)}/download`);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(payload.error || `导出文件下载失败 (${response.status})`);
+  }
+  const blobUrl = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement("a");
+  anchor.href = blobUrl;
+  anchor.download = filename || "马帮订单导出.xlsx";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 0);
 }
 
 export function saveDingtalkConfig(input: {
@@ -232,10 +347,14 @@ export function loadSalesAiStatus(signal?: AbortSignal) {
 
 export async function analyzeSalesDashboard(filters: {
   periodDays: number;
+  dateFrom?: string;
+  dateTo?: string;
+  comparisonDays?: number;
   country?: string;
   categoryL1?: string;
   categoryL2?: string;
   style?: string;
+  store?: string;
   forceRefresh?: boolean;
 }, signal?: AbortSignal) {
   const payload = await apiJson<{ analysis: SalesAssortmentAnalysis }>("/api/sales-assortment/analyze", {

@@ -161,8 +161,32 @@ export function restoreProduct(id: string) {
   });
 }
 
+const mabangAssetBlobCache = new Map<string, Promise<Blob>>();
+const mabangAssetBlobCacheLimit = 80;
+
+async function loadMabangAssetBlob(assetId: string) {
+  const cached = mabangAssetBlobCache.get(assetId);
+  if (cached) {
+    mabangAssetBlobCache.delete(assetId);
+    mabangAssetBlobCache.set(assetId, cached);
+    return cached;
+  }
+  const pending = authorizedFetch(`/api/mabang-images/assets/${encodeURIComponent(assetId)}/content`)
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`图片加载失败 (${response.status})`);
+      return response.blob();
+    })
+    .catch((error) => {
+      mabangAssetBlobCache.delete(assetId);
+      throw error;
+    });
+  mabangAssetBlobCache.set(assetId, pending);
+  while (mabangAssetBlobCache.size > mabangAssetBlobCacheLimit) {
+    mabangAssetBlobCache.delete(mabangAssetBlobCache.keys().next().value as string);
+  }
+  return pending;
+}
+
 export async function loadMabangAssetUrl(assetId: string) {
-  const response = await authorizedFetch(`/api/mabang-images/assets/${encodeURIComponent(assetId)}/content`);
-  if (!response.ok) throw new Error(`图片加载失败 (${response.status})`);
-  return URL.createObjectURL(await response.blob());
+  return URL.createObjectURL(await loadMabangAssetBlob(assetId));
 }

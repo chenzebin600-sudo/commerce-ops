@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { appendVaryHeader, encodeHttpBody } from "./lib/http-content-encoding.mjs";
 import {
   appStartupMessages,
   authenticationApiResponse,
@@ -110,6 +111,19 @@ import { decryptSecret } from "./lib/mabang-scheduler/crypto.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
+const staticRepresentationCache = new Map();
+const staticRepresentationCacheLimit = 96;
+const compressibleStaticExtensions = new Set([
+  ".css",
+  ".html",
+  ".js",
+  ".json",
+  ".mjs",
+  ".svg",
+  ".txt",
+  ".xml",
+]);
+const hashedStaticAssetPattern = /\/assets\/[^/]+-[A-Za-z0-9_-]{8,}\.[^/]+$/;
 const excelCellPolicyModulePath = path.join(__dirname, "lib", "security", "excel-cell-policy.mjs");
 const productPackageParserPath = path.join(__dirname, "scripts", "product-package-parser.py");
 const growthRadarParserPath = path.join(__dirname, "scripts", "growth-radar-parser.py");
@@ -415,6 +429,8 @@ const handleGrowthRadarApi = createGrowthRadarApi({
   service: growthRadarService,
   accessPolicy: growthRadarAccessPolicy,
   maxUploadBytes: fileStorageConfig.maxUploadBytes,
+  fileService: exportFileService,
+  fileStorageConfig,
 });
 const growthRadarV2Service = new GrowthRadarV2Service({
   repository: dataAccess.repositories.growthRadarV2,
@@ -2921,12 +2937,36 @@ async function serveStatic(req, res, url) {
   }
 
   try {
-    const data = await fs.readFile(filePath);
-    res.writeHead(200, {
+    const stat = await fs.stat(filePath);
+    const extension = path.extname(filePath).toLowerCase();
+    const compressible = compressibleStaticExtensions.has(extension);
+    const acceptEncoding = compressible ? req.headers["accept-encoding"] : "";
+    const cacheKey = `${filePath}\u001f${stat.size}\u001f${stat.mtimeMs}\u001f${acceptEncoding}`;
+    let representation = staticRepresentationCache.get(cacheKey);
+    if (!representation) {
+      const data = await fs.readFile(filePath);
+      representation = await encodeHttpBody(data, acceptEncoding);
+      staticRepresentationCache.set(cacheKey, representation);
+      while (staticRepresentationCache.size > staticRepresentationCacheLimit) {
+        staticRepresentationCache.delete(staticRepresentationCache.keys().next().value);
+      }
+    }
+    const etag = `W/"${stat.size.toString(16)}-${Math.trunc(stat.mtimeMs).toString(16)}"`;
+    const immutable = hashedStaticAssetPattern.test(requested);
+    const headers = {
       "content-type": mimeTypes[path.extname(filePath)] || "application/octet-stream",
-      "cache-control": "no-store",
-    });
-    res.end(data);
+      "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
+      "content-length": String(representation.body.length),
+      etag,
+      vary: appendVaryHeader(undefined, "Accept-Encoding"),
+    };
+    if (representation.encoding) headers["content-encoding"] = representation.encoding;
+    if (req.headers["if-none-match"] === etag) {
+      res.writeHead(304, { etag, "cache-control": headers["cache-control"], vary: headers.vary });
+      return res.end();
+    }
+    res.writeHead(200, headers);
+    res.end(req.method === "HEAD" ? undefined : representation.body);
   } catch {
     res.writeHead(404);
     res.end("Not found");

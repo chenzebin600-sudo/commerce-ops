@@ -27,10 +27,12 @@ test("AI gateway preserves messages and returns the unified result contract", as
     operation: "test_completion",
     model: "deepseek-chat",
     messages,
+    thinking: { type: "disabled" },
     requestId: "request-test-1",
   });
   assert.deepEqual(requestBody.messages, messages);
   assert.equal(requestBody.model, "deepseek-chat");
+  assert.deepEqual(requestBody.thinking, { type: "disabled" });
   assert.equal(result.success, true);
   assert.equal(result.content, "unchanged result");
   assert.equal(result.requestId, "request-test-1");

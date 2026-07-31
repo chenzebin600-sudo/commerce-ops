@@ -2,7 +2,6 @@
 import { LogOut, Menu, RefreshCw } from "@lucide/vue";
 import { computed } from "vue";
 import { useRoute } from "vue-router";
-import GlobalFilterBar from "@/components/GlobalFilterBar.vue";
 import OpsSidebar from "@/components/OpsSidebar.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 
@@ -39,7 +38,6 @@ const subtitle = computed(() => String(route.meta.subtitle || "跨境电商运�
           退出
         </el-button>
       </header>
-      <GlobalFilterBar />
       <section class="page-content" tabindex="-1">
         <RouterView />
       </section>

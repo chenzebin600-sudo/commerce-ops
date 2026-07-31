@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { AlertTriangle, RefreshCw } from "@lucide/vue";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import MetricCard from "@/components/MetricCard.vue";
 import TrendChart from "@/components/TrendChart.vue";
 import { loadOperationsOverview, type FulfillmentDashboard, type SalesDashboard } from "@/services/overview";
@@ -8,9 +8,10 @@ import { useWorkspaceStore } from "@/stores/workspace";
 
 const workspace = useWorkspaceStore();
 const loading = ref(true);
-const sales = ref<SalesDashboard | null>(null);
-const fulfillment = ref<FulfillmentDashboard | null>(null);
+const sales = shallowRef<Pick<SalesDashboard, "summary" | "trend" | "stores"> | null>(null);
+const fulfillment = shallowRef<FulfillmentDashboard | null>(null);
 const warnings = ref<string[]>([]);
+let refreshController: AbortController | null = null;
 
 interface FulfillmentTotals { total: number; success: number; running: number; exceptions: number }
 
@@ -26,17 +27,28 @@ const successRate = computed(() => fulfillmentTotals.value.total
   : "—");
 
 async function refresh() {
+  refreshController?.abort();
+  const controller = new AbortController();
+  refreshController = controller;
   loading.value = true;
-  const result = await loadOperationsOverview(workspace.periodDays);
-  sales.value = result.sales;
-  fulfillment.value = result.fulfillment;
-  warnings.value = result.warnings;
-  workspace.lastSyncedAt = new Date();
-  loading.value = false;
+  try {
+    const result = await loadOperationsOverview(workspace.periodDays, controller.signal);
+    if (controller.signal.aborted) return;
+    sales.value = result.sales;
+    fulfillment.value = result.fulfillment;
+    warnings.value = result.warnings;
+    workspace.lastSyncedAt = new Date();
+  } finally {
+    if (refreshController === controller) {
+      refreshController = null;
+      loading.value = false;
+    }
+  }
 }
 
 watch(() => workspace.periodDays, refresh);
 onMounted(refresh);
+onBeforeUnmount(() => refreshController?.abort());
 </script>
 
 <template>
@@ -54,7 +66,7 @@ onMounted(refresh);
     <section class="metric-grid" aria-label="核心经营指标">
       <MetricCard label="我方销售额" :value="sales ? `¥${sales.summary.ownAmount.toLocaleString('zh-CN')}` : '—'" :hint="`${workspace.periodDays} 天统计口径`" />
       <MetricCard label="销售件数" :value="sales ? sales.summary.ownQuantity.toLocaleString('zh-CN') : '—'" hint="订单有效商品数量" />
-      <MetricCard label="货盘占比" :value="sales ? `${(sales.summary.ownShare * 100).toFixed(1)}%` : '—'" hint="我方销售 / 货盘规模" />
+      <MetricCard label="货盘占比" :value="sales ? `${Number(sales.summary.ownShare || 0).toFixed(1)}%` : '—'" hint="我方销售额 / 货盘金额" />
       <MetricCard label="履约成功率" :value="successRate" :hint="`${fulfillmentTotals.total} 个履约订单`" tone="success" />
       <MetricCard label="执行中" :value="fulfillmentTotals.running.toLocaleString('zh-CN')" hint="正在处理的履约任务" tone="warning" />
       <MetricCard label="履约异常" :value="fulfillmentTotals.exceptions.toLocaleString('zh-CN')" hint="需要人工关注" :tone="fulfillmentTotals.exceptions ? 'danger' : 'default'" />

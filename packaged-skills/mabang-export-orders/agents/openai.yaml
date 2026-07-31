@@ -1,0 +1,4 @@
+interface:
+  display_name: "马帮订单信息导出"
+  short_description: "Export Mabang order details by payment-time range."
+  default_prompt: "Use $mabang-export-orders to export Mabang order details for a payment-time range to an XLSX file."

@@ -120,6 +120,49 @@ function createApiHarness(context) {
   };
 }
 
+test("manual order export stores one-off payment dates and filters without changing the schedule", async () => {
+  const context = createContext({ enabled: false });
+  const request = createApiHarness(context);
+  const response = await request("POST", `/api/mabang/scheduled-tasks/${context.task.id}/run-now`, {
+    paymentDateMode: "fixed",
+    paymentDateConfig: { startDate: "2026-07-01", endDate: "2026-07-15" },
+    filters: [
+      { fieldId: "uq135", operator: "equals", values: ["TIXX PH"] },
+      { fieldId: "uq136", operator: "notEquals", values: ["已作废"] },
+    ],
+  });
+
+  assert.equal(response.status, 202);
+  assert.deepEqual(response.data.paymentDateRange, { startDate: "2026-07-01", endDate: "2026-07-15" });
+  assert.equal(response.data.filterCount, 2);
+  const run = context.db.getRun(response.data.runId);
+  assert.deepEqual(run.logSummary.executionOptions, {
+    paymentDateMode: "fixed",
+    paymentDateConfig: { startDate: "2026-07-01", endDate: "2026-07-15" },
+    filters: [
+      { fieldId: "uq135", field: "店铺名", operator: "equals", values: ["TIXX PH"] },
+      { fieldId: "uq136", field: "订单状态", operator: "notEquals", values: ["已作废"] },
+    ],
+  });
+  const unchangedTask = context.db.getTask(context.task.id);
+  assert.equal(unchangedTask.paymentDateMode, "yesterday");
+  assert.deepEqual(unchangedTask.filters, []);
+  context.db.close();
+});
+
+test("manual order export rejects unsupported filter fields", async () => {
+  const context = createContext({ enabled: false });
+  const request = createApiHarness(context);
+  const response = await request("POST", `/api/mabang/scheduled-tasks/${context.task.id}/run-now`, {
+    paymentDateMode: "today",
+    filters: [{ fieldId: "unknown", operator: "equals", values: ["unsafe"] }],
+  });
+  assert.equal(response.status, 400);
+  assert.match(response.data.error, /筛选字段无效/);
+  assert.equal(context.db.listRuns({}).length, 0);
+  context.db.close();
+});
+
 test("soft-delete migration is additive and preserves all existing business rows", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "commerce-ops-soft-delete-migration-"));
   const stagedMigrations = path.join(root, "migrations");

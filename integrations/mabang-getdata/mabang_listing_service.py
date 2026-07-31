@@ -379,6 +379,27 @@ def _shop_name_key(value: Any) -> str:
     return re.sub(r"\s+", "", normalized).casefold()
 
 
+def _is_resolved_scope_clarification(value: Any) -> bool:
+    """Identify model questions that page context can resolve deterministically."""
+
+    normalized = re.sub(
+        r"[\s，,。；;：:、？?]",
+        "",
+        unicodedata.normalize("NFKC", str(value or "")),
+    ).casefold()
+    if not normalized:
+        return False
+    missing_scope = any(
+        marker in normalized
+        for marker in ("未指定", "没有指定", "未明确", "缺少", "请确认范围")
+    )
+    scope_dimension = any(
+        dimension in normalized
+        for dimension in ("平台", "店铺", "国家", "范围")
+    )
+    return missing_scope and scope_dimension
+
+
 def _apply_ai_platform_context(
     commands: Sequence[dict[str, Any]],
     active_platform: Any,
@@ -395,6 +416,17 @@ def _apply_ai_platform_context(
         scope = command["scope"]
         if not scope.get("platforms"):
             scope["platforms"] = [platform]
+        target = command.get("target") or {}
+        has_explicit_target = any(
+            str(target.get(field) or "").strip()
+            for field in ("sku", "parent_sku", "category")
+        )
+        if has_explicit_target:
+            command["clarifications"] = [
+                clarification
+                for clarification in command.get("clarifications") or []
+                if not _is_resolved_scope_clarification(clarification)
+            ]
         contextualized.append(command)
     return contextualized
 
