@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { GrowthRadarService } from "../lib/growth-radar/growth-radar-service.mjs";
 import { resolvePythonRuntime } from "../lib/python-runtime.mjs";
+import { SalesAssortmentAiService } from "../lib/sales-assortment/sales-assortment-ai-service.mjs";
 import { SalesAssortmentService } from "../lib/sales-assortment/sales-assortment-service.mjs";
 
 const root = path.resolve(".");
@@ -89,6 +90,75 @@ test("sales assortment dashboard compares assortment and own sales with one stan
   );
 });
 
+test("sales assortment DeepSeek analysis uses only compact dashboard facts and caches identical sources", async () => {
+  const dashboardService = new SalesAssortmentService({
+    repository: repositoryFixture(),
+  });
+  const requests = [];
+  const service = new SalesAssortmentAiService({
+    dashboardService,
+    configured: true,
+    model: "deepseek-v4-flash",
+    now: () => new Date("2026-07-31T08:00:00Z"),
+    gateway: {
+      complete: async (request) => {
+        requests.push(request);
+        return {
+          success: true,
+          provider: "deepseek",
+          model: request.model,
+          usage: { total_tokens: 123 },
+          content: JSON.stringify({
+            headline: "泰国家居货盘值得优先核查",
+            overview: "货盘表现强于我方承接，库存能够支持人工测试。",
+            conclusions: [{
+              type: "opportunity",
+              title: "测试产品承接不足",
+              reason: "货盘销量高于我方销量。",
+              evidence: ["货盘销量 10", "我方销量 2"],
+            }],
+            recommendations: [{
+              priority: "P1",
+              title: "核查测试店覆盖",
+              action: "确认在线状态后安排低风险测试。",
+              reason: "当前占比仅 20%。",
+              evidence: ["我方占比 20%"],
+            }],
+            risks: [],
+            dataLimitations: ["订单窗口仅 1 天"],
+          }),
+        };
+      },
+    },
+  });
+
+  const first = await service.analyze({ periodDays: 7 });
+  const second = await service.analyze({ periodDays: 7 });
+
+  assert.equal(first.analysis.recommendations[0].priority, "P1");
+  assert.equal(first.model, "deepseek-v4-flash");
+  assert.equal(first.cached, false);
+  assert.equal(second.cached, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].moduleId, "sales_assortment");
+  assert.deepEqual(requests[0].responseFormat, { type: "json_object" });
+  assert.match(requests[0].messages[1].content, /货盘标准化销售额/);
+  assert.doesNotMatch(requests[0].messages[1].content, /客户姓名|邮寄地址|电话1/);
+});
+
+test("sales assortment AI reports an explicit configuration gate", async () => {
+  const service = new SalesAssortmentAiService({
+    dashboardService: new SalesAssortmentService({ repository: repositoryFixture() }),
+    configured: false,
+    gateway: { complete: async () => ({ success: false }) },
+  });
+  assert.equal(service.status().configured, false);
+  await assert.rejects(
+    service.analyze({ periodDays: 7 }),
+    (error) => error.code === "AI_NOT_CONFIGURED" && error.status === 503,
+  );
+});
+
 test("growth radar import accepts large legitimate worksheets without relaxing other workbook gates", () => {
   const service = new GrowthRadarService({
     repository: {},
@@ -153,11 +223,12 @@ test("order parser inherits only common fields for multiline order rows and keep
 });
 
 test("sales assortment frontend stays an isolated React island in the unified shell", async () => {
-  const [html, app, loader, packageJson] = await Promise.all([
+  const [html, app, loader, packageJson, dashboardApp] = await Promise.all([
     fs.readFile(path.join(root, "public", "index.html"), "utf8"),
     fs.readFile(path.join(root, "public", "app.js"), "utf8"),
     fs.readFile(path.join(root, "public", "sales-assortment-dashboard-loader.mjs"), "utf8"),
     fs.readFile(path.join(root, "frontend", "sales-assortment-dashboard", "package.json"), "utf8"),
+    fs.readFile(path.join(root, "frontend", "sales-assortment-dashboard", "src", "App.tsx"), "utf8"),
   ]);
   assert.match(html, /data-page="sales-assortment"/);
   assert.match(html, /id="salesAssortmentDashboardRoot"/);
@@ -165,4 +236,7 @@ test("sales assortment frontend stays an isolated React island in the unified sh
   assert.match(loader, /mountSalesAssortmentDashboard/);
   assert.match(packageJson, /"echarts"/);
   assert.doesNotMatch(loader, /iframe/i);
+  assert.match(dashboardApp, /自动采集与智能分析/);
+  assert.match(dashboardApp, /DeepSeek 经营分析/);
+  assert.match(dashboardApp, /钉钉机器人/);
 });

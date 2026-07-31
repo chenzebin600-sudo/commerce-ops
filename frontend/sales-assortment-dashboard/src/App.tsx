@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  Badge,
   Button,
   ConfigProvider,
   Empty,
+  Input,
   Modal,
+  Popconfirm,
   Segmented,
   Select,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -15,22 +19,55 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import type { EChartsOption } from "echarts";
 import {
+  BellRing,
+  Bot,
   Boxes,
+  CalendarClock,
   ChartNoAxesCombined,
+  CheckCircle2,
   CircleDollarSign,
   Database,
   FileSpreadsheet,
   FilterX,
   Gauge,
   PackageSearch,
+  Pencil,
+  Play,
   RefreshCw,
+  Settings2,
   ShoppingBag,
-  Store,
+  Sparkles,
+  Trash2,
   Upload,
+  Webhook,
 } from "lucide-react";
-import { applyImport, loadDashboard, previewImport, type ImportPreview } from "./api";
+import {
+  analyzeDashboard,
+  applyImport,
+  deleteDingtalkConfig,
+  loadAiStatus,
+  loadAutomationOverview,
+  loadDashboard,
+  previewImport,
+  runSyncTask,
+  saveDailySyncTask,
+  saveDingtalkConfig,
+  setSyncTaskEnabled,
+  testDingtalkConfig,
+  type ImportPreview,
+} from "./api";
 import { EChart } from "./EChart";
-import type { DashboardData, ProductRow, StoreRow } from "./types";
+import type {
+  AutomationOverview,
+  DashboardData,
+  DingtalkConfig,
+  MabangScheduledTask,
+  MabangSyncTaskType,
+  ProductRow,
+  SalesAssortmentAnalysis,
+  SalesAssortmentAiStatus,
+  StoreRow,
+} from "./types";
 
 const money = new Intl.NumberFormat("zh-CN", {
   style: "currency",
@@ -54,6 +91,23 @@ function dateTime(value?: string | null) {
   return Number.isNaN(date.getTime())
     ? value
     : date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function timeValue(task?: MabangScheduledTask | null) {
+  const hour = task?.scheduleConfig.hour ?? (task?.taskType === "inventory_export" ? 8 : 7);
+  const minute = task?.scheduleConfig.minute ?? 0;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function runStatusLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    pending: "排队中",
+    running: "执行中",
+    success: "成功",
+    failed: "失败",
+    empty: "无数据",
+  };
+  return value ? labels[value] || value : "尚未执行";
 }
 
 function SourceCard({
@@ -130,6 +184,52 @@ export default function App({ popupContainer }: { popupContainer?: HTMLElement }
   const [importBusy, setImportBusy] = useState<ImportPreview["kind"] | null>(null);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [applying, setApplying] = useState(false);
+  const [automation, setAutomation] = useState<AutomationOverview | null>(null);
+  const [automationLoading, setAutomationLoading] = useState(true);
+  const [automationError, setAutomationError] = useState("");
+  const [taskActionId, setTaskActionId] = useState<string | null>(null);
+  const [taskEditorSaving, setTaskEditorSaving] = useState(false);
+  const [taskEditor, setTaskEditor] = useState<{
+    task: MabangScheduledTask | null;
+    taskType: MabangSyncTaskType;
+    name: string;
+    accountProfileId: string;
+    time: string;
+    paymentDateMode: string;
+    dingtalkConfigId: string;
+    notifyEnabled: boolean;
+    enabled: boolean;
+  } | null>(null);
+  const [dingtalkOpen, setDingtalkOpen] = useState(false);
+  const [dingtalkSaving, setDingtalkSaving] = useState(false);
+  const [dingtalkActionId, setDingtalkActionId] = useState<string | null>(null);
+  const [dingtalkEditor, setDingtalkEditor] = useState<{
+    config: DingtalkConfig | null;
+    name: string;
+    webhookUrl: string;
+    secret: string;
+    atMobiles: string;
+    enabled: boolean;
+    notifyOnSuccess: boolean;
+    notifyOnFailure: boolean;
+    notifyOnEmpty: boolean;
+    atAll: boolean;
+  }>({
+    config: null,
+    name: "",
+    webhookUrl: "",
+    secret: "",
+    atMobiles: "",
+    enabled: true,
+    notifyOnSuccess: true,
+    notifyOnFailure: true,
+    notifyOnEmpty: true,
+    atAll: false,
+  });
+  const [aiStatus, setAiStatus] = useState<SalesAssortmentAiStatus | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<SalesAssortmentAnalysis | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
   const fileKindRef = useRef<ImportPreview["kind"]>("orders");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [messageApi, contextHolder] = message.useMessage();
@@ -146,9 +246,215 @@ export default function App({ popupContainer }: { popupContainer?: HTMLElement }
     }
   }, [periodDays, country, categoryL1, categoryL2, style]);
 
+  const refreshAutomation = useCallback(async (signal?: AbortSignal) => {
+    setAutomationLoading(true);
+    setAutomationError("");
+    try {
+      setAutomation(await loadAutomationOverview(signal));
+    } catch (nextError) {
+      if (nextError instanceof DOMException && nextError.name === "AbortError") return;
+      setAutomationError(nextError instanceof Error ? nextError.message : "自动采集状态读取失败。");
+    } finally {
+      setAutomationLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshAutomation(controller.signal);
+    void loadAiStatus(controller.signal)
+      .then(setAiStatus)
+      .catch((nextError) => {
+        if (nextError instanceof DOMException && nextError.name === "AbortError") return;
+        setAiError(nextError instanceof Error ? nextError.message : "DeepSeek 状态读取失败。");
+      });
+    const timer = window.setInterval(() => void refreshAutomation(), 20_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [refreshAutomation]);
+
+  useEffect(() => {
+    if (!dashboard || !aiStatus?.configured) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setAiLoading(true);
+      setAiError("");
+      try {
+        setAiAnalysis(await analyzeDashboard({
+          periodDays,
+          country,
+          categoryL1,
+          categoryL2,
+          style,
+        }, controller.signal));
+      } catch (nextError) {
+        if (nextError instanceof DOMException && nextError.name === "AbortError") return;
+        setAiError(nextError instanceof Error ? nextError.message : "DeepSeek 自动分析失败。");
+      } finally {
+        if (!controller.signal.aborted) setAiLoading(false);
+      }
+    }, 500);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [dashboard, aiStatus?.configured, periodDays, country, categoryL1, categoryL2, style]);
+
+  function openTaskEditor(taskType: MabangSyncTaskType, task: MabangScheduledTask | null = null) {
+    const account = automation?.accounts.find((item) => item.enabled);
+    setTaskEditor({
+      task,
+      taskType,
+      name: task?.name || (taskType === "order_export"
+        ? "销售与货盘 · 每日订单"
+        : "销售与货盘 · 每日库存"),
+      accountProfileId: task?.accountProfileId || account?.id || "",
+      time: timeValue(task || { taskType } as MabangScheduledTask),
+      paymentDateMode: task?.paymentDateMode || "yesterday",
+      dingtalkConfigId: task?.dingtalkConfigId || "",
+      notifyEnabled: task?.notifyEnabled ?? Boolean(automation?.dingtalkConfigs.length),
+      enabled: task?.enabled ?? true,
+    });
+  }
+
+  async function confirmTaskEditor() {
+    if (!taskEditor) return;
+    if (!taskEditor.name.trim() || !taskEditor.accountProfileId) {
+      messageApi.warning("请填写任务名称并选择可用的马帮账号。");
+      return;
+    }
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(taskEditor.time)) {
+      messageApi.warning("请选择有效的每日执行时间。");
+      return;
+    }
+    setTaskEditorSaving(true);
+    try {
+      await saveDailySyncTask({ ...taskEditor, name: taskEditor.name.trim() });
+      messageApi.success(taskEditor.task ? "定时采集任务已更新。" : "定时采集任务已创建。");
+      setTaskEditor(null);
+      await refreshAutomation();
+    } catch (nextError) {
+      messageApi.error(nextError instanceof Error ? nextError.message : "任务保存失败。");
+    } finally {
+      setTaskEditorSaving(false);
+    }
+  }
+
+  async function toggleTask(task: MabangScheduledTask) {
+    setTaskActionId(task.id);
+    try {
+      await setSyncTaskEnabled(task.id, !task.enabled);
+      messageApi.success(task.enabled ? "定时采集已停用。" : "定时采集已启用。");
+      await refreshAutomation();
+    } catch (nextError) {
+      messageApi.error(nextError instanceof Error ? nextError.message : "任务状态更新失败。");
+    } finally {
+      setTaskActionId(null);
+    }
+  }
+
+  async function runTaskNow(task: MabangScheduledTask) {
+    setTaskActionId(task.id);
+    try {
+      const result = await runSyncTask(task.id);
+      messageApi.success(`任务已进入后台队列：${String(result.runId || "").slice(0, 8)}`);
+      await refreshAutomation();
+    } catch (nextError) {
+      messageApi.error(nextError instanceof Error ? nextError.message : "任务提交失败。");
+    } finally {
+      setTaskActionId(null);
+    }
+  }
+
+  function resetDingtalkEditor(config: DingtalkConfig | null = null) {
+    setDingtalkEditor({
+      config,
+      name: config?.name || "",
+      webhookUrl: "",
+      secret: "",
+      atMobiles: (config?.atMobiles || []).join(", "),
+      enabled: config?.enabled ?? true,
+      notifyOnSuccess: config?.notifyOnSuccess ?? true,
+      notifyOnFailure: config?.notifyOnFailure ?? true,
+      notifyOnEmpty: config?.notifyOnEmpty ?? true,
+      atAll: config?.atAll ?? false,
+    });
+  }
+
+  async function confirmDingtalkEditor() {
+    if (!dingtalkEditor.name.trim()) {
+      messageApi.warning("请填写机器人名称。");
+      return;
+    }
+    if (!dingtalkEditor.config && !dingtalkEditor.webhookUrl.trim()) {
+      messageApi.warning("请填写钉钉机器人 Webhook。");
+      return;
+    }
+    setDingtalkSaving(true);
+    try {
+      await saveDingtalkConfig({ ...dingtalkEditor, name: dingtalkEditor.name.trim() });
+      messageApi.success(dingtalkEditor.config ? "机器人配置已更新。" : "机器人配置已创建。");
+      resetDingtalkEditor();
+      await refreshAutomation();
+    } catch (nextError) {
+      messageApi.error(nextError instanceof Error ? nextError.message : "机器人配置保存失败。");
+    } finally {
+      setDingtalkSaving(false);
+    }
+  }
+
+  async function testRobot(config: DingtalkConfig) {
+    setDingtalkActionId(config.id);
+    try {
+      await testDingtalkConfig(config.id);
+      messageApi.success("钉钉测试消息发送成功。");
+    } catch (nextError) {
+      messageApi.error(nextError instanceof Error ? nextError.message : "机器人测试失败。");
+    } finally {
+      setDingtalkActionId(null);
+    }
+  }
+
+  async function removeRobot(config: DingtalkConfig) {
+    setDingtalkActionId(config.id);
+    try {
+      await deleteDingtalkConfig(config.id);
+      messageApi.success("机器人配置已删除。");
+      if (dingtalkEditor.config?.id === config.id) resetDingtalkEditor();
+      await refreshAutomation();
+    } catch (nextError) {
+      messageApi.error(nextError instanceof Error ? nextError.message : "机器人删除失败。");
+    } finally {
+      setDingtalkActionId(null);
+    }
+  }
+
+  async function refreshAiAnalysis() {
+    if (!aiStatus?.configured) return;
+    setAiLoading(true);
+    setAiError("");
+    try {
+      setAiAnalysis(await analyzeDashboard({
+        periodDays,
+        country,
+        categoryL1,
+        categoryL2,
+        style,
+        forceRefresh: true,
+      }));
+      messageApi.success("DeepSeek 已重新分析当前数据。");
+    } catch (nextError) {
+      setAiError(nextError instanceof Error ? nextError.message : "DeepSeek 分析失败。");
+    } finally {
+      setAiLoading(false);
+    }
+  }
 
   function chooseFile(kind: ImportPreview["kind"]) {
     fileKindRef.current = kind;
@@ -390,6 +696,11 @@ export default function App({ popupContainer }: { popupContainer?: HTMLElement }
 
   const source = dashboard?.sourceStatus;
   const summary = dashboard?.summary;
+  const syncTasks = automation?.tasks || [];
+  const latestRunsByTask = new Map<string, AutomationOverview["runs"][number]>();
+  for (const run of automation?.runs || []) {
+    if (!latestRunsByTask.has(run.taskId)) latestRunsByTask.set(run.taskId, run);
+  }
   const popup = popupContainer || document.body;
 
   return (
@@ -431,6 +742,221 @@ export default function App({ popupContainer }: { popupContainer?: HTMLElement }
             </Tooltip>
           </div>
         </header>
+
+        <section className="automation-hub" aria-label="自动采集与智能分析">
+          <header className="automation-header">
+            <div>
+              <span className="eyebrow">AUTOMATION & AI</span>
+              <h3>自动采集与智能分析</h3>
+              <p>沿用马帮数据调度器获取订单和库存；成功入库后，DeepSeek 会按当前筛选自动生成可核对的经营结论。</p>
+            </div>
+            <div className="automation-actions">
+              <Badge
+                status={automation?.scheduler.online ? "success" : "error"}
+                text={automation?.scheduler.online ? "调度器在线" : "调度器离线"}
+              />
+              <Button icon={<Webhook size={16} />} onClick={() => setDingtalkOpen(true)}>
+                钉钉机器人
+              </Button>
+              <Button
+                icon={<CalendarClock size={16} />}
+                disabled={!automation?.accounts.some((item) => item.enabled)}
+                onClick={() => openTaskEditor("order_export")}
+              >
+                订单定时
+              </Button>
+              <Button
+                type="primary"
+                icon={<Database size={16} />}
+                disabled={!automation?.accounts.some((item) => item.enabled)}
+                onClick={() => openTaskEditor("inventory_export")}
+              >
+                库存定时
+              </Button>
+            </div>
+          </header>
+
+          {automationError && (
+            <Alert
+              type="error"
+              showIcon
+              message="自动采集状态不可用"
+              description={automationError}
+              action={<Button onClick={() => void refreshAutomation()}>重试</Button>}
+            />
+          )}
+          {!automationError && automation && !automation.scheduler.online && (
+            <Alert
+              type="warning"
+              showIcon
+              message="后台调度器离线"
+              description="任务配置仍可维护，但不会自动执行；启动完整 Commerce Ops 服务后会恢复。"
+            />
+          )}
+
+          <div className="automation-grid">
+            <div className="sync-console">
+              <div className="console-heading">
+                <div>
+                  <BellRing size={18} />
+                  <span>订单与库存定时采集</span>
+                </div>
+                <Tooltip title="刷新任务与执行状态">
+                  <Button
+                    type="text"
+                    className="icon-action"
+                    icon={<RefreshCw size={16} />}
+                    loading={automationLoading}
+                    aria-label="刷新自动采集状态"
+                    onClick={() => void refreshAutomation()}
+                  />
+                </Tooltip>
+              </div>
+
+              <div className="task-list">
+                {syncTasks.map((task) => {
+                  const latestRun = latestRunsByTask.get(task.id);
+                  return (
+                    <article className="task-row" key={task.id}>
+                      <span className={`task-kind ${task.taskType}`}>
+                        {task.taskType === "order_export" ? <ShoppingBag size={17} /> : <Boxes size={17} />}
+                      </span>
+                      <div className="task-main">
+                        <div className="task-title">
+                          <strong>{task.name}</strong>
+                          <Tag color={task.enabled ? "success" : "default"}>{task.enabled ? "已启用" : "已停用"}</Tag>
+                        </div>
+                        <span>
+                          每日 {timeValue(task)} · {task.accountName} {task.accountUsernameMasked}
+                          {task.notifyEnabled && task.dingtalkConfigId ? ` · 钉钉 ${task.dingtalkName || "已启用"}` : ""}
+                        </span>
+                        <small>
+                          上次 {dateTime(task.lastRunAt)} · {runStatusLabel(latestRun?.status || task.lastRunStatus)}
+                          {task.nextRunAt ? ` · 下次 ${dateTime(task.nextRunAt)}` : ""}
+                        </small>
+                      </div>
+                      <div className="task-actions">
+                        <Tooltip title="编辑任务">
+                          <Button
+                            aria-label={`编辑${task.name}`}
+                            icon={<Pencil size={15} />}
+                            onClick={() => openTaskEditor(task.taskType, task)}
+                          />
+                        </Tooltip>
+                        <Tooltip title={automation?.scheduler.online ? "立即执行一次" : "调度器离线"}>
+                          <Button
+                            aria-label={`立即执行${task.name}`}
+                            icon={<Play size={15} />}
+                            disabled={!automation?.scheduler.online}
+                            loading={taskActionId === task.id}
+                            onClick={() => void runTaskNow(task)}
+                          />
+                        </Tooltip>
+                        <Button loading={taskActionId === task.id} onClick={() => void toggleTask(task)}>
+                          {task.enabled ? "停用" : "启用"}
+                        </Button>
+                      </div>
+                    </article>
+                  );
+                })}
+                {!automationLoading && !syncTasks.length && (
+                  <div className="task-empty">
+                    <CalendarClock size={22} />
+                    <div>
+                      <strong>尚未创建自动采集任务</strong>
+                      <span>建议订单每天早晨获取昨天数据，库存随后获取最新快照。</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="ai-console">
+              <div className="console-heading">
+                <div>
+                  <Bot size={18} />
+                  <span>DeepSeek 经营分析</span>
+                </div>
+                <div className="ai-meta">
+                  <Badge
+                    status={aiStatus?.configured ? "success" : "default"}
+                    text={aiStatus?.configured ? aiStatus.model : "未配置"}
+                  />
+                  <Tooltip title="重新分析当前筛选">
+                    <Button
+                      type="text"
+                      className="icon-action"
+                      icon={<Sparkles size={16} />}
+                      loading={aiLoading}
+                      disabled={!aiStatus?.configured || !dashboard}
+                      aria-label="重新执行 DeepSeek 分析"
+                      onClick={() => void refreshAiAnalysis()}
+                    />
+                  </Tooltip>
+                </div>
+              </div>
+
+              {!aiStatus?.configured ? (
+                <div className="ai-empty">
+                  <Settings2 size={22} />
+                  <div>
+                    <strong>等待 DeepSeek 配置</strong>
+                    <span>在服务端配置 DEEPSEEK_API_KEY 后，本区域会自动分析最新数据。</span>
+                  </div>
+                </div>
+              ) : aiError ? (
+                <Alert
+                  type="error"
+                  showIcon
+                  message="DeepSeek 分析暂不可用"
+                  description={aiError}
+                  action={<Button onClick={() => void refreshAiAnalysis()}>重试</Button>}
+                />
+              ) : aiLoading && !aiAnalysis ? (
+                <div className="ai-empty">
+                  <Sparkles className="spin-soft" size={22} />
+                  <div>
+                    <strong>正在分析最新数据</strong>
+                    <span>只发送聚合指标、产品机会和店铺表现，不发送客户信息。</span>
+                  </div>
+                </div>
+              ) : aiAnalysis ? (
+                <div className="ai-result">
+                  <div className="ai-summary">
+                    <strong>{aiAnalysis.analysis.headline}</strong>
+                    <p>{aiAnalysis.analysis.overview}</p>
+                  </div>
+                  <div className="recommendation-list">
+                    {aiAnalysis.analysis.recommendations.slice(0, 3).map((item, index) => (
+                      <article key={`${item.title}-${index}`}>
+                        <Tag color={item.priority === "P0" ? "red" : item.priority === "P1" ? "orange" : "blue"}>
+                          {item.priority}
+                        </Tag>
+                        <div>
+                          <strong>{item.title}</strong>
+                          <span>{item.action}</span>
+                          <small>{item.evidence.slice(0, 2).join(" · ") || item.reason}</small>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                  <footer>
+                    <span>{dateTime(aiAnalysis.generatedAt)} · {aiAnalysis.cached ? "复用同源分析" : "本次生成"}</span>
+                    <span>{aiAnalysis.promptVersion}</span>
+                  </footer>
+                </div>
+              ) : (
+                <div className="ai-empty">
+                  <Sparkles size={22} />
+                  <div>
+                    <strong>等待看板数据</strong>
+                    <span>看板加载后会自动分析当前国家、类目和款名范围。</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
 
         <section className="source-strip" aria-label="数据导入">
           <SourceCard title="订单表" description="每日追加有效订单" source={source?.order} icon={<ShoppingBag size={20} />} busy={importBusy === "orders"} onImport={() => chooseFile("orders")} />
@@ -569,6 +1095,227 @@ export default function App({ popupContainer }: { popupContainer?: HTMLElement }
           <span>价格覆盖：{dashboard?.quality.priceCoverage || 0}%</span>
         </footer>
       </main>
+
+      <Modal
+        open={Boolean(taskEditor)}
+        title={taskEditor?.task ? "编辑每日采集任务" : "新建每日采集任务"}
+        okText="保存任务"
+        cancelText="取消"
+        confirmLoading={taskEditorSaving}
+        onOk={() => void confirmTaskEditor()}
+        onCancel={() => !taskEditorSaving && setTaskEditor(null)}
+        getContainer={() => popup}
+        destroyOnHidden
+      >
+        {taskEditor && (
+          <div className="automation-form">
+            <Alert
+              type="info"
+              showIcon
+              message={taskEditor.taskType === "order_export"
+                ? "订单按付款时间获取，成功后追加进入事实层。"
+                : "库存保存执行时点完整快照，并替换驾驶舱当前视图。"}
+            />
+            <label>
+              <span>数据类型</span>
+              <Select
+                value={taskEditor.taskType}
+                disabled={Boolean(taskEditor.task)}
+                options={[
+                  { value: "order_export", label: "订单信息" },
+                  { value: "inventory_export", label: "库存信息" },
+                ]}
+                onChange={(taskType: MabangSyncTaskType) => setTaskEditor({
+                  ...taskEditor,
+                  taskType,
+                  name: taskType === "order_export" ? "销售与货盘 · 每日订单" : "销售与货盘 · 每日库存",
+                })}
+              />
+            </label>
+            <label>
+              <span>任务名称</span>
+              <Input
+                value={taskEditor.name}
+                maxLength={80}
+                onChange={(event) => setTaskEditor({ ...taskEditor, name: event.target.value })}
+              />
+            </label>
+            <label>
+              <span>马帮账号</span>
+              <Select
+                value={taskEditor.accountProfileId || undefined}
+                placeholder="选择已验证账号"
+                options={(automation?.accounts || []).map((account) => ({
+                  value: account.id,
+                  label: `${account.name} · ${account.usernameMasked}${account.enabled ? "" : "（已停用）"}`,
+                  disabled: !account.enabled,
+                }))}
+                onChange={(accountProfileId) => setTaskEditor({ ...taskEditor, accountProfileId })}
+              />
+            </label>
+            <label>
+              <span>每天执行时间</span>
+              <Input
+                type="time"
+                value={taskEditor.time}
+                onChange={(event) => setTaskEditor({ ...taskEditor, time: event.target.value })}
+              />
+            </label>
+            {taskEditor.taskType === "order_export" && (
+              <label>
+                <span>付款时间范围</span>
+                <Select
+                  value={taskEditor.paymentDateMode}
+                  options={[
+                    { value: "yesterday", label: "昨天（推荐）" },
+                    { value: "last_7_days", label: "最近 7 天" },
+                    { value: "last_14_days", label: "最近 14 天" },
+                    { value: "last_30_days", label: "最近 30 天" },
+                  ]}
+                  onChange={(paymentDateMode) => setTaskEditor({ ...taskEditor, paymentDateMode })}
+                />
+              </label>
+            )}
+            <label>
+              <span>钉钉机器人</span>
+              <Select
+                allowClear
+                value={taskEditor.dingtalkConfigId || undefined}
+                placeholder="不发送通知"
+                options={(automation?.dingtalkConfigs || []).map((config) => ({
+                  value: config.id,
+                  label: `${config.name}${config.enabled ? "" : "（已停用）"}`,
+                  disabled: !config.enabled,
+                }))}
+                onChange={(dingtalkConfigId) => setTaskEditor({
+                  ...taskEditor,
+                  dingtalkConfigId: dingtalkConfigId || "",
+                  notifyEnabled: Boolean(dingtalkConfigId),
+                })}
+              />
+            </label>
+            <label className="switch-row">
+              <span>
+                <strong>发送执行通知</strong>
+                <small>成功、失败或无数据时按机器人配置发送。</small>
+              </span>
+              <Switch
+                checked={taskEditor.notifyEnabled}
+                disabled={!taskEditor.dingtalkConfigId}
+                onChange={(notifyEnabled) => setTaskEditor({ ...taskEditor, notifyEnabled })}
+              />
+            </label>
+            <label className="switch-row">
+              <span>
+                <strong>保存后启用</strong>
+                <small>启用后由现有马帮后台调度器自动执行。</small>
+              </span>
+              <Switch checked={taskEditor.enabled} onChange={(enabled) => setTaskEditor({ ...taskEditor, enabled })} />
+            </label>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={dingtalkOpen}
+        title="钉钉机器人"
+        width={760}
+        footer={null}
+        onCancel={() => setDingtalkOpen(false)}
+        getContainer={() => popup}
+        destroyOnHidden
+      >
+        <div className="dingtalk-manager">
+          <section className="robot-list">
+            <header>
+              <div>
+                <strong>现有机器人</strong>
+                <span>定时采集任务可选择其中一个发送结果通知。</span>
+              </div>
+              <Button icon={<Webhook size={15} />} onClick={() => resetDingtalkEditor()}>
+                新建
+              </Button>
+            </header>
+            {(automation?.dingtalkConfigs || []).map((config) => (
+              <article key={config.id}>
+                <span className="robot-status"><CheckCircle2 size={17} /></span>
+                <div>
+                  <strong>{config.name}</strong>
+                  <span>{config.enabled ? "已启用" : "已停用"} · 成功 {config.notifyOnSuccess ? "通知" : "不通知"} · 失败 {config.notifyOnFailure ? "通知" : "不通知"}</span>
+                </div>
+                <div className="robot-actions">
+                  <Tooltip title="编辑">
+                    <Button icon={<Pencil size={14} />} aria-label={`编辑${config.name}`} onClick={() => resetDingtalkEditor(config)} />
+                  </Tooltip>
+                  <Tooltip title="发送测试消息">
+                    <Button
+                      icon={<Play size={14} />}
+                      aria-label={`测试${config.name}`}
+                      loading={dingtalkActionId === config.id}
+                      onClick={() => void testRobot(config)}
+                    />
+                  </Tooltip>
+                  <Popconfirm
+                    title="删除机器人配置？"
+                    description="正在被定时任务使用时，系统会拒绝删除。"
+                    okText="删除"
+                    cancelText="取消"
+                    onConfirm={() => void removeRobot(config)}
+                  >
+                    <Button danger icon={<Trash2 size={14} />} aria-label={`删除${config.name}`} />
+                  </Popconfirm>
+                </div>
+              </article>
+            ))}
+            {!automation?.dingtalkConfigs.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未配置机器人" />}
+          </section>
+
+          <section className="robot-form">
+            <header>
+              <strong>{dingtalkEditor.config ? `编辑：${dingtalkEditor.config.name}` : "新增机器人"}</strong>
+              {dingtalkEditor.config && <Button type="link" onClick={() => resetDingtalkEditor()}>取消编辑</Button>}
+            </header>
+            <label>
+              <span>配置名称</span>
+              <Input value={dingtalkEditor.name} maxLength={80} onChange={(event) => setDingtalkEditor({ ...dingtalkEditor, name: event.target.value })} />
+            </label>
+            <label>
+              <span>Webhook URL</span>
+              <Input.Password
+                value={dingtalkEditor.webhookUrl}
+                placeholder={dingtalkEditor.config?.webhookConfigured ? "已配置；留空则不修改" : "https://oapi.dingtalk.com/robot/send?..."}
+                onChange={(event) => setDingtalkEditor({ ...dingtalkEditor, webhookUrl: event.target.value })}
+              />
+            </label>
+            <label>
+              <span>加签 Secret</span>
+              <Input.Password
+                value={dingtalkEditor.secret}
+                placeholder={dingtalkEditor.config?.secretConfigured ? "已配置；留空则不修改" : "未启用加签可留空"}
+                onChange={(event) => setDingtalkEditor({ ...dingtalkEditor, secret: event.target.value })}
+              />
+            </label>
+            <label>
+              <span>@ 手机号</span>
+              <Input
+                value={dingtalkEditor.atMobiles}
+                placeholder="多个手机号用逗号分隔"
+                onChange={(event) => setDingtalkEditor({ ...dingtalkEditor, atMobiles: event.target.value })}
+              />
+            </label>
+            <div className="robot-switches">
+              <label><Switch size="small" checked={dingtalkEditor.enabled} onChange={(enabled) => setDingtalkEditor({ ...dingtalkEditor, enabled })} /><span>启用</span></label>
+              <label><Switch size="small" checked={dingtalkEditor.notifyOnSuccess} onChange={(notifyOnSuccess) => setDingtalkEditor({ ...dingtalkEditor, notifyOnSuccess })} /><span>成功通知</span></label>
+              <label><Switch size="small" checked={dingtalkEditor.notifyOnFailure} onChange={(notifyOnFailure) => setDingtalkEditor({ ...dingtalkEditor, notifyOnFailure })} /><span>失败通知</span></label>
+              <label><Switch size="small" checked={dingtalkEditor.notifyOnEmpty} onChange={(notifyOnEmpty) => setDingtalkEditor({ ...dingtalkEditor, notifyOnEmpty })} /><span>空数据通知</span></label>
+              <label><Switch size="small" checked={dingtalkEditor.atAll} onChange={(atAll) => setDingtalkEditor({ ...dingtalkEditor, atAll })} /><span>@ 所有人</span></label>
+            </div>
+            <Button type="primary" icon={<Webhook size={15} />} loading={dingtalkSaving} onClick={() => void confirmDingtalkEditor()}>
+              {dingtalkEditor.config ? "保存修改" : "创建机器人"}
+            </Button>
+          </section>
+        </div>
+      </Modal>
 
       <Modal
         open={Boolean(preview)}

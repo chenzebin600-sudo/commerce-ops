@@ -1,2 +1,0 @@
-import{a as e,i as t,n,r,t as i}from"./styles-BZDXyK95.js";var a=e(),o=n(),s=new WeakMap;function c({element:e,styleContainer:n,popupContainer:c,authorizedFetch:l}){r(l);let u=s.get(e);u||(u=(0,a.createRoot)(e),s.set(e,u)),u.render((0,o.jsx)(t,{container:n,children:(0,o.jsx)(i,{popupContainer:c})}))}export{c as mountSalesAssortmentDashboard};
-//# sourceMappingURL=embed-DXspNqv9.js.map

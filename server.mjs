@@ -94,6 +94,7 @@ import { GrowthRadarV2Service } from "./lib/growth-radar/v2/growth-radar-v2-serv
 import { createGrowthRadarV2Api } from "./lib/growth-radar/v2/growth-radar-v2-api.mjs";
 import { SalesAssortmentService } from "./lib/sales-assortment/sales-assortment-service.mjs";
 import { createSalesAssortmentApi } from "./lib/sales-assortment/sales-assortment-api.mjs";
+import { SalesAssortmentAiService } from "./lib/sales-assortment/sales-assortment-ai-service.mjs";
 import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
 import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
@@ -342,38 +343,40 @@ const productCatalogService = new ProductCatalogService({ repository: dataAccess
 const productListingService = new ProductListingService({ repository: dataAccess.repositories.productListings });
 const productAccessPolicy = createProductAccessPolicy(process.env);
 const productAiApiKey = getDeepSeekApiKey();
+const deepSeekModel = process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
+const deepSeekGateway = new AiGateway({
+  provider: new DeepSeekProvider({
+    apiKey: productAiApiKey,
+    endpoint: resolveDeepSeekEndpoint(process.env.DEEPSEEK_BASE_URL),
+  }),
+  logger: (entry) => auditService.recordSafely({
+    requestId: entry.requestId,
+    module: "ai",
+    action: "deepseek.call",
+    status: entry.success ? "success" : "failed",
+    durationMs: entry.durationMs,
+    errorStage: entry.success ? null : "deepseek",
+    errorCode: entry.errorCode,
+    metadata: {
+      provider: entry.provider,
+      moduleId: entry.moduleId,
+      operation: entry.operation,
+      model: entry.model,
+      durationMs: entry.durationMs,
+      success: entry.success,
+    },
+  }),
+});
 const productAiContentService = new ProductAiContentService({
   repository: dataAccess.repositories.productAiContents,
   configured: Boolean(productAiApiKey),
-  model: process.env.DEEPSEEK_MODEL || "deepseek-v4",
+  model: deepSeekModel,
   titleLimits: {
     shopee: Number(process.env.LISTING_TITLE_LIMIT_SHOPEE || 120),
     lazada: Number(process.env.LISTING_TITLE_LIMIT_LAZADA || 255),
     tiktok_shop: Number(process.env.LISTING_TITLE_LIMIT_TIKTOK_SHOP || 188),
   },
-  gateway: new AiGateway({
-    provider: new DeepSeekProvider({
-      apiKey: productAiApiKey,
-      endpoint: resolveDeepSeekEndpoint(process.env.DEEPSEEK_BASE_URL),
-    }),
-    logger: (entry) => auditService.recordSafely({
-      requestId: entry.requestId,
-      module: "ai",
-      action: "deepseek.call",
-      status: entry.success ? "success" : "failed",
-      durationMs: entry.durationMs,
-      errorStage: entry.success ? null : "deepseek",
-      errorCode: entry.errorCode,
-      metadata: {
-        provider: entry.provider,
-        moduleId: entry.moduleId,
-        operation: entry.operation,
-        model: entry.model,
-        durationMs: entry.durationMs,
-        success: entry.success,
-      },
-    }),
-  }),
+  gateway: deepSeekGateway,
 });
 const imageGenerationConfig = resolveImageGenerationConfig(process.env);
 const productImageGenerationService = new ProductImageGenerationService({
@@ -423,8 +426,15 @@ const handleGrowthRadarV2Api = createGrowthRadarV2Api({
 const salesAssortmentService = new SalesAssortmentService({
   repository: dataAccess.repositories.salesAssortment,
 });
+const salesAssortmentAiService = new SalesAssortmentAiService({
+  dashboardService: salesAssortmentService,
+  gateway: deepSeekGateway,
+  configured: Boolean(productAiApiKey),
+  model: process.env.SALES_ASSORTMENT_DEEPSEEK_MODEL || deepSeekModel,
+});
 const handleSalesAssortmentApi = createSalesAssortmentApi({
   service: salesAssortmentService,
+  aiService: salesAssortmentAiService,
   accessPolicy: growthRadarAccessPolicy,
 });
 const runMabangWorker = createMabangWorkerRunner({
