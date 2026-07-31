@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Menu, RefreshCw } from "@lucide/vue";
+import { LogOut, Menu, RefreshCw } from "@lucide/vue";
 import { computed } from "vue";
 import { useRoute } from "vue-router";
 import GlobalFilterBar from "@/components/GlobalFilterBar.vue";
@@ -7,6 +7,8 @@ import OpsSidebar from "@/components/OpsSidebar.vue";
 import { useWorkspaceStore } from "@/stores/workspace";
 
 const route = useRoute();
+defineProps<{ authenticationEnabled: boolean }>();
+defineEmits<{ logout: [] }>();
 const workspace = useWorkspaceStore();
 const title = computed(() => String(route.meta.title || "Commerce Ops"));
 const subtitle = computed(() => String(route.meta.subtitle || "跨境电商运营工作台"));
@@ -32,6 +34,10 @@ const subtitle = computed(() => String(route.meta.subtitle || "跨境电商运�
           <RefreshCw :size="15" />
           <span>{{ workspace.lastSyncedAt ? `更新于 ${workspace.lastSyncedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '等待首次同步' }}</span>
         </div>
+        <el-button v-if="authenticationEnabled" text aria-label="退出系统" @click="$emit('logout')">
+          <LogOut :size="16" />
+          退出
+        </el-button>
       </header>
       <GlobalFilterBar />
       <section class="page-content" tabindex="-1">

@@ -2898,7 +2898,9 @@ async function serveStatic(req, res, url) {
   }
   const decodedPath = decodeURIComponent(url.pathname);
   const requested = url.pathname === "/"
-    ? "/index.html"
+    ? "/vue-preview/index.html"
+    : decodedPath === "/legacy" || decodedPath === "/legacy/"
+      ? "/index.html"
     : decodedPath.endsWith("/")
       ? `${decodedPath}index.html`
       : decodedPath;

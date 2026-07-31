@@ -3,6 +3,27 @@ html { background: var(--ops-bg); }
 body { margin: 0; min-width: 320px; min-height: 100dvh; background: var(--ops-bg); color: var(--ops-text); }
 button, input, select, textarea { font: inherit; }
 button { touch-action: manipulation; }
+.app-loading, .auth-page { min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
+.app-loading { align-content: center; gap: 14px; color: var(--ops-text-secondary); }
+.app-loading-mark { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 13px; color: white; background: var(--ops-primary); font-weight: 800; }
+.auth-page { background: radial-gradient(circle at 78% 15%, rgba(37,99,235,.09), transparent 30%), var(--ops-bg); }
+.auth-panel { width: min(100%, 430px); padding: 30px; border: 1px solid var(--ops-border-light); border-radius: var(--ops-radius-lg); background: var(--ops-surface); box-shadow: var(--ops-shadow-md); }
+.auth-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 38px; }
+.auth-brand-mark, .auth-icon { display: grid; place-items: center; color: white; background: var(--ops-primary); }
+.auth-brand-mark { width: 38px; height: 38px; border-radius: 11px; font-weight: 800; }
+.auth-brand > div { display: grid; gap: 2px; }
+.auth-brand strong { font-size: 14px; }
+.auth-brand span { color: var(--ops-text-secondary); font-size: 11px; }
+.auth-icon { width: 48px; height: 48px; margin-bottom: 18px; border-radius: 14px; background: #eff6ff; color: var(--ops-primary); }
+.auth-panel h1 { margin: 6px 0 8px; font-size: 25px; letter-spacing: -.035em; }
+.auth-panel > p { margin: 0 0 24px; color: var(--ops-text-secondary); font-size: 13px; line-height: 1.6; }
+.auth-panel form { display: grid; gap: 10px; }
+.auth-panel label { font-size: 12px; font-weight: 700; }
+.auth-submit { width: 100%; margin-top: 4px; }
+.auth-error { margin: 0; color: var(--ops-danger); font-size: 12px; }
+.auth-panel > small { display: block; margin-top: 18px; color: var(--ops-text-muted); text-align: center; }
+.spin { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .ops-shell { min-height: 100dvh; padding-left: var(--ops-sidebar-width); transition: padding-left var(--ops-transition); }
 .ops-shell.sidebar-collapsed { padding-left: var(--ops-sidebar-collapsed); }
 .ops-sidebar { position: fixed; inset: 0 auto 0 0; z-index: 30; width: var(--ops-sidebar-width); display: flex; flex-direction: column; padding: 18px 12px 14px; overflow: hidden; color: white; background: var(--ops-sidebar); transition: width var(--ops-transition); }
