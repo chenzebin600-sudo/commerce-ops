@@ -123,6 +123,10 @@ const salesAssortmentEmbeddedEntry = Object.values(salesAssortmentEntries).find(
 if (!salesAssortmentEmbeddedEntry?.file) {
   throw new Error("Sales assortment dashboard embedded entry is missing.");
 }
+const vuePreviewIndex = path.join(rootDir, "public", "vue-preview", "index.html");
+if (!existsSync(vuePreviewIndex)) {
+  throw new Error("Commerce Ops Vue preview build is missing.");
+}
 const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
 const duplicates = ids.filter((id, index) => ids.indexOf(id) !== index);
 if (duplicates.length) throw new Error(`Duplicate HTML ids: ${[...new Set(duplicates)].join(", ")}`);

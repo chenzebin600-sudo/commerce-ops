@@ -33,7 +33,9 @@
     "build:growth-radar:v2": "npm --prefix frontend/growth-radar-v2 run build",
     "build:sales-assortment": "npm --prefix frontend/sales-assortment-dashboard run build",
     "build:mabang-listing": "npm --prefix frontend/mabang-listing run build",
-    "build": "npm run check:paths && npm run build:growth-radar:v2 && npm run build:sales-assortment && npm run build:mabang-listing && node scripts/check-build.mjs",
+    "build:vue": "npm --prefix frontend/commerce-ops-vue run build",
+    "dev:vue": "npm --prefix frontend/commerce-ops-vue run dev",
+    "build": "npm run check:paths && npm run build:growth-radar:v2 && npm run build:sales-assortment && npm run build:mabang-listing && npm run build:vue && node scripts/check-build.mjs",
     "test:mabang-getdata": "node scripts/test-mabang-getdata.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs"
   },

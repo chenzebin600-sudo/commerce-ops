@@ -1,0 +1,31 @@
+:root {
+  --ops-primary: #2563eb;
+  --ops-primary-strong: #1d4ed8;
+  --ops-accent: #f97316;
+  --ops-success: #16a34a;
+  --ops-warning: #d97706;
+  --ops-danger: #dc2626;
+  --ops-bg: #f4f7fb;
+  --ops-surface: #ffffff;
+  --ops-surface-muted: #f8fafc;
+  --ops-border: #dbe3ee;
+  --ops-border-light: #eaf0f6;
+  --ops-text: #172033;
+  --ops-text-secondary: #5f6f86;
+  --ops-text-muted: #8a99ad;
+  --ops-sidebar: #101828;
+  --ops-sidebar-muted: #98a2b3;
+  --ops-radius-sm: 8px;
+  --ops-radius-md: 12px;
+  --ops-radius-lg: 16px;
+  --ops-shadow-sm: 0 1px 2px rgba(15, 23, 42, .05);
+  --ops-shadow-md: 0 12px 32px rgba(15, 23, 42, .08);
+  --ops-sidebar-width: 244px;
+  --ops-sidebar-collapsed: 76px;
+  --ops-transition: 180ms ease;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  color: var(--ops-text);
+  background: var(--ops-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
