@@ -35,6 +35,11 @@ const totals = computed(() => (dashboard.value?.shops || []).reduce<FulfillmentT
 }), { total: 0, success: 0, running: 0, exceptions: 0 }));
 
 const successRate = computed(() => totals.value.total ? `${Math.round(totals.value.success / totals.value.total * 100)}%` : "—");
+const exceptionSummary = computed(() => Object.entries((dashboard.value?.exceptions || []).reduce<Record<string, number>>((result, item) => {
+  const code = item.code || "UNKNOWN";
+  result[code] = (result[code] || 0) + Number(item.count || 0);
+  return result;
+}, {})).map(([code, count]) => ({ code, count })));
 const shopName = (shopId?: string) => health.value?.shops?.find((shop) => shop.id === shopId)?.name || shopId || "—";
 const time = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
 
@@ -90,7 +95,7 @@ onMounted(load);
     <el-alert v-else-if="health?.realSubmitEnabled" type="warning" :closable="false" show-icon title="真实提交已启用，请在确认批次前复核库存、仓库和物流渠道。" />
 
     <section class="metric-grid fulfillment-metrics">
-      <MetricCard label="履约订单" :value="totals.total.toLocaleString('zh-CN')" hint="最近 7 天" />
+      <MetricCard label="履约订单" :value="totals.total.toLocaleString('zh-CN')" hint="今日" />
       <MetricCard label="成功订单" :value="totals.success.toLocaleString('zh-CN')" hint="完成并校验" tone="success" />
       <MetricCard label="成功率" :value="successRate" hint="成功 / 总订单" tone="success" />
       <MetricCard label="执行中" :value="totals.running.toLocaleString('zh-CN')" hint="队列与恢复任务" tone="warning" />
@@ -111,8 +116,8 @@ onMounted(load);
       <article class="dashboard-panel">
         <header><div><span class="panel-kicker">EXCEPTIONS</span><h3>异常分类</h3></div><CircleAlert :size="18" /></header>
         <div class="exception-chip-list">
-          <span v-for="item in dashboard?.exceptions || []" :key="item.code"><b>{{ item.count || 0 }}</b>{{ item.code || "未知异常" }}</span>
-          <el-empty v-if="!dashboard?.exceptions?.length" :image-size="54" description="暂无异常" />
+          <span v-for="item in exceptionSummary" :key="item.code"><b>{{ item.count }}</b>{{ item.code }}</span>
+          <el-empty v-if="!exceptionSummary.length" :image-size="54" description="暂无异常" />
         </div>
       </article>
     </section>

@@ -287,6 +287,35 @@ export interface FulfillmentRecovery {
   updatedAt?: string;
 }
 
+interface FulfillmentSchedulerResponse {
+  scanning?: boolean;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  lastOutcome?: string;
+}
+
+interface FulfillmentBatchResponse {
+  id?: string;
+  status?: string;
+  createdAt?: string;
+  finishedAt?: string;
+  shop?: { id?: string };
+  orders?: Array<{ status?: string }>;
+}
+
+interface FulfillmentRecoveryResponse {
+  orderKey?: string;
+  displayOrderId?: string;
+  shopId?: string;
+  status?: string;
+  submittedAt?: string;
+  lastCheckedAt?: string;
+  completedAt?: string;
+  lastErrorCode?: string | null;
+  lastErrorMessage?: string | null;
+  originErrorCode?: string | null;
+}
+
 export interface SalesDashboardFilters {
   periodDays: number;
   dateFrom?: string;
@@ -323,13 +352,40 @@ export function loadSalesTrend(filters: SalesDashboardFilters, signal?: AbortSig
 }
 
 export async function loadFulfillmentWorkspace() {
-  const [health, scheduler, dashboard, batches, recoveries] = await Promise.all([
+  const [health, schedulerResponse, dashboard, batchResponses, recoveryResponses] = await Promise.all([
     apiJson<FulfillmentHealth>("/api/fulfillment-dashboard/health"),
-    apiJson<FulfillmentScheduler>("/api/fulfillment-dashboard/scheduler"),
+    apiJson<FulfillmentSchedulerResponse>("/api/fulfillment-dashboard/scheduler"),
     apiJson<FulfillmentDashboard>("/api/fulfillment-dashboard/dashboard?days=7"),
-    apiJson<FulfillmentBatch[]>("/api/fulfillment-dashboard/batches?limit=30"),
-    apiJson<FulfillmentRecovery[]>("/api/fulfillment-dashboard/tracking-recoveries?limit=50"),
+    apiJson<FulfillmentBatchResponse[]>("/api/fulfillment-dashboard/batches?limit=30"),
+    apiJson<FulfillmentRecoveryResponse[]>("/api/fulfillment-dashboard/tracking-recoveries?limit=50"),
   ]);
+  const scheduler: FulfillmentScheduler = {
+    running: schedulerResponse.scanning,
+    nextScanAt: schedulerResponse.nextRunAt,
+    lastScanAt: schedulerResponse.lastRunAt,
+    lastOutcome: schedulerResponse.lastOutcome,
+  };
+  const batches: FulfillmentBatch[] = (Array.isArray(batchResponses) ? batchResponses : []).map((batch) => {
+    const orders = Array.isArray(batch.orders) ? batch.orders : [];
+    return {
+      id: batch.id,
+      shopId: batch.shop?.id,
+      status: batch.status,
+      createdAt: batch.createdAt,
+      completedAt: batch.finishedAt,
+      orderCount: orders.length,
+      successCount: orders.filter((order) => order.status === "success").length,
+      failedCount: orders.filter((order) => order.status && order.status !== "success").length,
+    };
+  });
+  const recoveries: FulfillmentRecovery[] = (Array.isArray(recoveryResponses) ? recoveryResponses : []).map((recovery) => ({
+    id: recovery.orderKey,
+    shopId: recovery.shopId,
+    orderReference: recovery.displayOrderId,
+    status: recovery.status,
+    reason: recovery.lastErrorMessage || recovery.lastErrorCode || recovery.originErrorCode || undefined,
+    updatedAt: recovery.completedAt || recovery.lastCheckedAt || recovery.submittedAt,
+  }));
   return { health, scheduler, dashboard, batches, recoveries };
 }
 

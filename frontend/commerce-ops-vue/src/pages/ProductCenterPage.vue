@@ -476,6 +476,9 @@ onMounted(initialize);
 @media (max-width: 820px) {
   .product-commandbar { align-items: stretch; flex-direction: column; }
   .product-command-actions .el-button { flex: 1; }
+  .product-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .product-search-field, .product-filter-grid, .product-toolbar .module-toolbar-actions { width: 100%; min-width: 0; }
+  .product-toolbar .module-toolbar-actions { justify-content: flex-end; }
   .product-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .product-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .product-summary-strip > div:nth-child(2) { border-right: 0; }

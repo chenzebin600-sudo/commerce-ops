@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import net from "node:net";
 import path from "node:path";
 import os from "node:os";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadLocalEnv } from "../lib/env.mjs";
@@ -71,7 +71,12 @@ async function stop(child) {
   }
 }
 
-test("only the main origin is needed for an authenticated advertising module", { timeout: 60_000 }, async () => {
+test("only the main origin is needed for an authenticated advertising module", {
+  timeout: 60_000,
+  skip: !existsSync(path.join(adServiceDir, "server.mjs"))
+    ? "external advertising service is not available in this workspace"
+    : false,
+}, async () => {
   const runtimeRoot = mkdtempSync(path.join(os.tmpdir(), "commerce-ops-main-integration-"));
   mkdirSync(path.join(runtimeRoot, "storage"), { recursive: true });
   const mainPort = await freePort();
