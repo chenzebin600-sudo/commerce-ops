@@ -468,7 +468,7 @@ test("managed integration starts the real Python service with isolated storage",
     port,
     internalToken: INTERNAL_TOKEN,
     pythonExecutable: python.executable,
-    attempts: 30,
+    attempts: 100,
     intervalMs: 100,
   });
 

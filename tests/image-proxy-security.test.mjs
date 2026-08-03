@@ -31,8 +31,8 @@ function imagePolicy(dnsLookup = async () => [{ address: "8.8.8.8", family: 4 }]
   });
 }
 
-test("image proxy allows JPEG, PNG and WebP and passes only vetted DNS addresses", async () => {
-  for (const contentType of ["image/jpeg", "image/png", "image/webp"]) {
+test("image proxy allows JPEG aliases, PNG and WebP and passes only vetted DNS addresses", async () => {
+  for (const contentType of ["image/jpeg", "image/jpg", "image/png", "image/webp"]) {
     let requestOptions;
     const fetchImage = createSecureImageFetcher({
       policy: imagePolicy(),

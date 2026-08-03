@@ -9,8 +9,9 @@ import { fileURLToPath } from "node:url";
 
 const sourceRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const excludedNames = new Set([
-  ".git", ".agents", ".mabang-exports", ".venv-mabang", "node_modules", "storage",
-  "ui-check", "packaged-skills", "design-system", "lazada-images", "lazada-images-th",
+  ".git", ".agents", ".mabang-exports", ".pnpm-store", ".venv", ".venv-mabang",
+  "node_modules", "storage", "tmp", "ui-check", "packaged-skills", "design-system",
+  "lazada-images", "lazada-images-th",
 ]);
 
 function freePort() {
@@ -45,6 +46,10 @@ test("a clean neutral directory starts without reading the formal runtime", { ti
       if (source === sourceRoot) return true;
       const relative = path.relative(sourceRoot, source);
       if (!relative || relative.startsWith("..")) return true;
+      const normalized = relative.split(path.sep).join("/");
+      if (normalized.startsWith("public/assets/") || normalized.startsWith("public/vue-preview/assets/")) {
+        return false;
+      }
       const parts = relative.split(path.sep);
       if (parts.some((part) => excludedNames.has(part))) return false;
       return !parts.some((part) => part === ".env" || part === ".env.local" || part.endsWith(".log"));
@@ -81,8 +86,13 @@ test("a clean neutral directory starts without reading the formal runtime", { ti
   try {
     await waitFor(`http://127.0.0.1:${port}/api/health`);
     const page = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
+    assert.match(page, /<title>Commerce Ops · 运营工作台<\/title>/);
+    assert.match(page, /id=["']app["']/);
+    assert.match(page, /\/vue-preview\/assets\/index-[^"']+\.js/);
+
+    const legacyPage = await fetch(`http://127.0.0.1:${port}/legacy/`).then((response) => response.text());
     for (const marker of ["page-link", "page-keyword", "page-ads", "page-mabang"]) {
-      assert.match(page, new RegExp(`id=[\"']${marker}[\"']`));
+      assert.match(legacyPage, new RegExp(`id=[\"']${marker}[\"']`));
     }
     assert.equal(output.includes(sourceRoot), false);
     assert.equal(await fs.stat(path.join(dataRoot, "test.sqlite")).then(() => true), true);

@@ -63,65 +63,15 @@ for (const file of [
   if (result.status !== 0) throw new Error(result.stderr || `${file} syntax check failed`);
 }
 const html = readFileSync(path.join(rootDir, "public", "index.html"), "utf8");
-const growthRadarManifest = path.join(
-  rootDir,
-  "public",
-  "assets",
-  "growth-radar-v2",
-  ".vite",
-  "manifest.json",
-);
-if (!existsSync(growthRadarManifest)) {
-  throw new Error("Growth Radar V2 production manifest is missing.");
+const vuePreviewIndex = path.join(rootDir, "public", "vue-preview", "index.html");
+if (!existsSync(vuePreviewIndex)) {
+  throw new Error("Commerce Ops Vue production build is missing.");
 }
-const manifest = JSON.parse(readFileSync(growthRadarManifest, "utf8"));
-const embeddedEntry = Object.values(manifest).find((entry) => (
-  entry?.isEntry && entry?.src === "src/embed.tsx"
-));
-if (!embeddedEntry?.file) {
-  throw new Error("Growth Radar V2 embedded entry is missing from the production manifest.");
-}
-const mabangListingManifest = path.join(
-  rootDir,
-  "public",
-  "assets",
-  "mabang-listing",
-  ".vite",
-  "manifest.json",
-);
-if (!existsSync(mabangListingManifest)) {
-  throw new Error("Mabang listing production manifest is missing.");
-}
-const listingManifest = JSON.parse(
-  readFileSync(mabangListingManifest, "utf8"),
-);
-const listingEmbeddedEntry = Object.values(listingManifest).find((entry) => (
-  entry?.isEntry && entry?.src === "src/embed.tsx"
-));
-if (!listingEmbeddedEntry?.file) {
-  throw new Error(
-    "Mabang listing embedded entry is missing from the production manifest.",
-  );
-}
-const salesAssortmentManifest = path.join(
-  rootDir,
-  "public",
-  "assets",
-  "sales-assortment-dashboard",
-  ".vite",
-  "manifest.json",
-);
-if (!existsSync(salesAssortmentManifest)) {
-  throw new Error("Sales assortment dashboard production manifest is missing.");
-}
-const salesAssortmentEntries = JSON.parse(
-  readFileSync(salesAssortmentManifest, "utf8"),
-);
-const salesAssortmentEmbeddedEntry = Object.values(salesAssortmentEntries).find((entry) => (
-  entry?.isEntry && entry?.src === "src/embed.tsx"
-));
-if (!salesAssortmentEmbeddedEntry?.file) {
-  throw new Error("Sales assortment dashboard embedded entry is missing.");
+const vueHtml = readFileSync(vuePreviewIndex, "utf8");
+const vueAssets = [...vueHtml.matchAll(/(?:src|href)="(\/vue-preview\/assets\/[^"]+)"/g)]
+  .map((match) => path.join(rootDir, "public", match[1].replace(/^\/vue-preview\//, "vue-preview/")));
+if (!vueAssets.length || vueAssets.some((assetPath) => !existsSync(assetPath))) {
+  throw new Error("Commerce Ops Vue production assets are incomplete.");
 }
 const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
 const duplicates = ids.filter((id, index) => ids.indexOf(id) !== index);
@@ -135,4 +85,4 @@ referencedIds.push(...[...mabangImagesPage.matchAll(/el\("([^"]+)"\)/g)].map((ma
 const dynamicIds = new Set(["retryExtractBtn"]);
 const missingIds = [...new Set(referencedIds)].filter((id) => !ids.includes(id) && !dynamicIds.has(id));
 if (missingIds.length) throw new Error(`JavaScript references missing HTML ids: ${missingIds.join(", ")}`);
-console.log(`Frontend checks passed: ${ids.length} unique element ids, ${referencedIds.length} static bindings.`);
+console.log(`Frontend checks passed: active Vue build has ${vueAssets.length} entry assets; legacy fallback has ${ids.length} unique element ids and ${referencedIds.length} static bindings.`);

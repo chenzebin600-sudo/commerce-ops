@@ -16,6 +16,14 @@ import { createOperationAuditService } from "./lib/security/audit-service.mjs";
 import { resolveRuntimeConfig, runtimeEnvironment } from "./lib/runtime-config.mjs";
 import { createExportFileService } from "./lib/files/export-file-service.mjs";
 import { pythonRuntimeError, resolvePythonRuntime } from "./lib/python-runtime.mjs";
+import { AiGateway } from "./lib/ai/ai-gateway.mjs";
+import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
+import { SalesAssortmentService } from "./lib/sales-assortment/sales-assortment-service.mjs";
+import { SalesAssortmentAiService } from "./lib/sales-assortment/sales-assortment-ai-service.mjs";
+import {
+  buildSalesAssortmentDailyReport,
+  salesReportDateFor,
+} from "./lib/sales-assortment/sales-assortment-daily-report.mjs";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 loadLocalEnv(rootDir);
@@ -64,6 +72,21 @@ const mabangDataPersistence = createMabangDataPersistenceService({
   runWorker,
   tempRoot: fileStorage.tempRoot,
 });
+const salesAssortmentService = new SalesAssortmentService({
+  repository: dataAccess.repositories.salesAssortment,
+});
+const deepSeekApiKey = String(runtimeEnv.DEEPSEEK_API_KEY || "").trim();
+const salesAssortmentAiService = new SalesAssortmentAiService({
+  dashboardService: salesAssortmentService,
+  gateway: new AiGateway({
+    provider: new DeepSeekProvider({
+      apiKey: deepSeekApiKey,
+      endpoint: resolveDeepSeekEndpoint(runtimeEnv.DEEPSEEK_BASE_URL),
+    }),
+  }),
+  configured: Boolean(deepSeekApiKey),
+  model: runtimeEnv.SALES_ASSORTMENT_DEEPSEEK_MODEL || runtimeEnv.DEEPSEEK_MODEL || "deepseek-v4-flash",
+});
 const executor = createTaskExecutor({
   db,
   runWorker,
@@ -72,6 +95,20 @@ const executor = createTaskExecutor({
   audit,
   fileService: exportFileService,
   persistCollectedData: (input) => mabangDataPersistence.persistFile(input),
+  generateDailyReport: async ({ generatedAt }) => {
+    const reportDate = salesReportDateFor(generatedAt);
+    const reportScope = { periodDays: 1, dateFrom: reportDate, dateTo: reportDate, comparisonDays: 1 };
+    const dashboard = await salesAssortmentService.dashboard(reportScope);
+    let analysis = null;
+    if (deepSeekApiKey) {
+      try {
+        analysis = await salesAssortmentAiService.analyze(reportScope);
+      } catch (error) {
+        console.warn(`Sales assortment daily report AI summary skipped: ${error.message}`);
+      }
+    }
+    return buildSalesAssortmentDailyReport({ dashboard, analysis, generatedAt });
+  },
 });
 const scheduler = new MabangSchedulerService({ db, executor, exportRoot, audit });
 

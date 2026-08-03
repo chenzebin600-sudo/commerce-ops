@@ -5,9 +5,16 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { resolvePythonRuntime } from "../lib/python-runtime.mjs";
 
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const python = path.join(rootDir, ".venv-mabang", "Scripts", "python.exe");
+const pythonRuntime = resolvePythonRuntime({
+  appRoot: rootDir,
+  env: process.env,
+  requiredModules: ["openpyxl"],
+});
+assert.equal(pythonRuntime.ok, true, pythonRuntime.errorCode);
+const python = pythonRuntime.executable;
 const worker = path.join(rootDir, "scripts", "mabang_worker.py");
 
 test("Python Excel policy preserves scalar types and escapes only dangerous strings", () => {

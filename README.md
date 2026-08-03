@@ -2,6 +2,8 @@
 
 这是公司内部使用的跨境电商运营工作台，当前包含商品、订单、马帮数据采集、定时任务和 Shopee 印尼店铺自动发货等功能。
 
+在线主工作台统一使用 Vue 3、TypeScript、Vue Router、Pinia、Element Plus 和 ECharts。所有新增前端模块必须进入 `frontend/commerce-ops-vue`；历史 React 工作区仅作为迁移期回退，不参与默认构建。完整规范见 [frontend/README.md](frontend/README.md)。
+
 ## 当前重点
 
 马帮自动发货服务目前覆盖同一马帮账号下的 5 个 Shopee 印尼店铺：
@@ -58,10 +60,16 @@ npm.cmd run doctor
 ### 调整前端或主系统代码
 
 ```powershell
+npm.cmd run dev:vue
+```
+
+Vue 开发服务负责前端热更新。需要同时调整 Node API 时，另一个终端执行：
+
+```powershell
 npm.cmd run dev:main
 ```
 
-主服务运行在 `3101` 端口。保存后端代码后会自动重启；修改前端静态文件后刷新浏览器即可看到变化。
+主服务运行在 `3101` 端口。正式前端构建执行 `npm.cmd run build`，历史回退页面仅在专项验证时执行 `npm.cmd run build:legacy`。
 
 ### 调试自动发货服务
 

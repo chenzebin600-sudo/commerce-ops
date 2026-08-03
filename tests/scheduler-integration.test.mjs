@@ -111,6 +111,46 @@ test("mock login, orders, filter, Excel and DingTalk produce success", async () 
   context.db.close();
 });
 
+test("manual run execution options override dates and filters while preserving the scheduled task", async () => {
+  const context = setup({ withRobot: false });
+  let orderPayload;
+  const worker = async (payload) => {
+    if (payload.action === "orders") {
+      orderPayload = payload;
+      return {
+        ok: true,
+        columns: ["订单编号", "店铺名"],
+        records: [{ 订单编号: "O-ADHOC", 店铺名: "TIXX PH" }],
+        summary: { collectedOrders: 1, orders: 1, rows: 1 },
+      };
+    }
+    await fs.writeFile(payload.outputPath, "one-off xlsx");
+    return { ok: true, rows: 1 };
+  };
+  const executor = createTaskExecutor({ db: context.db, runWorker: worker, exportRoot: context.exportRoot, retryDelays: [] });
+  const executionOptions = {
+    paymentDateMode: "fixed",
+    paymentDateConfig: { startDate: "2026-07-01", endDate: "2026-07-03" },
+    filters: [{ fieldId: "uq135", field: "店铺名", operator: "equals", values: ["TIXX PH"] }],
+  };
+  const run = context.db.createRun({
+    taskId: context.task.id,
+    triggerType: "manual",
+    scheduledRunAt: new Date("2026-07-14T00:30:00Z"),
+    executionOptions,
+  });
+  const result = await executor.executeRun(run.id);
+
+  assert.equal(result.status, "success");
+  assert.equal(orderPayload.startDate, "2026-07-01");
+  assert.equal(orderPayload.endDate, "2026-07-03");
+  assert.deepEqual(orderPayload.orderFilters.conditions, [{ field: "店铺名", operator: "equals", values: ["TIXX PH"], value: "TIXX PH" }]);
+  assert.deepEqual(result.logSummary.executionOptions, executionOptions);
+  assert.equal(context.db.getTask(context.task.id).paymentDateMode, "yesterday");
+  assert.equal(context.db.getTask(context.task.id).filters[0].fieldId, "uq172");
+  context.db.close();
+});
+
 test("inventory task collects a snapshot, writes inventory Excel and sends inventory notification", async () => {
   const context = setup({ taskType: "inventory_export" });
   const calls = [];
@@ -164,6 +204,38 @@ test("inventory task collects a snapshot, writes inventory Excel and sends inven
   assert.equal(calls.some((payload) => payload.action === "orders"), false);
   assert.equal(notification.title, "马帮库存定时导出成功");
   assert.match(notification.markdown, /库存总量：20/);
+  context.db.close();
+});
+
+test("daily report task generates the latest dashboard brief and sends DingTalk without exporting Excel", async () => {
+  const context = setup({ taskType: "daily_report" });
+  let notification;
+  let workerCalled = false;
+  const executor = createTaskExecutor({
+    db: context.db,
+    runWorker: async () => { workerCalled = true; throw new Error("worker should not run"); },
+    exportRoot: context.exportRoot,
+    retryDelays: [],
+    notify: async (payload) => { notification = payload; return { ok: true, status: 200, code: 0 }; },
+    generateDailyReport: async () => ({
+      version: "SALES-ASSORTMENT-DAILY-1.2.0",
+      title: "销售与货盘经营日报",
+      markdown: "### 销售与货盘经营日报\n\n- 我方 GMV：¥1,000",
+      itemCount: 3,
+      orderCount: 12,
+      aiIncluded: true,
+    }),
+  });
+  const run = context.db.createRun({ taskId: context.task.id, triggerType: "manual", scheduledRunAt: new Date("2026-07-14T00:30:00Z") });
+  const result = await executor.executeRun(run.id);
+
+  assert.equal(result.status, "success");
+  assert.equal(result.detailRowCount, 3);
+  assert.equal(result.rawOrderCount, 12);
+  assert.equal(result.exportFileId, null);
+  assert.equal(notification.title, "销售与货盘经营日报");
+  assert.match(notification.markdown, /我方 GMV/);
+  assert.equal(workerCalled, false);
   context.db.close();
 });
 

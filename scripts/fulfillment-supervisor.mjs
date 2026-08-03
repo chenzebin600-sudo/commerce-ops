@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -11,6 +11,7 @@ const config = resolveFulfillmentConfig({ rootDir });
 const logDir = path.join(rootDir, "storage", "logs");
 const logPath = path.join(logDir, "fulfillment-service.log");
 const lockPath = path.join(rootDir, "storage", "fulfillment-supervisor.lock");
+const LOCK_FRESH_MS = 90_000;
 mkdirSync(logDir, { recursive: true });
 
 function timestamp() { return new Date().toISOString(); }
@@ -32,7 +33,8 @@ function processAlive(pid) {
 function acquireLock() {
   if (existsSync(lockPath)) {
     const existingPid = Number(readFileSync(lockPath, "utf8").trim());
-    if (Number.isInteger(existingPid) && existingPid > 0 && processAlive(existingPid)) {
+    const lockAge = Date.now() - Number(statSync(lockPath).mtimeMs || 0);
+    if (Number.isInteger(existingPid) && existingPid > 0 && lockAge <= LOCK_FRESH_MS && processAlive(existingPid)) {
       log(`Supervisor already running with PID ${existingPid}; exiting duplicate instance.`);
       process.exit(0);
     }
@@ -41,6 +43,14 @@ function acquireLock() {
   const descriptor = openSync(lockPath, "wx");
   writeFileSync(descriptor, String(process.pid));
   closeSync(descriptor);
+}
+function refreshLock() {
+  try {
+    if (readFileSync(lockPath, "utf8").trim() === String(process.pid)) {
+      const now = new Date();
+      utimesSync(lockPath, now, now);
+    }
+  } catch {}
 }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 async function serviceAlreadyRunning() {
@@ -52,6 +62,8 @@ async function serviceAlreadyRunning() {
 
 rotateLogIfNeeded();
 acquireLock();
+const lockHeartbeat = setInterval(refreshLock, 30_000);
+lockHeartbeat.unref();
 let stopping = false;
 let child = null;
 let restartDelay = 2000;
@@ -96,7 +108,7 @@ async function shutdown() {
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
-process.on("exit", () => { try { unlinkSync(lockPath); } catch {} });
+process.on("exit", () => { clearInterval(lockHeartbeat); try { unlinkSync(lockPath); } catch {} });
 
 supervise().finally(() => {
   try { unlinkSync(lockPath); } catch {}

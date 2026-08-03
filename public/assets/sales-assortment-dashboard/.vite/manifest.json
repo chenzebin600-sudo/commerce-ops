@@ -1,31 +1,31 @@
 {
-  "_styles-BZDXyK95.js": {
-    "file": "assets/styles-BZDXyK95.js",
+  "_styles-CKhZydYQ.js": {
+    "file": "assets/styles-CKhZydYQ.js",
     "name": "styles",
     "css": [
-      "assets/styles-DbwU9aGA.css"
+      "assets/styles-DbAztnv6.css"
     ]
   },
-  "_styles-DbwU9aGA.css": {
-    "file": "assets/styles-DbwU9aGA.css",
-    "src": "_styles-DbwU9aGA.css"
+  "_styles-DbAztnv6.css": {
+    "file": "assets/styles-DbAztnv6.css",
+    "src": "_styles-DbAztnv6.css"
   },
   "index.html": {
-    "file": "assets/standalone-DnPbFW--.js",
+    "file": "assets/standalone-D4jZP2hZ.js",
     "name": "standalone",
     "src": "index.html",
     "isEntry": true,
     "imports": [
-      "_styles-BZDXyK95.js"
+      "_styles-CKhZydYQ.js"
     ]
   },
   "src/embed.tsx": {
-    "file": "assets/embed-DXspNqv9.js",
+    "file": "assets/embed-DBp72nAb.js",
     "name": "embed",
     "src": "src/embed.tsx",
     "isEntry": true,
     "imports": [
-      "_styles-BZDXyK95.js"
+      "_styles-CKhZydYQ.js"
     ]
   }
 }

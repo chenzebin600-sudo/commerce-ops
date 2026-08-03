@@ -27,10 +27,12 @@ test("AI gateway preserves messages and returns the unified result contract", as
     operation: "test_completion",
     model: "deepseek-chat",
     messages,
+    thinking: { type: "disabled" },
     requestId: "request-test-1",
   });
   assert.deepEqual(requestBody.messages, messages);
   assert.equal(requestBody.model, "deepseek-chat");
+  assert.deepEqual(requestBody.thinking, { type: "disabled" });
   assert.equal(result.success, true);
   assert.equal(result.content, "unchanged result");
   assert.equal(result.requestId, "request-test-1");
@@ -85,7 +87,7 @@ test("stable module IDs and compatible API response helpers are additive", () =>
   assert.deepEqual(MODULE_ID_VALUES, [
     "competitor_link", "competitor_keyword", "advertising", "mabang_orders",
     "mabang_inventory", "scheduled_exports", "file_management", "operation_audit",
-    "product_center", "fulfillment_agent",
+    "product_center", "sales_assortment", "fulfillment_agent",
   ]);
   assert.deepEqual(successResponse({ value: 1 }, { requestId: "r1", legacy: { ok: true } }), {
     success: true, data: { value: 1 }, request_id: "r1", error: null, ok: true,
