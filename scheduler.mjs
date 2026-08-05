@@ -17,6 +17,7 @@ import { resolveRuntimeConfig, runtimeEnvironment } from "./lib/runtime-config.m
 import { createExportFileService } from "./lib/files/export-file-service.mjs";
 import { pythonRuntimeError, resolvePythonRuntime } from "./lib/python-runtime.mjs";
 import { AiGateway } from "./lib/ai/ai-gateway.mjs";
+import { createAiAuditLogger } from "./lib/ai/ai-audit-logger.mjs";
 import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
 import { SalesAssortmentService } from "./lib/sales-assortment/sales-assortment-service.mjs";
 import { SalesAssortmentAiService } from "./lib/sales-assortment/sales-assortment-ai-service.mjs";
@@ -83,6 +84,7 @@ const salesAssortmentAiService = new SalesAssortmentAiService({
       apiKey: deepSeekApiKey,
       endpoint: resolveDeepSeekEndpoint(runtimeEnv.DEEPSEEK_BASE_URL),
     }),
+    logger: createAiAuditLogger({ audit }),
   }),
   configured: Boolean(deepSeekApiKey),
   model: runtimeEnv.SALES_ASSORTMENT_DEEPSEEK_MODEL || runtimeEnv.DEEPSEEK_MODEL || "deepseek-v4-flash",
