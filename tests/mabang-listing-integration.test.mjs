@@ -351,11 +351,17 @@ test("Mabang listing child gets isolated storage and no formal database path", (
     host: "127.0.0.1",
     port: 8877,
     internalToken: INTERNAL_TOKEN,
+    aiGatewayUrl: "http://127.0.0.1:3101/api/internal/ai/mabang-listing/complete",
   });
   assert.equal(childEnv.APP_ROOT, undefined);
   assert.equal(childEnv.DATABASE_PATH, undefined);
   assert.equal(childEnv.MABANG_LISTING_STORAGE_ROOT, "integration-storage");
   assert.equal(childEnv.MABANG_LISTING_INTERNAL_TOKEN, INTERNAL_TOKEN);
+  assert.equal(childEnv.COMMERCE_OPS_AI_GATEWAY_TOKEN, INTERNAL_TOKEN);
+  assert.equal(
+    childEnv.COMMERCE_OPS_AI_GATEWAY_URL,
+    "http://127.0.0.1:3101/api/internal/ai/mabang-listing/complete",
+  );
   assert.equal(childEnv.SAFE_VALUE, "kept");
 });
 

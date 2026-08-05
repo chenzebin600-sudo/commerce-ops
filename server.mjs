@@ -100,6 +100,7 @@ import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
 import { createAiAuditLogger } from "./lib/ai/ai-audit-logger.mjs";
 import { createAiOutputValidator } from "./lib/ai/ai-output-validation.mjs";
+import { createMabangListingAiApi, MABANG_LISTING_AI_PATH } from "./lib/ai/mabang-listing-ai-api.mjs";
 import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
 import { AiContextService } from "./lib/ai/context/ai-context-service.mjs";
 import { createAiContextApi } from "./lib/ai/context/ai-context-api.mjs";
@@ -229,6 +230,7 @@ const mabangListingServiceManager = createMabangListingServiceManager({
   host: mabangListingProxyConfig.host,
   port: mabangListingProxyConfig.port,
   internalToken: mabangListingInternalToken,
+  aiGatewayUrl: `http://127.0.0.1:${port}${MABANG_LISTING_AI_PATH}`,
   pythonExecutable: mabangListingPython.ok
     ? mabangListingPython.executable
     : null,
@@ -368,6 +370,12 @@ const deepSeekGateway = new AiGateway({
     endpoint: resolveDeepSeekEndpoint(process.env.DEEPSEEK_BASE_URL),
   }),
   logger: createAiAuditLogger({ audit: auditService }),
+});
+const handleMabangListingAiApi = createMabangListingAiApi({
+  gateway: deepSeekGateway,
+  internalToken: mabangListingInternalToken,
+  configured: Boolean(productAiApiKey),
+  defaultModel: deepSeekModel,
 });
 const productAiContentService = new ProductAiContentService({
   repository: dataAccess.repositories.productAiContents,
@@ -2408,6 +2416,9 @@ async function callDeepSeekMainImage({ model, report, requestId = null }) {
 }
 
 async function handleApi(req, res, url) {
+  const mabangListingAiHandled = await handleMabangListingAiApi(req, res, url);
+  if (mabangListingAiHandled) return true;
+
   const authResponse = authenticationApiResponse({
     method: req.method,
     pathname: url.pathname,
