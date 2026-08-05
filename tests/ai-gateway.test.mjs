@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { AiGateway } from "../lib/ai/ai-gateway.mjs";
+import { AiGateway, normalizeAiUsage } from "../lib/ai/ai-gateway.mjs";
+import { createAiAuditLogger } from "../lib/ai/ai-audit-logger.mjs";
+import { createJsonObjectOutputValidator } from "../lib/ai/ai-output-validation.mjs";
+import { AiPromptRegistry } from "../lib/ai/prompt-registry.mjs";
 import { DeepSeekProvider } from "../lib/ai/providers/deepseek-provider.mjs";
 import { MODULE_IDS, MODULE_ID_VALUES } from "../lib/contracts/module-ids.mjs";
 import { errorResponse, paginationResponse, successResponse } from "../lib/http/api-response.mjs";
@@ -27,16 +30,166 @@ test("AI gateway preserves messages and returns the unified result contract", as
     operation: "test_completion",
     model: "deepseek-chat",
     messages,
+    maxTokens: 321,
     thinking: { type: "disabled" },
     requestId: "request-test-1",
   });
   assert.deepEqual(requestBody.messages, messages);
   assert.equal(requestBody.model, "deepseek-chat");
   assert.deepEqual(requestBody.thinking, { type: "disabled" });
+  assert.equal(requestBody.max_tokens, 321);
   assert.equal(result.success, true);
   assert.equal(result.content, "unchanged result");
   assert.equal(result.requestId, "request-test-1");
   assert.equal(result.provider, "deepseek");
+  assert.deepEqual(result.usage, {
+    inputTokens: null,
+    outputTokens: null,
+    totalTokens: 12,
+    cacheHitTokens: null,
+    cacheMissTokens: null,
+  });
+  assert.equal(result.prompt.managed, false);
+});
+
+test("AI gateway registers versioned prompts and permits reuse inside one module", async () => {
+  const promptRegistry = new AiPromptRegistry();
+  const logs = [];
+  const provider = {
+    name: "fixture",
+    complete: async () => ({ success: true, content: "ok", usage: { prompt_tokens: 5, completion_tokens: 3 } }),
+  };
+  const gateway = new AiGateway({ provider, promptRegistry, logger: async (entry) => logs.push(entry) });
+  for (const operation of ["summarize", "explain"]) {
+    const result = await gateway.complete({
+      moduleId: MODULE_IDS.SALES_ASSORTMENT,
+      operation,
+      promptId: "sales-assortment.analysis",
+      promptVersion: "1.0.0",
+      messages: [],
+    });
+    assert.equal(result.success, true);
+    assert.deepEqual(result.prompt, { id: "sales-assortment.analysis", version: "1.0.0", managed: true });
+  }
+  assert.deepEqual(promptRegistry.list(), [{
+    id: "sales-assortment.analysis",
+    version: "1.0.0",
+    moduleId: MODULE_IDS.SALES_ASSORTMENT,
+    operations: ["explain", "summarize"],
+  }]);
+  assert.equal(logs[0].promptId, "sales-assortment.analysis");
+  assert.equal(logs[0].promptVersion, "1.0.0");
+  assert.deepEqual(logs[0].usage, {
+    inputTokens: 5,
+    outputTokens: 3,
+    totalTokens: 8,
+    cacheHitTokens: null,
+    cacheMissTokens: null,
+  });
+});
+
+test("AI gateway rejects incomplete prompt references and cross-module ownership conflicts", async () => {
+  const provider = { complete: async () => ({ success: true, content: "ok" }) };
+  const promptRegistry = new AiPromptRegistry();
+  const gateway = new AiGateway({ provider, promptRegistry });
+  await assert.rejects(() => gateway.complete({
+    moduleId: MODULE_IDS.SALES_ASSORTMENT,
+    promptId: "sales-assortment.analysis",
+    messages: [],
+  }), { code: "AI_PROMPT_REFERENCE_INCOMPLETE" });
+  await gateway.complete({
+    moduleId: MODULE_IDS.SALES_ASSORTMENT,
+    promptId: "shared.prompt",
+    promptVersion: "1",
+    messages: [],
+  });
+  await assert.rejects(() => gateway.complete({
+    moduleId: MODULE_IDS.PRODUCT_CENTER,
+    promptId: "shared.prompt",
+    promptVersion: "1",
+    messages: [],
+  }), { code: "AI_PROMPT_REFERENCE_CONFLICT" });
+});
+
+test("AI gateway validates structured output and never returns invalid content", async () => {
+  const logs = [];
+  let content = '```json\n{"summary":"usable"}\n```';
+  const gateway = new AiGateway({
+    provider: { complete: async () => ({ success: true, content }) },
+    logger: (entry) => logs.push(entry),
+  });
+  const outputValidator = createJsonObjectOutputValidator({
+    schemaId: "analysis-summary@1",
+    validate: (value) => typeof value.summary === "string",
+  });
+  const valid = await gateway.complete({
+    moduleId: MODULE_IDS.SALES_ASSORTMENT,
+    operation: "validate",
+    messages: [],
+    outputValidator,
+  });
+  assert.equal(valid.success, true);
+  assert.deepEqual(valid.validatedOutput, { summary: "usable" });
+  assert.equal(valid.outputSchemaId, "analysis-summary@1");
+  assert.equal(valid.outputValid, true);
+
+  content = '{"unexpected":true}';
+  const invalid = await gateway.complete({
+    moduleId: MODULE_IDS.SALES_ASSORTMENT,
+    operation: "validate",
+    messages: [],
+    outputValidator,
+  });
+  assert.equal(invalid.success, false);
+  assert.equal(invalid.errorCode, "AI_OUTPUT_INVALID");
+  assert.equal(invalid.content, null);
+  assert.equal(invalid.validatedOutput, null);
+  assert.equal(logs.at(-1).outputValid, false);
+});
+
+test("AI audit logger records safe prompt, token, and validation metadata", async () => {
+  const records = [];
+  const logger = createAiAuditLogger({
+    audit: { recordSafely: async (entry) => records.push(entry) },
+  });
+  await logger({
+    requestId: "request-audit-1",
+    moduleId: MODULE_IDS.PRODUCT_CENTER,
+    operation: "generate",
+    provider: "deepseek",
+    model: "deepseek-v4-flash",
+    promptId: "product.generate",
+    promptVersion: "2.1.0",
+    promptManaged: true,
+    attempts: 1,
+    usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14, cacheHitTokens: 2 },
+    outputSchemaId: "product-copy@1",
+    outputValid: true,
+    durationMs: 25,
+    success: true,
+    errorCode: null,
+    messages: [{ role: "user", content: "private input" }],
+    content: "private output",
+  });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].metadata.totalTokens, 14);
+  assert.equal(records[0].metadata.promptVersion, "2.1.0");
+  assert.doesNotMatch(JSON.stringify(records), /private input|private output/);
+});
+
+test("AI gateway normalizes usage variants and isolates logger failures", async () => {
+  assert.deepEqual(normalizeAiUsage({ input_tokens: 7, output_tokens: 2, prompt_cache_miss_tokens: 5 }), {
+    inputTokens: 7,
+    outputTokens: 2,
+    totalTokens: 9,
+    cacheHitTokens: null,
+    cacheMissTokens: 5,
+  });
+  const result = await new AiGateway({
+    provider: { complete: async () => ({ success: true, content: "ok" }) },
+    logger: async () => { throw new Error("audit unavailable"); },
+  }).complete({ moduleId: MODULE_IDS.ADVERTISING, messages: [] });
+  assert.equal(result.success, true);
 });
 
 test("AI gateway reports timeout and rate limiting with stable codes", async () => {
