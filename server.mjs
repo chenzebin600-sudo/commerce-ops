@@ -99,6 +99,8 @@ import { SalesAssortmentAiService } from "./lib/sales-assortment/sales-assortmen
 import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
 import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
+import { AiContextService } from "./lib/ai/context/ai-context-service.mjs";
+import { createAiContextApi } from "./lib/ai/context/ai-context-api.mjs";
 import { MODULE_IDS } from "./lib/contracts/module-ids.mjs";
 import { createIdentifier } from "./lib/contracts/identifiers.mjs";
 import { MabangInventoryWorkerSession } from "./lib/mabang-images/worker-session.mjs";
@@ -453,6 +455,8 @@ const handleSalesAssortmentApi = createSalesAssortmentApi({
   aiService: salesAssortmentAiService,
   accessPolicy: growthRadarAccessPolicy,
 });
+const aiContextService = new AiContextService({ repository: dataAccess.repositories.aiContext });
+const handleAiContextApi = createAiContextApi({ service: aiContextService });
 const runMabangWorker = createMabangWorkerRunner({
   rootDir: runtimeConfig.appRoot,
   exportRoot: fileStorageConfig.tempRoot,
@@ -2404,6 +2408,9 @@ async function handleApi(req, res, url) {
 
   const auditHandled = await handleAuditApi(req, res, url);
   if (auditHandled) return true;
+
+  const aiContextHandled = await handleAiContextApi(req, res, url);
+  if (aiContextHandled) return true;
 
   const growthRadarV2Handled = await handleGrowthRadarV2Api(req, res, url);
   if (growthRadarV2Handled) return true;
