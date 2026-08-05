@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { aiGatewayError } from "../lib/ai/ai-gateway.mjs";
+import { createAiOutputValidator } from "../lib/ai/ai-output-validation.mjs";
 import { MODULE_IDS } from "../lib/contracts/module-ids.mjs";
 import { FulfillmentError } from "./service.mjs";
 import { FULFILLMENT_AGENT_PROMPT_VERSION, FULFILLMENT_AGENT_SYSTEM_PROMPT } from "./agent-prompt.mjs";
@@ -23,6 +24,12 @@ function parseCommand(content) {
   }
   throw new FulfillmentError("AGENT_INVALID_RESPONSE", "Agent 响应类型无效", 502);
 }
+
+const fulfillmentCommandOutputValidator = createAiOutputValidator({
+  schemaId: `fulfillment-agent-command@${FULFILLMENT_AGENT_PROMPT_VERSION}`,
+  parse: parseCommand,
+  validate: () => true,
+});
 
 function boundedMessage(value) {
   const message = String(value || "").trim();
@@ -82,10 +89,11 @@ export class FulfillmentAgent {
     try {
       for (let step = 1; step <= this.maxSteps; step += 1) {
         const result = await this.gateway.complete({ moduleId: MODULE_IDS.FULFILLMENT_AGENT,
-          operation: "fulfillment_agent_step", model: this.model, messages, temperature: 0.1,
-          responseFormat: { type: "json_object" } });
+          operation: "fulfillment_agent_step", promptId: "fulfillment.readonly-agent",
+          promptVersion: FULFILLMENT_AGENT_PROMPT_VERSION, model: this.model, messages, temperature: 0.1,
+          responseFormat: { type: "json_object" }, outputValidator: fulfillmentCommandOutputValidator });
         if (!result.success) throw aiGatewayError(result);
-        const command = parseCommand(result.content);
+        const command = result.validatedOutput ?? parseCommand(result.content);
         if (command.type === "final") {
           this.remember(id, userMessage, command.message);
           this.repository?.finishAgentRun?.({ id: runId, status: "completed", stepCount: step,

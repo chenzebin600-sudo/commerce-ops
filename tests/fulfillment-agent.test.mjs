@@ -33,6 +33,9 @@ test("read-only fulfillment agent executes a bounded tool loop and persists safe
   assert.equal(result.mode, "read_only");
   assert.deepEqual(calls, [{ name:"get_dashboard",args:{ days:1 } }]);
   assert.match(gateway.requests[0].messages[0].content, /严格只读阶段/);
+  assert.equal(gateway.requests[0].promptId, "fulfillment.readonly-agent");
+  assert.equal(gateway.requests[0].promptVersion, "fulfillment-readonly-agent-v1");
+  assert.match(gateway.requests[0].outputValidator.schemaId, /^fulfillment-agent-command@/);
   assert.match(gateway.requests[1].messages.at(-1).content, /TOOL_RESULT get_dashboard/);
   const audit = repository.getAgentRun(result.runId);
   assert.equal(audit.status, "completed");

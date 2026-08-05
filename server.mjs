@@ -98,6 +98,8 @@ import { createSalesAssortmentApi } from "./lib/sales-assortment/sales-assortmen
 import { SalesAssortmentAiService } from "./lib/sales-assortment/sales-assortment-ai-service.mjs";
 import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
+import { createAiAuditLogger } from "./lib/ai/ai-audit-logger.mjs";
+import { createAiOutputValidator } from "./lib/ai/ai-output-validation.mjs";
 import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
 import { AiContextService } from "./lib/ai/context/ai-context-service.mjs";
 import { createAiContextApi } from "./lib/ai/context/ai-context-api.mjs";
@@ -365,23 +367,7 @@ const deepSeekGateway = new AiGateway({
     apiKey: productAiApiKey,
     endpoint: resolveDeepSeekEndpoint(process.env.DEEPSEEK_BASE_URL),
   }),
-  logger: (entry) => auditService.recordSafely({
-    requestId: entry.requestId,
-    module: "ai",
-    action: "deepseek.call",
-    status: entry.success ? "success" : "failed",
-    durationMs: entry.durationMs,
-    errorStage: entry.success ? null : "deepseek",
-    errorCode: entry.errorCode,
-    metadata: {
-      provider: entry.provider,
-      moduleId: entry.moduleId,
-      operation: entry.operation,
-      model: entry.model,
-      durationMs: entry.durationMs,
-      success: entry.success,
-    },
-  }),
+  logger: createAiAuditLogger({ audit: auditService }),
 });
 const productAiContentService = new ProductAiContentService({
   repository: dataAccess.repositories.productAiContents,
@@ -1458,9 +1444,14 @@ async function optimizeDiscoveryKeyword({ keyword, productDescription, productIm
     const result = await completeDeepSeek({
       moduleId: MODULE_IDS.COMPETITOR_KEYWORD,
       operation: "optimize_discovery_keyword",
+      promptId: "competitor.discovery-keyword",
+      promptVersion: "competitor-keyword-v1",
       requestId,
-      apiKey: key,
       model: model || "deepseek-chat",
+      outputValidator: deepSeekJsonOutputValidator(
+        "competitor-discovery-keyword@1",
+        (value) => typeof value.keyword === "string" && value.keyword.trim() !== "",
+      ),
       messages: [
           {
             role: "system",
@@ -1488,7 +1479,7 @@ async function optimizeDiscoveryKeyword({ keyword, productDescription, productIm
           },
         ],
     });
-    const parsed = parseDeepSeekJson(result.content || "");
+    const parsed = result.validatedOutput ?? parseDeepSeekJson(result.content || "");
     const optimized = String(parsed?.keyword || "").replace(/\s+/g, " ").trim().slice(0, 90);
     if (!optimized) return { keyword: fallback, reason: "DeepSeek 未返回有效关键词，已使用备用搜索词。" };
     return {
@@ -2003,9 +1994,14 @@ async function buildSmartSkuComparison(products, model, requestId = null) {
     const result = await completeDeepSeek({
       moduleId: MODULE_IDS.COMPETITOR_LINK,
       operation: "match_product_skus",
+      promptId: "competitor.sku-matching",
+      promptVersion: "competitor-sku-match-v1",
       requestId,
-      apiKey: key,
       model: model || "deepseek-chat",
+      outputValidator: deepSeekJsonOutputValidator(
+        "competitor-sku-matches@1",
+        (value) => Array.isArray(value.matches),
+      ),
       messages: [
           {
             role: "system",
@@ -2039,7 +2035,7 @@ async function buildSmartSkuComparison(products, model, requestId = null) {
           },
         ],
     });
-    const parsed = parseDeepSeekJson(result.content || "");
+    const parsed = result.validatedOutput ?? parseDeepSeekJson(result.content || "");
     const matches = Array.isArray(parsed?.matches) ? parsed.matches : [];
     if (dimensionReady) {
       return fallback.map((row) => ({
@@ -2258,6 +2254,20 @@ function parseDeepSeekJson(content) {
   }
 }
 
+function deepSeekJsonOutputValidator(schemaId, validate = () => true) {
+  return createAiOutputValidator({
+    schemaId,
+    parse(content) {
+      const parsed = parseDeepSeekJson(content);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new TypeError("DeepSeek output must be a JSON object");
+      }
+      return parsed;
+    },
+    validate,
+  });
+}
+
 function getDeepSeekApiKey() {
   if (process.env.DEEPSEEK_API_KEY) return process.env.DEEPSEEK_API_KEY;
   if (process.platform !== "win32") return "";
@@ -2272,28 +2282,26 @@ function getDeepSeekApiKey() {
   }
 }
 
-async function completeDeepSeek({ moduleId, operation, requestId, apiKey = getDeepSeekApiKey(), model, messages }) {
-  const gateway = new AiGateway({
-    provider: new DeepSeekProvider({ apiKey }),
-    logger: (entry) => auditService.recordSafely({
-      requestId: entry.requestId,
-      module: "ai",
-      action: "deepseek.call",
-      status: entry.success ? "success" : "failed",
-      durationMs: entry.durationMs,
-      errorStage: entry.success ? null : "deepseek",
-      errorCode: entry.errorCode,
-      metadata: {
-        provider: entry.provider,
-        moduleId: entry.moduleId,
-        operation: entry.operation,
-        model: entry.model,
-        durationMs: entry.durationMs,
-        success: entry.success,
-      },
-    }),
+async function completeDeepSeek({
+  moduleId,
+  operation,
+  promptId,
+  promptVersion,
+  requestId,
+  model,
+  messages,
+  outputValidator,
+}) {
+  const result = await deepSeekGateway.complete({
+    moduleId,
+    operation,
+    promptId,
+    promptVersion,
+    requestId,
+    model,
+    messages,
+    outputValidator,
   });
-  const result = await gateway.complete({ moduleId, operation, requestId, model, messages });
   if (!result.success) throw aiGatewayError(result);
   return result;
 }
@@ -2305,9 +2313,11 @@ async function callDeepSeek({ model, report, requestId = null }) {
   const result = await completeDeepSeek({
     moduleId: report?.discovery ? MODULE_IDS.COMPETITOR_KEYWORD : MODULE_IDS.COMPETITOR_LINK,
     operation: "analyze_competitors",
+    promptId: "competitor.report-analysis",
+    promptVersion: "competitor-report-v1",
     requestId,
-    apiKey: key,
     model: model || "deepseek-chat",
+    outputValidator: deepSeekJsonOutputValidator("competitor-report@1"),
     messages: [
         {
           role: "system",
@@ -2335,7 +2345,7 @@ async function callDeepSeek({ model, report, requestId = null }) {
       ],
   });
   const content = result.content || "";
-  return { raw: content, modules: parseDeepSeekJson(content) };
+  return { raw: content, modules: result.validatedOutput ?? parseDeepSeekJson(content) };
 }
 
 async function callDeepSeekMainImage({ model, report, requestId = null }) {
@@ -2362,9 +2372,11 @@ async function callDeepSeekMainImage({ model, report, requestId = null }) {
   const result = await completeDeepSeek({
     moduleId: MODULE_IDS.COMPETITOR_LINK,
     operation: "analyze_main_images",
+    promptId: "competitor.main-image-analysis",
+    promptVersion: "competitor-main-image-v1",
     requestId,
-    apiKey: key,
     model: model || "deepseek-chat",
+    outputValidator: deepSeekJsonOutputValidator("competitor-main-image@1"),
     messages: [
         {
           role: "system",
@@ -2392,7 +2404,7 @@ async function callDeepSeekMainImage({ model, report, requestId = null }) {
       ],
   });
   const content = result.content || "";
-  return { raw: content, modules: parseDeepSeekJson(content) };
+  return { raw: content, modules: result.validatedOutput ?? parseDeepSeekJson(content) };
 }
 
 async function handleApi(req, res, url) {

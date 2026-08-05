@@ -190,6 +190,9 @@ test("19 listing AI service forwards the current page context to the gateway", a
   });
   await service.generateListingContent(product, { contentTypes: ["listing_title"], listingContext: listingContext({ productFacts: { productName: "实时页面名称" } }) });
   assert.match(request.messages[1].content, /实时页面名称/);
+  assert.equal(request.promptId, "product.listing-content");
+  assert.equal(request.promptVersion, LISTING_AI_PROMPT_VERSION);
+  assert.match(request.outputValidator.schemaId, /^product-listing-content@/);
 });
 test("20 generated candidates are not silently written into listing fields", async () => {
   const source = await ui();
