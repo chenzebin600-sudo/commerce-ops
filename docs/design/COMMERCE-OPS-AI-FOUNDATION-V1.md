@@ -100,8 +100,9 @@ An Agent definition contains:
 
 Definitions are validated and registered, but no Daily Report, Shop,
 Inventory, or other business Agent is created in this phase. Agent task
-requests are wrapped by Foundation tasks and are projection-only until a later
-approved execution runtime is introduced.
+requests are wrapped by Foundation tasks and remain pending until a later
+approved execution runtime is introduced. The detailed contract is recorded in
+`docs/design/COMMERCE-OPS-AGENT-FRAMEWORK-V1.md`.
 
 ## 3. API Boundary
 
