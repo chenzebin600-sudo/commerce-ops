@@ -344,6 +344,8 @@ test("Mabang listing child gets isolated storage and no formal database path", (
       APP_ROOT: "main",
       STORAGE_ROOT: "main-storage",
       DATABASE_PATH: "formal.sqlite",
+      DEEPSEEK_API_KEY: "must-not-reach-python",
+      DEEPSEEK_BASE_URL: "https://provider.invalid",
       SAFE_VALUE: "kept",
     },
     serviceDir: "integration",
@@ -355,6 +357,8 @@ test("Mabang listing child gets isolated storage and no formal database path", (
   });
   assert.equal(childEnv.APP_ROOT, undefined);
   assert.equal(childEnv.DATABASE_PATH, undefined);
+  assert.equal(childEnv.DEEPSEEK_API_KEY, undefined);
+  assert.equal(childEnv.DEEPSEEK_BASE_URL, undefined);
   assert.equal(childEnv.MABANG_LISTING_STORAGE_ROOT, "integration-storage");
   assert.equal(childEnv.MABANG_LISTING_INTERNAL_TOKEN, INTERNAL_TOKEN);
   assert.equal(childEnv.COMMERCE_OPS_AI_GATEWAY_TOKEN, INTERNAL_TOKEN);

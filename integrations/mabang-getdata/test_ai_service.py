@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from ai_service import (
     AIConfigurationError,
+    AIRequestError,
     AIValidationError,
     DeepSeekAIService,
     ai_status,
@@ -41,36 +42,43 @@ def completion(command):
     import json
 
     return {
-        "choices": [
-            {
-                "message": {
-                    "content": json.dumps(command, ensure_ascii=False),
-                }
-            }
-        ]
+        "success": True,
+        "data": {
+            "content": json.dumps(command, ensure_ascii=False),
+            "validated_output": command,
+        },
     }
 
 
 class AIServiceTests(unittest.TestCase):
     def test_legacy_v4_model_alias_resolves_to_supported_flash_model(self):
-        service = DeepSeekAIService(api_key="test-key", model="deepseek-v4")
+        service = DeepSeekAIService(gateway_token="test-token", model="deepseek-v4")
 
         self.assertEqual(service.model, "deepseek-v4-flash")
 
     def test_supported_pro_model_is_preserved(self):
-        service = DeepSeekAIService(api_key="test-key", model="deepseek-v4-pro")
+        service = DeepSeekAIService(gateway_token="test-token", model="deepseek-v4-pro")
 
         self.assertEqual(service.model, "deepseek-v4-pro")
 
     def test_unsupported_model_fails_before_an_http_request(self):
         with self.assertRaisesRegex(AIConfigurationError, "deepseek-v4-flash"):
-            DeepSeekAIService(api_key="test-key", model="deepseek-unknown")
+            DeepSeekAIService(gateway_token="test-token", model="deepseek-unknown")
 
     def test_ai_status_reports_effective_model_for_legacy_environment_value(self):
-        with patch.dict(os.environ, {"DEEPSEEK_MODEL": "deepseek-v4"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPSEEK_MODEL": "deepseek-v4",
+                "COMMERCE_OPS_AI_GATEWAY_TOKEN": "internal-token",
+            },
+            clear=False,
+        ):
             status = ai_status()
 
         self.assertEqual(status["model"], "deepseek-v4-flash")
+        self.assertEqual(status["route"], "commerce_ops_ai_gateway")
+        self.assertTrue(status["configured"])
 
     def test_parses_price_percent_command_as_strict_json(self):
         session = FakeSession(
@@ -108,9 +116,8 @@ class AIServiceTests(unittest.TestCase):
             ]
         )
         service = DeepSeekAIService(
-            api_key="test-key",
+            gateway_token="test-token",
             session=session,
-            sleep=lambda _: None,
         )
 
         parsed = service.parse_command("SKU A 泰国 Lazada 售价上涨10%")
@@ -123,14 +130,21 @@ class AIServiceTests(unittest.TestCase):
         self.assertEqual(parsed["operation"]["value"], 10)
         self.assertTrue(parsed["need_confirm"])
         url, request = session.calls[0]
-        self.assertEqual(url, "https://api.deepseek.com/chat/completions")
         self.assertEqual(
-            request["json"]["response_format"],
-            {"type": "json_object"},
+            url,
+            "http://127.0.0.1:3101/api/internal/ai/mabang-listing/complete",
         )
         self.assertEqual(
-            request["headers"]["Authorization"],
-            "Bearer test-key",
+            request["json"]["profile"],
+            "command_parser",
+        )
+        self.assertEqual(
+            request["json"]["prompt_version"],
+            "mabang-listing-command-v1",
+        )
+        self.assertEqual(
+            request["headers"]["x-commerce-ops-internal-token"],
+            "test-token",
         )
 
     def test_parses_multiple_independent_store_sku_commands(self):
@@ -176,9 +190,8 @@ class AIServiceTests(unittest.TestCase):
             ]
         )
         service = DeepSeekAIService(
-            api_key="test-key",
+            gateway_token="test-token",
             session=session,
-            sleep=lambda _: None,
         )
 
         commands = service.parse_commands(
@@ -195,8 +208,7 @@ class AIServiceTests(unittest.TestCase):
         self.assertEqual(commands[1]["operation"]["value"], 99)
         self.assertEqual(len(session.calls), 1)
 
-    def test_retries_transient_provider_error(self):
-        sleeps = []
+    def test_provider_retries_are_owned_by_the_central_gateway(self):
         session = FakeSession(
             [
                 FakeResponse(429, {"error": {"message": "busy"}}, {"Retry-After": "0"}),
@@ -222,18 +234,14 @@ class AIServiceTests(unittest.TestCase):
             ]
         )
         service = DeepSeekAIService(
-            api_key="test-key",
+            gateway_token="test-token",
             session=session,
-            max_retries=2,
-            sleep=sleeps.append,
         )
 
-        parsed = service.parse_command("SKU001库存调整100")
+        with self.assertRaisesRegex(AIRequestError, "HTTP 429"):
+            service.parse_command("SKU001库存调整100")
 
-        self.assertEqual(parsed["action"], "stock_update")
-        self.assertEqual(parsed["operation"]["value"], 100)
-        self.assertEqual(len(session.calls), 2)
-        self.assertEqual(sleeps, [0.0])
+        self.assertEqual(len(session.calls), 1)
 
     def test_sku_replacement_always_has_risk_and_confirmation(self):
         parsed = validate_command(
@@ -314,12 +322,12 @@ class AIServiceTests(unittest.TestCase):
                 }
             )
 
-    def test_api_key_is_read_only_from_environment(self):
+    def test_gateway_token_is_read_only_from_environment(self):
         with patch.dict(os.environ, {}, clear=True):
             service = DeepSeekAIService()
             with self.assertRaisesRegex(
                 AIConfigurationError,
-                "DEEPSEEK_API_KEY",
+                "AI Gateway",
             ):
                 service.parse_command("SKU A价格上涨10%")
 
@@ -379,9 +387,8 @@ class AIServiceTests(unittest.TestCase):
             ]
         )
         service = DeepSeekAIService(
-            api_key="test-key",
+            gateway_token="test-token",
             session=session,
-            sleep=lambda _: None,
         )
 
         material = service.generate_listing_material("生成一条1米USB-C线资料")
@@ -389,6 +396,13 @@ class AIServiceTests(unittest.TestCase):
         self.assertEqual(material["title"], "USB-C Cable")
         self.assertFalse(material["publishing_allowed"])
         self.assertTrue(material["warnings"])
+        _url, request = session.calls[0]
+        self.assertEqual(request["json"]["profile"], "listing_material")
+        self.assertEqual(
+            request["json"]["prompt_version"],
+            "mabang-listing-material-v1",
+        )
+        self.assertNotIn("Authorization", request["headers"])
 
 
 if __name__ == "__main__":

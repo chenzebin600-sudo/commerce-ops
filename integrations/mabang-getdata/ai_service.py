@@ -13,21 +13,23 @@ import json
 import os
 import re
 import sys
-import time
 from decimal import Decimal, InvalidOperation
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import requests
 
 
-DEFAULT_BASE_URL = "https://api.deepseek.com"
+DEFAULT_GATEWAY_URL = (
+    "http://127.0.0.1:3101/api/internal/ai/mabang-listing/complete"
+)
+GATEWAY_TOKEN_HEADER = "x-commerce-ops-internal-token"
 DEFAULT_MODEL = "deepseek-v4-flash"
 SUPPORTED_MODELS = frozenset({"deepseek-v4-flash", "deepseek-v4-pro"})
 MODEL_ALIASES = {"deepseek-v4": DEFAULT_MODEL}
 DEFAULT_TIMEOUT = (5.0, 30.0)
-DEFAULT_MAX_RETRIES = 2
 MAX_COMMAND_LENGTH = 4000
-RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+COMMAND_PROMPT_VERSION = "mabang-listing-command-v1"
+LISTING_MATERIAL_PROMPT_VERSION = "mabang-listing-material-v1"
 
 ACTION_ALIASES = {
     "price_update": "price_update",
@@ -676,63 +678,57 @@ def resolve_model_name(value: Any) -> str:
 
 
 def ai_status() -> dict[str, Any]:
-    """Return non-secret provider configuration for the local UI."""
+    """Return non-secret centralized Gateway configuration for the local UI."""
+
+    gateway_url = os.getenv(
+        "COMMERCE_OPS_AI_GATEWAY_URL", DEFAULT_GATEWAY_URL
+    ).strip()
+    gateway_token = os.getenv("COMMERCE_OPS_AI_GATEWAY_TOKEN", "").strip()
 
     return {
         "provider": "deepseek",
-        "configured": bool(os.getenv("DEEPSEEK_API_KEY", "").strip()),
-        "base_url": os.getenv("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL)
-        .strip()
-        .rstrip("/"),
+        "configured": bool(gateway_url and gateway_token),
+        "base_url": gateway_url,
         "model": resolve_model_name(os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL)),
+        "route": "commerce_ops_ai_gateway",
         "phase": "parse_only",
         "execution_allowed": False,
     }
 
 
 class DeepSeekAIService:
-    """Small provider adapter with bounded retries and strict local validation."""
+    """Mabang AI adapter that delegates provider access to Commerce Ops Gateway."""
 
     def __init__(
         self,
         *,
-        api_key: str | None = None,
-        base_url: str | None = None,
+        gateway_url: str | None = None,
+        gateway_token: str | None = None,
         model: str | None = None,
         session: requests.Session | None = None,
         timeout: tuple[float, float] = DEFAULT_TIMEOUT,
-        max_retries: int = DEFAULT_MAX_RETRIES,
-        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self.api_key = (
-            os.getenv("DEEPSEEK_API_KEY", "") if api_key is None else api_key
+        self.gateway_url = (
+            os.getenv("COMMERCE_OPS_AI_GATEWAY_URL", DEFAULT_GATEWAY_URL)
+            if gateway_url is None
+            else gateway_url
         ).strip()
-        self.base_url = (
-            os.getenv("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL)
-            if base_url is None
-            else base_url
-        ).strip().rstrip("/")
+        self.gateway_token = (
+            os.getenv("COMMERCE_OPS_AI_GATEWAY_TOKEN", "")
+            if gateway_token is None
+            else gateway_token
+        ).strip()
         self.model = resolve_model_name(
             os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL) if model is None else model
         )
         self.session = session or requests.Session()
         self.timeout = timeout
-        self.max_retries = max(0, min(5, int(max_retries)))
-        self.sleep = sleep
+        # Provider retries are centralized in the Node AI Gateway.
+        self.max_retries = 0
 
     @property
     def endpoint(self) -> str:
-        return self.base_url + "/chat/completions"
-
-    def _delay(self, attempt: int, response: requests.Response | None = None) -> float:
-        if response is not None:
-            retry_after = response.headers.get("Retry-After", "").strip()
-            try:
-                if retry_after:
-                    return max(0.0, min(10.0, float(retry_after)))
-            except ValueError:
-                pass
-        return min(4.0, 0.75 * (2**attempt))
+        return self.gateway_url
 
     def parse_commands(self, command: str) -> list[dict[str, Any]]:
         text = str(command or "").strip()
@@ -742,25 +738,20 @@ class DeepSeekAIService:
             raise AIValidationError(
                 f"运营指令不能超过 {MAX_COMMAND_LENGTH} 个字符。"
             )
-        if not self.api_key:
+        if not self.gateway_url or not self.gateway_token:
             raise AIConfigurationError(
-                "尚未配置 DEEPSEEK_API_KEY，AI解析暂不可用。"
+                "Commerce Ops AI Gateway 尚未配置，AI解析暂不可用。"
             )
 
         request_body = {
+            "profile": "command_parser",
+            "prompt_version": COMMAND_PROMPT_VERSION,
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": "请解析以下运营指令：\n" + text},
-            ],
-            "response_format": {"type": "json_object"},
-            "thinking": {"type": "disabled"},
-            "temperature": 0,
-            "max_tokens": 2400,
-            "stream": False,
+            "system_prompt": SYSTEM_PROMPT,
+            "input": "请解析以下运营指令：\n" + text,
         }
         headers = {
-            "Authorization": "Bearer " + self.api_key,
+            GATEWAY_TOKEN_HEADER: self.gateway_token,
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
@@ -775,47 +766,43 @@ class DeepSeekAIService:
                     json=request_body,
                     timeout=self.timeout,
                 )
-                if response.status_code in RETRYABLE_STATUS_CODES:
-                    raise AIRequestError(
-                        f"DeepSeek服务暂时不可用（HTTP {response.status_code}）。"
-                    )
                 if response.status_code in {401, 403}:
                     raise AIConfigurationError(
-                        "DeepSeek API Key无效或没有当前模型权限。"
+                        "Commerce Ops AI Gateway 内部认证失败。"
                     )
                 if response.status_code >= 400:
                     message = ""
                     try:
                         error_payload = response.json()
                         if isinstance(error_payload, dict):
-                            error = error_payload.get("error")
-                            if isinstance(error, dict):
-                                message = _string(error.get("message"), maximum=200)
-                            else:
-                                message = _string(
-                                    error_payload.get("message"), maximum=200
-                                )
+                            message = _string(
+                                error_payload.get("error")
+                                or error_payload.get("message"),
+                                maximum=200,
+                            )
                     except (ValueError, TypeError):
                         message = ""
                     raise AIRequestError(
-                        f"DeepSeek请求失败（HTTP {response.status_code}）"
+                        f"Commerce Ops AI Gateway 请求失败（HTTP {response.status_code}）"
                         + (f"：{message}" if message else "。")
                     )
                 try:
                     response_payload = response.json()
                 except ValueError:
-                    raise AIResponseError("DeepSeek响应不是有效JSON。") from None
-                choices = (
-                    response_payload.get("choices")
-                    if isinstance(response_payload, dict)
-                    else None
+                    raise AIResponseError(
+                        "Commerce Ops AI Gateway 响应不是有效JSON。"
+                    ) from None
+                if not isinstance(response_payload, dict) or not response_payload.get("success"):
+                    raise AIResponseError("Commerce Ops AI Gateway 返回失败结果。")
+                data = response_payload.get("data")
+                if not isinstance(data, dict):
+                    raise AIResponseError("Commerce Ops AI Gateway 响应缺少data。")
+                validated_output = data.get("validated_output")
+                decoded = (
+                    validated_output
+                    if isinstance(validated_output, dict)
+                    else _decode_json_content(data.get("content"))
                 )
-                if not isinstance(choices, list) or not choices:
-                    raise AIResponseError("DeepSeek响应缺少choices。")
-                first = choices[0]
-                message = first.get("message") if isinstance(first, dict) else None
-                content = message.get("content") if isinstance(message, dict) else None
-                decoded = _decode_json_content(content)
                 return validate_commands(decoded)
             except AIConfigurationError:
                 raise
@@ -829,7 +816,7 @@ class DeepSeekAIService:
                 last_error = exc
                 if attempt >= self.max_retries:
                     break
-                self.sleep(self._delay(attempt, response))
+                continue
 
         if isinstance(last_error, AIValidationError):
             raise last_error
@@ -838,10 +825,10 @@ class DeepSeekAIService:
         if isinstance(last_error, AIRequestError):
             raise last_error
         if isinstance(last_error, requests.Timeout):
-            raise AIRequestError("DeepSeek请求超时，请稍后重试。") from None
+            raise AIRequestError("Commerce Ops AI Gateway 请求超时，请稍后重试。") from None
         if isinstance(last_error, requests.ConnectionError):
-            raise AIRequestError("无法连接DeepSeek服务，请检查网络。") from None
-        raise AIRequestError("DeepSeek解析失败，请稍后重试。")
+            raise AIRequestError("无法连接 Commerce Ops AI Gateway，请确认主服务正在运行。") from None
+        raise AIRequestError("Commerce Ops AI Gateway 解析失败，请稍后重试。")
 
     def parse_command(self, command: str) -> dict[str, Any]:
         """Backward-compatible single-command parser."""
@@ -863,25 +850,20 @@ class DeepSeekAIService:
             raise AIValidationError(
                 f"商品资料要求不能超过 {MAX_COMMAND_LENGTH} 个字符。"
             )
-        if not self.api_key:
+        if not self.gateway_url or not self.gateway_token:
             raise AIConfigurationError(
-                "尚未配置 DEEPSEEK_API_KEY，AI 商品资料生成暂不可用。"
+                "Commerce Ops AI Gateway 尚未配置，AI 商品资料生成暂不可用。"
             )
 
         request_body = {
+            "profile": "listing_material",
+            "prompt_version": LISTING_MATERIAL_PROMPT_VERSION,
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": LISTING_MATERIAL_SYSTEM_PROMPT},
-                {"role": "user", "content": "请生成以下商品的刊登资料：\n" + text},
-            ],
-            "response_format": {"type": "json_object"},
-            "thinking": {"type": "disabled"},
-            "temperature": 0.2,
-            "max_tokens": 3200,
-            "stream": False,
+            "system_prompt": LISTING_MATERIAL_SYSTEM_PROMPT,
+            "input": "请生成以下商品的刊登资料：\n" + text,
         }
         headers = {
-            "Authorization": "Bearer " + self.api_key,
+            GATEWAY_TOKEN_HEADER: self.gateway_token,
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
@@ -896,33 +878,44 @@ class DeepSeekAIService:
                     json=request_body,
                     timeout=self.timeout,
                 )
-                if response.status_code in RETRYABLE_STATUS_CODES:
-                    raise AIRequestError(
-                        f"DeepSeek 服务暂时不可用（HTTP {response.status_code}）。"
-                    )
                 if response.status_code in {401, 403}:
                     raise AIConfigurationError(
-                        "DeepSeek API Key 无效或没有当前模型权限。"
+                        "Commerce Ops AI Gateway 内部认证失败。"
                     )
                 if response.status_code >= 400:
+                    message = ""
+                    try:
+                        error_payload = response.json()
+                        if isinstance(error_payload, dict):
+                            message = _string(
+                                error_payload.get("error")
+                                or error_payload.get("message"),
+                                maximum=200,
+                            )
+                    except (ValueError, TypeError):
+                        message = ""
                     raise AIRequestError(
-                        f"DeepSeek 请求失败（HTTP {response.status_code}）。"
+                        f"Commerce Ops AI Gateway 请求失败（HTTP {response.status_code}）"
+                        + (f"：{message}" if message else "。")
                     )
                 try:
                     response_payload = response.json()
                 except ValueError:
-                    raise AIResponseError("DeepSeek 响应不是有效 JSON。") from None
-                choices = (
-                    response_payload.get("choices")
-                    if isinstance(response_payload, dict)
-                    else None
+                    raise AIResponseError(
+                        "Commerce Ops AI Gateway 响应不是有效 JSON。"
+                    ) from None
+                if not isinstance(response_payload, dict) or not response_payload.get("success"):
+                    raise AIResponseError("Commerce Ops AI Gateway 返回失败结果。")
+                data = response_payload.get("data")
+                if not isinstance(data, dict):
+                    raise AIResponseError("Commerce Ops AI Gateway 响应缺少 data。")
+                validated_output = data.get("validated_output")
+                decoded = (
+                    validated_output
+                    if isinstance(validated_output, dict)
+                    else _decode_json_content(data.get("content"))
                 )
-                if not isinstance(choices, list) or not choices:
-                    raise AIResponseError("DeepSeek 响应缺少 choices。")
-                first = choices[0]
-                message = first.get("message") if isinstance(first, dict) else None
-                content = message.get("content") if isinstance(message, dict) else None
-                return validate_listing_material(_decode_json_content(content))
+                return validate_listing_material(decoded)
             except AIConfigurationError:
                 raise
             except (
@@ -935,15 +928,15 @@ class DeepSeekAIService:
                 last_error = exc
                 if attempt >= self.max_retries:
                     break
-                self.sleep(self._delay(attempt, response))
+                continue
 
         if isinstance(last_error, (AIValidationError, AIResponseError, AIRequestError)):
             raise last_error
         if isinstance(last_error, requests.Timeout):
-            raise AIRequestError("DeepSeek 请求超时，请稍后重试。") from None
+            raise AIRequestError("Commerce Ops AI Gateway 请求超时，请稍后重试。") from None
         if isinstance(last_error, requests.ConnectionError):
-            raise AIRequestError("无法连接 DeepSeek 服务，请检查网络。") from None
-        raise AIRequestError("DeepSeek 商品资料生成失败，请稍后重试。")
+            raise AIRequestError("无法连接 Commerce Ops AI Gateway，请确认主服务正在运行。") from None
+        raise AIRequestError("Commerce Ops AI Gateway 商品资料生成失败，请稍后重试。")
 
 
 def parse_command(

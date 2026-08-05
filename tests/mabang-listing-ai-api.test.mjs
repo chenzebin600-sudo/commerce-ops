@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { AiGateway } from "../lib/ai/ai-gateway.mjs";
@@ -142,4 +143,11 @@ test("Mabang listing internal AI endpoint reports the central configuration gate
   await handler(request(input()), res, new URL(MABANG_LISTING_AI_PATH, "http://local"));
   assert.equal(res.result().status, 503);
   assert.equal(res.result().body.code, "AI_NOT_CONFIGURED");
+});
+
+test("Mabang Python AI adapter has no provider endpoint or provider credential access", async () => {
+  const source = await fs.readFile("integrations/mabang-getdata/ai_service.py", "utf8");
+  assert.doesNotMatch(source, /api\.deepseek\.com|chat\/completions|DEEPSEEK_API_KEY|Authorization/i);
+  assert.match(source, /COMMERCE_OPS_AI_GATEWAY_URL/);
+  assert.match(source, /COMMERCE_OPS_AI_GATEWAY_TOKEN/);
 });

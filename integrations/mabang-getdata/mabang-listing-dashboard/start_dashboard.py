@@ -195,7 +195,9 @@ def main() -> int:
         print("未找到 Node.js/npm，请先安装 Node.js 22 或更高版本。")
         return 1
 
-    load_windows_user_secret("DEEPSEEK_API_KEY")
+    load_windows_user_secret("COMMERCE_OPS_AI_GATEWAY_URL")
+    load_windows_user_secret("COMMERCE_OPS_AI_GATEWAY_TOKEN")
+    load_windows_user_secret("DEEPSEEK_MODEL")
     fingerprint = source_fingerprint()
     write_build_info(fingerprint)
 

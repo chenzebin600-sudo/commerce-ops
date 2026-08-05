@@ -46,7 +46,9 @@ def _hydrate_windows_user_environment(name: str) -> None:
         return
 
 
-_hydrate_windows_user_environment("DEEPSEEK_API_KEY")
+_hydrate_windows_user_environment("COMMERCE_OPS_AI_GATEWAY_URL")
+_hydrate_windows_user_environment("COMMERCE_OPS_AI_GATEWAY_TOKEN")
+_hydrate_windows_user_environment("DEEPSEEK_MODEL")
 
 from ai_service import (
     AIConfigurationError,
