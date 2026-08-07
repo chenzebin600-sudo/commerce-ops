@@ -4,6 +4,11 @@ import { ConnectorRegistry } from "./base/registry.mjs";
 import { LazadaConnector } from "./lazada/connector.mjs";
 import { SqlitePlatformRepository } from "./persistence/sqlite-platform-repository.mjs";
 import { resolveConnectorEncryptionKey } from "./security/token-cipher.mjs";
+import { ShopeeConnector } from "./shopee/connector.mjs";
+import {
+  resolveShopeeRelayConfig,
+  ShopeeRelayClient,
+} from "./shopee/relay-client.mjs";
 import { resolveLazadaOAuthConfig } from "../integrations/lazada-oauth/lazada-oauth-service.mjs";
 import { createPlatformGatewayApi } from "../lib/platform-gateway/platform-gateway-api.mjs";
 import { CommercePlatformGatewayService } from "../lib/platform-gateway/platform-gateway-service.mjs";
@@ -19,6 +24,7 @@ function integer(value, fallback, minimum, maximum) {
 
 export function createPlatformConnectorRuntime({ env = process.env, rootDir = process.cwd(), fetchImpl = fetch } = {}) {
   const lazadaConfig = resolveLazadaOAuthConfig({ env, rootDir });
+  const shopeeRelayConfig = resolveShopeeRelayConfig(env);
   const encryptionKey = resolveConnectorEncryptionKey(env);
   if (!encryptionKey) {
     const runtimeStatus = () => ({
@@ -67,6 +73,19 @@ export function createPlatformConnectorRuntime({ env = process.env, rootDir = pr
       maxReadRetries: integer(env.COMMERCE_PLATFORM_READ_RETRIES, 2, 0, 5),
     });
   });
+  if (shopeeRelayConfig.enabled) {
+    const relayClient = new ShopeeRelayClient({
+      ...shopeeRelayConfig,
+      fetchImpl,
+      maxReadRetries: integer(env.COMMERCE_PLATFORM_READ_RETRIES, 1, 0, 5),
+    });
+    registry.register("shopee", ({ platform, shop }) => new ShopeeConnector({
+      platform,
+      shop,
+      relayClient,
+      modelConcurrency: integer(env.SHOPEE_MODEL_REQUEST_CONCURRENCY, 4, 1, 8),
+    }), { authorizationMode: "delegated" });
+  }
   const service = new CommercePlatformGatewayService({
     repository,
     registry,
@@ -78,6 +97,7 @@ export function createPlatformConnectorRuntime({ env = process.env, rootDir = pr
     storage: "sqlite",
     registeredConnectors: registry.list(),
     configuredApplications: lazadaConfig.apps.filter((app) => app.appKey && app.appSecret).map((app) => app.id),
+    configuredRelays: shopeeRelayConfig.enabled ? ["shopee"] : [],
     shopCount: service.listShops().length,
     writesEnabled: service.writeEnabled,
     legacyMigration: migration,

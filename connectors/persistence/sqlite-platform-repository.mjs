@@ -6,7 +6,7 @@ import { ConnectorTokenCipher } from "../security/token-cipher.mjs";
 
 const DEFAULT_PLATFORMS = Object.freeze([
   { id: "lazada", name: "Lazada", type: "lazada", apiVersion: "2.0", status: "active" },
-  { id: "shopee", name: "Shopee", type: "shopee", apiVersion: "2.0", status: "planned" },
+  { id: "shopee", name: "Shopee", type: "shopee", apiVersion: "2.0", status: "active" },
   { id: "tiktok-shop", name: "TikTok Shop", type: "tiktok_shop", apiVersion: "202309", status: "planned" },
   { id: "mabang", name: "Mabang ERP", type: "mabang", apiVersion: "local", status: "planned" },
 ]);
@@ -363,6 +363,11 @@ export class SqlitePlatformRepository {
       UPDATE connector_shop_authorizations SET token_status=?, updated_at=? WHERE shop_id=?
     `).run(String(status), nowIso(this.clock), shopId);
     return this.getAuthorizationMetadata(shopId);
+  }
+
+  deleteAuthorization(shopId) {
+    const result = this.db.prepare("DELETE FROM connector_shop_authorizations WHERE shop_id=?").run(String(shopId || ""));
+    return Number(result.changes || 0) > 0;
   }
 
   saveAuthorizationGroup(shopId, token) {

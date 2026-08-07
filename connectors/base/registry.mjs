@@ -9,13 +9,18 @@ function platformKey(value) {
 export class ConnectorRegistry {
   constructor() {
     this.factories = new Map();
+    this.authorizationModes = new Map();
   }
 
-  register(platformType, factory) {
+  register(platformType, factory, { authorizationMode = "required" } = {}) {
     const key = platformKey(platformType);
     if (typeof factory !== "function") throw new TypeError("Connector factory is required");
     if (this.factories.has(key)) throw new TypeError(`Connector ${key} is already registered`);
+    if (!["required", "delegated"].includes(authorizationMode)) {
+      throw new TypeError(`Connector ${key} authorization mode is invalid`);
+    }
     this.factories.set(key, factory);
+    this.authorizationModes.set(key, authorizationMode);
     return this;
   }
 
@@ -32,6 +37,10 @@ export class ConnectorRegistry {
       throw new ConnectorConfigurationError(`Platform connector ${key} factory returned an invalid connector`, { platform: key });
     }
     return connector;
+  }
+
+  authorizationMode(platformType) {
+    return this.authorizationModes.get(platformKey(platformType)) || "required";
   }
 
   list() {
