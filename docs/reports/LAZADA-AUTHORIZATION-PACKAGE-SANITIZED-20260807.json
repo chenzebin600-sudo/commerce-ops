@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-08-07",
+  "repository_visibility": "public",
+  "platform": "lazada",
+  "configured_applications": [
+    "app-1",
+    "app-2"
+  ],
+  "authorization_summary": {
+    "authorized_shop_count": 40,
+    "by_application": {
+      "app-1": 20,
+      "app-2": 20
+    },
+    "by_token_status": {
+      "active": 40
+    }
+  },
+  "runtime_policy": {
+    "token_storage": "local AES-256-GCM encrypted SQLite control plane",
+    "provider_writes_enabled_by_default": false,
+    "provider_post_retry_enabled": false
+  },
+  "secrets_included": false,
+  "excluded_fields": [
+    "app_key",
+    "app_secret",
+    "access_token",
+    "refresh_token",
+    "token_encryption_key",
+    "oauth_code",
+    "oauth_state",
+    "callback_tunnel_hostname",
+    "seller_id",
+    "shop_name",
+    "shop_short_code",
+    "authorization_expiry",
+    "customer_or_order_data"
+  ]
+}

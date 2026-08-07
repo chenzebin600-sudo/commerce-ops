@@ -1,0 +1,9 @@
+{
+  "name": "@commerce-ops/lazada-oauth",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.mjs",
+    "dev": "node --disable-warning=ExperimentalWarning --watch --watch-preserve-output server.mjs"
+  }
+}
