@@ -11,7 +11,6 @@ const {
   mergeResultPage,
   productSwitch,
   readCatalog,
-  rowsForOutput,
   validateKey,
   validateResultPage,
 } = queryModel;
@@ -233,7 +232,7 @@ async function fetchQueryPage(query, isNewQuery) {
     const payload = await requestJson("/proxy/query", { method: "POST", body: query });
     let response;
     try {
-      response = validateResultPage(payload);
+      response = validateResultPage(payload, state.key);
     } catch {
       throw new RequestFailure(502, `${STATUS_MESSAGES[502]} 返回数据格式不正确。`);
     }
@@ -262,7 +261,7 @@ function buildCurrentFormQuery() {
 function exportRows() {
   if (!state.result.rows.length || !currentQuery) return;
   try {
-    downloadCsv(rowsForOutput(state.result.rows, state.key), `数仓-${currentQuery.产品}-${formatTimestamp(new Date())}.csv`);
+    downloadCsv(state.result.rows, `数仓-${currentQuery.产品}-${formatTimestamp(new Date())}.csv`);
     completeSuccessfulExport(state, render);
   } catch (error) {
     state.error = messageFromError(error);
@@ -426,8 +425,7 @@ function renderErrors(catalog) {
 
 function renderResults() {
   const rows = state.result.rows;
-  const outputRows = rowsForOutput(rows, state.key);
-  const columns = collectColumns(outputRows);
+  const columns = collectColumns(rows);
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
   const body = document.createElement("tbody");
@@ -439,7 +437,7 @@ function renderResults() {
         cell.textContent = String(column);
       headRow.append(cell);
     }
-    for (const row of outputRows) {
+    for (const row of rows) {
       const rowElement = document.createElement("tr");
       for (const column of columns) {
         const cell = document.createElement("td");

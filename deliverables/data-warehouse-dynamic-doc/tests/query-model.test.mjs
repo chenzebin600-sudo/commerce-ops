@@ -106,27 +106,46 @@ test("fails closed when catalog enablement is not boolean", () => {
 });
 
 test("preserves successful query row keys and values losslessly", () => {
+  const activeKey = ["zndr", "active-secret"].join("_");
   const unrelatedKey = ["zndr", "not-the-active-key"].join("_");
+  const otherColumn = ["zndr", "other-looking-column"].join("_");
+  const longValue = "L".repeat(600);
   const page = {
-    rows: [{ " spaced key ": "  spaced value  ", exact: unrelatedKey, amount: 9007199254740991 }],
+    rows: [{
+      " spaced key ": "  spaced\nvalue  ",
+      "[已隐藏]": "first column",
+      [otherColumn]: "second column",
+      exact: unrelatedKey,
+      longValue,
+      amount: 9007199254740991,
+    }],
     游标: " opaque cursor \t",
     还有更多: true,
   };
-  const validated = queryModel.validateResultPage?.(page);
+  const validated = queryModel.validateResultPage?.(page, activeKey);
   assert.equal(validated, page);
   assert.deepEqual(validated.rows, page.rows);
 });
 
-test("redacts only the exact active key from display and export rows", () => {
+test("rejects a whole page containing the exact active key without accepting rows", () => {
   const activeKey = ["zndr", "active-secret"].join("_");
-  const unrelatedKey = ["zndr", "other-secret"].join("_");
-  const rows = [{ note: `before ${activeKey} after`, unrelated: unrelatedKey, whitespace: "  keep  " }];
-  assert.deepEqual(queryModel.rowsForOutput?.(rows, activeKey), [{
-    note: "before [已隐藏] after",
-    unrelated: unrelatedKey,
-    whitespace: "  keep  ",
-  }]);
-  assert.deepEqual(rows, [{ note: `before ${activeKey} after`, unrelated: unrelatedKey, whitespace: "  keep  " }]);
+  const result = emptyResultState();
+  for (const rows of [
+    [{ [`column-${activeKey}`]: "value" }],
+    [{ note: `before ${activeKey} after` }],
+    [{ nested: { values: ["safe", activeKey] } }],
+  ]) {
+    let errorMessage = "";
+    assert.throws(
+      () => queryModel.validateResultPage?.({ rows, 游标: null, 还有更多: false }, activeKey),
+      (error) => {
+        errorMessage = error.message;
+        return /敏感内容/.test(error.message);
+      },
+    );
+    assert.equal(errorMessage.includes(activeKey), false);
+  }
+  assert.deepEqual(result, { rows: [], cursor: null, hasMore: false, meta: null });
 });
 
 test("preserves a non-empty opaque cursor byte-for-byte", () => {

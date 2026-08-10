@@ -15,6 +15,29 @@ test("writes BOM, CRLF, quotes, commas, newlines, nulls, and objects", () => {
   assert.match(csv, /,"\{""x"":1\}"\r\n$/);
 });
 
+test("keeps accepted row names and long multiline values unchanged for export", () => {
+  const unrelatedKey = ["zndr", "not-the-active-key"].join("_");
+  const otherColumn = ["zndr", "other-looking-column"].join("_");
+  const longValue = "L".repeat(600);
+  const rows = [{
+    "[已隐藏]": "first",
+    [otherColumn]: "second",
+    spaced: "  keep both spaces  ",
+    multiline: "line one\nline two",
+    unrelatedKey,
+    longValue,
+  }];
+  assert.deepEqual(collectColumns(rows), [
+    "[已隐藏]", otherColumn, "spaced", "multiline", "unrelatedKey", "longValue",
+  ]);
+  const csv = serializeCsv(rows);
+  assert.equal(csv.startsWith(`\uFEFF[已隐藏],${otherColumn},spaced,multiline,unrelatedKey,longValue\r\n`), true);
+  assert.equal(csv.includes("  keep both spaces  "), true);
+  assert.equal(csv.includes('"line one\nline two"'), true);
+  assert.equal(csv.includes(unrelatedKey), true);
+  assert.equal(csv.includes(longValue), true);
+});
+
 test("downloads a CSV Blob through a temporary anchor", async () => {
   const clicks = [];
   const revokedUrls = [];

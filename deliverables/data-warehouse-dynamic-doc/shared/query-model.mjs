@@ -88,18 +88,16 @@ export function readCatalog(catalog) {
   return { valid: true, enabledProducts: [...new Set(enabledProducts)], mismatches };
 }
 
-export function validateResultPage(value) {
+export function validateResultPage(value, activeKey) {
   if (!isPlainObject(value) || !Array.isArray(value.rows)
       || !value.rows.every((row) => isPlainObject(row))
       || (value.还有更多 === true && (typeof value.游标 !== "string" || value.游标.length === 0))) {
     throw new Error("返回数据格式不正确");
   }
+  if (activeKey && value.rows.some((row) => containsExactKey(row, activeKey))) {
+    throw new Error("返回数据包含不允许的敏感内容");
+  }
   return value;
-}
-
-export function rowsForOutput(rows, activeKey) {
-  if (!activeKey) return rows;
-  return rows.map((row) => redactExactKey(row, activeKey));
 }
 
 export function productSwitch(currentProduct, nextProduct, result, currentQuery) {
@@ -324,15 +322,11 @@ function parameterNames(items) {
   return names;
 }
 
-function redactExactKey(value, activeKey) {
-  if (typeof value === "string") return value.replaceAll(activeKey, "[已隐藏]");
-  if (Array.isArray(value)) return value.map((item) => redactExactKey(item, activeKey));
-  if (!isPlainObject(value)) return value;
-  const redacted = {};
-  for (const [key, item] of Object.entries(value)) {
-    redacted[key.replaceAll(activeKey, "[已隐藏]")] = redactExactKey(item, activeKey);
-  }
-  return redacted;
+function containsExactKey(value, activeKey) {
+  if (typeof value === "string") return value.includes(activeKey);
+  if (Array.isArray(value)) return value.some((item) => containsExactKey(item, activeKey));
+  if (!isPlainObject(value)) return false;
+  return Object.entries(value).some(([key, item]) => key.includes(activeKey) || containsExactKey(item, activeKey));
 }
 
 function firstDefined(value, keys) {
