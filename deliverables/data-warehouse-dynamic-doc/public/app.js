@@ -6,9 +6,14 @@ const {
   PLATFORMS,
   PRODUCTS,
   buildQueryRequest,
+  completeSuccessfulExport,
   emptyResultState,
   mergeResultPage,
+  productSwitch,
+  readCatalog,
+  rowsForOutput,
   validateKey,
+  validateResultPage,
 } = queryModel;
 
 const STATUS_MESSAGES = Object.freeze({
@@ -100,8 +105,8 @@ async function connect(event) {
   try {
     const me = await requestJson("/proxy/me");
     const catalog = await requestJson("/proxy/catalog");
-    state.me = isPlainObject(me) ? sanitizeData(me) : {};
-    state.catalog = sanitizeData(catalog);
+    state.me = isPlainObject(me) ? me : {};
+    state.catalog = catalog;
     state.error = null;
     chooseAvailableProduct();
   } catch (error) {
@@ -172,7 +177,10 @@ function hideKeyInput() {
 function selectProduct(event) {
   const button = event.target.closest("button[data-product]");
   if (!button || button.disabled || !Object.hasOwn(PRODUCTS, button.dataset.product)) return;
-  state.product = button.dataset.product;
+  const next = productSwitch(state.product, button.dataset.product, state.result, currentQuery);
+  state.product = next.product;
+  state.result = next.result;
+  currentQuery = next.currentQuery;
   state.error = null;
   render();
 }
@@ -200,7 +208,7 @@ async function runNewQuery(event) {
 }
 
 async function loadNextPage() {
-  if (!currentQuery || !state.result.hasMore || !state.result.cursor) return;
+  if (!currentQuery || !state.result.hasMore) return;
   const validation = buildQueryRequest({
     product: currentQuery.产品,
     params: currentQuery.参数,
@@ -222,7 +230,13 @@ async function fetchQueryPage(query, isNewQuery) {
   render();
 
   try {
-    const response = validatePageResponse(await requestJson("/proxy/query", { method: "POST", body: query }));
+    const payload = await requestJson("/proxy/query", { method: "POST", body: query });
+    let response;
+    try {
+      response = validateResultPage(payload);
+    } catch {
+      throw new RequestFailure(502, `${STATUS_MESSAGES[502]} 返回数据格式不正确。`);
+    }
     state.result = mergeResultPage(isNewQuery ? emptyResultState() : state.result, response);
     currentQuery = {
       产品: query.产品,
@@ -248,8 +262,8 @@ function buildCurrentFormQuery() {
 function exportRows() {
   if (!state.result.rows.length || !currentQuery) return;
   try {
-    downloadCsv(state.result.rows, `数仓-${currentQuery.产品}-${formatTimestamp(new Date())}.csv`);
-    state.error = null;
+    downloadCsv(rowsForOutput(state.result.rows, state.key), `数仓-${currentQuery.产品}-${formatTimestamp(new Date())}.csv`);
+    completeSuccessfulExport(state, render);
   } catch (error) {
     state.error = messageFromError(error);
     render();
@@ -368,12 +382,18 @@ function createPageSizeField(disabled) {
   const label = document.createElement("label");
   label.htmlFor = "query-page-size";
   label.textContent = "每页行数";
-  const select = createSelect("query-page-size", "pageSize", [50, 100, 250, 500].map((value) => ({
-    value: String(value), label: String(value),
-  })));
-  select.disabled = disabled;
-  select.value = state.formValues[state.product].pageSize;
-  wrapper.append(label, select);
+  const input = document.createElement("input");
+  input.id = "query-page-size";
+  input.name = "pageSize";
+  input.dataset.parameter = "pageSize";
+  input.type = "number";
+  input.min = "1";
+  input.max = "2000";
+  input.step = "1";
+  input.required = true;
+  input.disabled = disabled;
+  input.value = state.formValues[state.product].pageSize;
+  wrapper.append(label, input);
   return wrapper;
 }
 
@@ -406,7 +426,8 @@ function renderErrors(catalog) {
 
 function renderResults() {
   const rows = state.result.rows;
-  const columns = collectColumns(rows);
+  const outputRows = rowsForOutput(rows, state.key);
+  const columns = collectColumns(outputRows);
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
   const body = document.createElement("tbody");
@@ -415,16 +436,14 @@ function renderResults() {
     for (const column of columns) {
       const cell = document.createElement("th");
       cell.scope = "col";
-        cell.textContent = sanitizeServerMessage(column);
+        cell.textContent = String(column);
       headRow.append(cell);
     }
-    for (const row of rows) {
+    for (const row of outputRows) {
       const rowElement = document.createElement("tr");
       for (const column of columns) {
         const cell = document.createElement("td");
-        cell.textContent = row[column] === null || row[column] === undefined
-          ? ""
-          : sanitizeServerMessage(String(row[column]));
+        cell.textContent = row[column] === null || row[column] === undefined ? "" : String(row[column]);
         rowElement.append(cell);
       }
       body.append(rowElement);
@@ -484,7 +503,7 @@ function renderBusyState(catalog) {
   elements.toggleKey.setAttribute("aria-busy", String(state.busy));
   elements.queryButton.disabled = state.busy || !queryable;
   elements.queryButton.setAttribute("aria-busy", String(state.busy && Boolean(state.me)));
-  elements.loadMoreButton.disabled = state.busy || !queryable || !state.result.hasMore || !state.result.cursor;
+  elements.loadMoreButton.disabled = state.busy || !queryable || !state.result.hasMore;
   elements.loadMoreButton.setAttribute("aria-busy", String(state.busy && state.result.hasMore));
   elements.exportButton.disabled = state.busy || state.result.rows.length === 0;
   elements.exportButton.setAttribute("aria-busy", String(state.busy));
@@ -504,133 +523,6 @@ function chooseAvailableProduct() {
   if (catalog.valid && !catalog.enabledProducts.includes(state.product)) {
     state.product = catalog.enabledProducts[0] || "日销";
   }
-}
-
-function readCatalog(catalog) {
-  const invalid = { valid: false, enabledProducts: [...PRODUCT_NAMES], mismatches: new Set(PRODUCT_NAMES) };
-  const records = catalogRecords(catalog);
-  if (!records || records.length === 0) return invalid;
-
-  const normalized = [];
-  for (const record of records) {
-    const product = normalizeCatalogProduct(record);
-    if (!product) return invalid;
-    normalized.push(product);
-  }
-  const enabledProducts = [];
-  const mismatches = new Set();
-  for (const record of normalized) {
-    if (!Object.hasOwn(PRODUCTS, record.name) || !record.enabled) continue;
-    enabledProducts.push(record.name);
-    if (!catalogParametersMatch(record, PRODUCTS[record.name])) mismatches.add(record.name);
-  }
-  return { valid: true, enabledProducts: [...new Set(enabledProducts)], mismatches };
-}
-
-function catalogRecords(catalog) {
-  if (Array.isArray(catalog)) return catalog;
-  if (!isPlainObject(catalog)) return null;
-  const candidate = firstDefined(catalog, ["产品", "产品列表", "products"]);
-  if (Array.isArray(candidate)) return candidate;
-  if (isPlainObject(candidate)) return Object.entries(candidate).map(([name, value]) => ({
-    ...(isPlainObject(value) ? value : {}),
-    __catalogName: name,
-  }));
-  return null;
-}
-
-function normalizeCatalogProduct(record) {
-  if (typeof record === "string") return null;
-  if (!isPlainObject(record)) return null;
-  const name = firstDefined(record, ["__catalogName", "产品", "名称", "name", "product"]);
-  if (typeof name !== "string" || !name.trim()) return null;
-  const disabled = [record.启用, record.可用, record.开放, record.enabled, record.available, record.open]
-    .some((value) => value === false);
-  return { name: name.trim(), enabled: !disabled, record };
-}
-
-function catalogParametersMatch(product, schema) {
-  const declared = declaredParameters(product.record);
-  if (!declared) return false;
-  const expectedRequired = new Set(schema.required);
-  const expectedOptional = new Set(schema.optional);
-  const expectedAll = new Set([...schema.required, ...schema.optional]);
-  if (!sameSet(declared.all, expectedAll)) return false;
-  if (declared.required && !sameSet(declared.required, expectedRequired)) return false;
-  if (declared.optional && !sameSet(declared.optional, expectedOptional)) return false;
-  return true;
-}
-
-function declaredParameters(record) {
-  const required = firstDefined(record, ["必填参数", "required"]);
-  const optional = firstDefined(record, ["可选参数", "optional"]);
-  if (Array.isArray(required) || Array.isArray(optional)) {
-    const requiredNames = parameterNames(Array.isArray(required) ? required : []);
-    const optionalNames = parameterNames(Array.isArray(optional) ? optional : []);
-    if (!requiredNames || !optionalNames) return null;
-    return {
-      all: new Set([...requiredNames, ...optionalNames]),
-      required: new Set(requiredNames),
-      optional: new Set(optionalNames),
-    };
-  }
-
-  const params = firstDefined(record, ["参数", "parameters", "params"]);
-  if (Array.isArray(params)) {
-    const names = parameterNames(params);
-    if (!names) return null;
-    const hasRequiredFlags = params.some((item) => isPlainObject(item)
-      && (Object.hasOwn(item, "必填") || Object.hasOwn(item, "required")));
-    if (!hasRequiredFlags) return { all: new Set(names), required: null, optional: null };
-    const requiredNames = [];
-    const optionalNames = [];
-    params.forEach((item, index) => {
-      const requiredValue = item.必填 ?? item.required;
-      (requiredValue === true ? requiredNames : optionalNames).push(names[index]);
-    });
-    return {
-      all: new Set(names),
-      required: new Set(requiredNames),
-      optional: new Set(optionalNames),
-    };
-  }
-  if (isPlainObject(params)) {
-    const nestedRequired = firstDefined(params, ["必填", "required"]);
-    const nestedOptional = firstDefined(params, ["可选", "optional"]);
-    if (Array.isArray(nestedRequired) || Array.isArray(nestedOptional)) {
-      const requiredNames = parameterNames(Array.isArray(nestedRequired) ? nestedRequired : []);
-      const optionalNames = parameterNames(Array.isArray(nestedOptional) ? nestedOptional : []);
-      if (!requiredNames || !optionalNames) return null;
-      return {
-        all: new Set([...requiredNames, ...optionalNames]),
-        required: new Set(requiredNames),
-        optional: new Set(optionalNames),
-      };
-    }
-    return { all: new Set(Object.keys(params)), required: null, optional: null };
-  }
-  return null;
-}
-
-function parameterNames(items) {
-  const names = [];
-  for (const item of items) {
-    const name = typeof item === "string" ? item : firstDefined(item, ["名称", "参数", "name"]);
-    if (typeof name !== "string" || !name.trim()) return null;
-    names.push(name.trim());
-  }
-  return names;
-}
-
-function validatePageResponse(value) {
-  if (!isPlainObject(value) || !Array.isArray(value.rows)
-      || !value.rows.every((row) => isPlainObject(row))
-      || (value.还有更多 === true && (typeof value.游标 !== "string" || !value.游标))) {
-    throw new RequestFailure(502, `${STATUS_MESSAGES[502]} 返回数据格式不正确。`);
-  }
-  const sanitized = sanitizeData(value);
-  sanitized.游标 = value.游标;
-  return sanitized;
 }
 
 function createInitialFormValues() {
@@ -690,20 +582,9 @@ function warningValues(value) {
 
 function sanitizeServerMessage(value) {
   if (value === undefined || value === null || typeof value === "object") return "";
-  let text = String(value).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/zndr_[^\s\"'<>]+/gi, "[已隐藏]");
+  let text = String(value).replace(/[\u0000-\u001f\u007f]+/g, " ");
   if (state.key) text = text.split(state.key).join("[已隐藏]");
   return text.replace(/\s+/g, " ").trim().slice(0, 300);
-}
-
-function sanitizeData(value) {
-  if (typeof value === "string") return sanitizeServerMessage(value);
-  if (Array.isArray(value)) return value.map(sanitizeData);
-  if (!isPlainObject(value)) return value;
-  const sanitized = {};
-  for (const [key, item] of Object.entries(value)) {
-    sanitized[sanitizeServerMessage(key)] = sanitizeData(item);
-  }
-  return sanitized;
 }
 
 function messageFromError(error) {
@@ -719,10 +600,6 @@ function firstDefined(value, keys) {
 function countArray(value, keys) {
   const candidate = firstDefined(value, keys);
   return Array.isArray(candidate) ? candidate.length : undefined;
-}
-
-function sameSet(left, right) {
-  return left.size === right.size && [...left].every((value) => right.has(value));
 }
 
 function isPlainObject(value) {

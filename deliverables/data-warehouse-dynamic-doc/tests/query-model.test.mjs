@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as queryModel from "../shared/query-model.mjs";
 import {
   buildQueryRequest,
   emptyResultState,
@@ -90,4 +91,87 @@ test("merges later pages without mutating earlier state", () => {
 
 test("a fresh empty state has no rows, cursor, or metadata", () => {
   assert.deepEqual(emptyResultState(), { rows: [], cursor: null, hasMore: false, meta: null });
+});
+
+test("fails closed when catalog enablement is not boolean", () => {
+  for (const enabled of ["false", 0, null]) {
+    assert.deepEqual(queryModel.readCatalog?.({
+      products: [{ name: "库存", enabled, params: ["国家", "大品类", "SKU", "款号", "只看有货"] }],
+    }), {
+      valid: false,
+      enabledProducts: ["日销", "库存", "产品包", "控价"],
+      mismatches: new Set(["日销", "库存", "产品包", "控价"]),
+    });
+  }
+});
+
+test("preserves successful query row keys and values losslessly", () => {
+  const unrelatedKey = ["zndr", "not-the-active-key"].join("_");
+  const page = {
+    rows: [{ " spaced key ": "  spaced value  ", exact: unrelatedKey, amount: 9007199254740991 }],
+    游标: " opaque cursor \t",
+    还有更多: true,
+  };
+  const validated = queryModel.validateResultPage?.(page);
+  assert.equal(validated, page);
+  assert.deepEqual(validated.rows, page.rows);
+});
+
+test("redacts only the exact active key from display and export rows", () => {
+  const activeKey = ["zndr", "active-secret"].join("_");
+  const unrelatedKey = ["zndr", "other-secret"].join("_");
+  const rows = [{ note: `before ${activeKey} after`, unrelated: unrelatedKey, whitespace: "  keep  " }];
+  assert.deepEqual(queryModel.rowsForOutput?.(rows, activeKey), [{
+    note: "before [已隐藏] after",
+    unrelated: unrelatedKey,
+    whitespace: "  keep  ",
+  }]);
+  assert.deepEqual(rows, [{ note: `before ${activeKey} after`, unrelated: unrelatedKey, whitespace: "  keep  " }]);
+});
+
+test("preserves a non-empty opaque cursor byte-for-byte", () => {
+  assert.deepEqual(buildQueryRequest({
+    product: "库存",
+    params: {},
+    pageSize: 500,
+    cursor: " opaque cursor \t",
+  }), {
+    ok: true,
+    value: { 产品: "库存", 参数: {}, 页大小: 500, 游标: " opaque cursor \t" },
+  });
+});
+
+test("rejects a whitespace-only next-page cursor", () => {
+  const result = buildQueryRequest({ product: "库存", params: {}, pageSize: 500, cursor: "   " });
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("\n"), /游标/);
+});
+
+test("accepts every page size through 2000 and rejects values above it", () => {
+  assert.equal(buildQueryRequest({ product: "库存", params: {}, pageSize: 501 }).ok, true);
+  assert.equal(buildQueryRequest({ product: "库存", params: {}, pageSize: 2000 }).ok, true);
+  const tooLarge = buildQueryRequest({ product: "库存", params: {}, pageSize: 2001 });
+  assert.equal(tooLarge.ok, false);
+  assert.match(tooLarge.errors.join("\n"), /2000/);
+});
+
+test("switching products resets results and the pagination query", () => {
+  const result = mergeResultPage(emptyResultState(), {
+    rows: [{ id: 1 }], 游标: "next", 还有更多: true,
+  });
+  assert.deepEqual(queryModel.productSwitch?.("库存", "控价", result, {
+    产品: "库存", 参数: {}, 页大小: 500,
+  }), {
+    product: "控价",
+    result: emptyResultState(),
+    currentQuery: null,
+  });
+});
+
+test("successful export clears the error before rerendering", () => {
+  const state = { error: "旧错误" };
+  const renderedErrors = [];
+  queryModel.completeSuccessfulExport?.(state, () => renderedErrors.push(state.error));
+  assert.equal(state.error, null);
+  assert.deepEqual(renderedErrors, [null]);
 });

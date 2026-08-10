@@ -66,6 +66,53 @@ export function mergeResultPage(state, response) {
   };
 }
 
+export function readCatalog(catalog) {
+  const invalid = invalidCatalog();
+  const records = catalogRecords(catalog);
+  if (!records || records.length === 0) return invalid;
+
+  const normalized = [];
+  for (const record of records) {
+    const product = normalizeCatalogProduct(record);
+    if (!product) return invalid;
+    normalized.push(product);
+  }
+
+  const enabledProducts = [];
+  const mismatches = new Set();
+  for (const record of normalized) {
+    if (!Object.hasOwn(PRODUCTS, record.name) || !record.enabled) continue;
+    enabledProducts.push(record.name);
+    if (!catalogParametersMatch(record, PRODUCTS[record.name])) mismatches.add(record.name);
+  }
+  return { valid: true, enabledProducts: [...new Set(enabledProducts)], mismatches };
+}
+
+export function validateResultPage(value) {
+  if (!isPlainObject(value) || !Array.isArray(value.rows)
+      || !value.rows.every((row) => isPlainObject(row))
+      || (value.还有更多 === true && (typeof value.游标 !== "string" || value.游标.length === 0))) {
+    throw new Error("返回数据格式不正确");
+  }
+  return value;
+}
+
+export function rowsForOutput(rows, activeKey) {
+  if (!activeKey) return rows;
+  return rows.map((row) => redactExactKey(row, activeKey));
+}
+
+export function productSwitch(currentProduct, nextProduct, result, currentQuery) {
+  return currentProduct === nextProduct
+    ? { product: currentProduct, result, currentQuery }
+    : { product: nextProduct, result: emptyResultState(), currentQuery: null };
+}
+
+export function completeSuccessfulExport(state, render) {
+  state.error = null;
+  render();
+}
+
 function normalizeQuery({ product, params, pageSize, cursor }, errors) {
   const normalizedProduct = normalizeString(product);
   const schema = Object.hasOwn(PRODUCTS, normalizedProduct) ? PRODUCTS[normalizedProduct] : undefined;
@@ -77,15 +124,24 @@ function normalizeQuery({ product, params, pageSize, cursor }, errors) {
   const normalizedPageSize = normalizePageSize(pageSize, errors);
   const normalizedParams = normalizeParams(normalizedProduct, params, schema, errors);
   const value = { 产品: normalizedProduct, 参数: normalizedParams, 页大小: normalizedPageSize };
-  const normalizedCursor = normalizeString(cursor);
-  if (normalizedCursor) value.游标 = normalizedCursor;
+  const normalizedCursor = normalizeCursor(cursor, errors);
+  if (normalizedCursor !== undefined) value.游标 = normalizedCursor;
   return value;
 }
 
 function normalizePageSize(value, errors) {
-  if (!Number.isInteger(value) || value < 1 || value > 500) {
-    errors.push("页大小必须是 1 到 500 的整数");
+  if (!Number.isInteger(value) || value < 1 || value > 2000) {
+    errors.push("页大小必须是 1 到 2000 的整数");
     return value;
+  }
+  return value;
+}
+
+function normalizeCursor(value, errors) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    errors.push("游标必须是非空字符串");
+    return undefined;
   }
   return value;
 }
@@ -164,6 +220,129 @@ function isPlainObject(value) {
 
 function invalid(error) {
   return { ok: false, errors: [error] };
+}
+
+function invalidCatalog() {
+  return { valid: false, enabledProducts: Object.keys(PRODUCTS), mismatches: new Set(Object.keys(PRODUCTS)) };
+}
+
+function catalogRecords(catalog) {
+  if (Array.isArray(catalog)) return catalog;
+  if (!isPlainObject(catalog)) return null;
+  const candidate = firstDefined(catalog, ["产品", "产品列表", "products"]);
+  if (Array.isArray(candidate)) return candidate;
+  if (isPlainObject(candidate)) return Object.entries(candidate).map(([name, value]) => ({
+    ...(isPlainObject(value) ? value : {}),
+    __catalogName: name,
+  }));
+  return null;
+}
+
+function normalizeCatalogProduct(record) {
+  if (!isPlainObject(record)) return null;
+  const name = firstDefined(record, ["__catalogName", "产品", "名称", "name", "product"]);
+  if (typeof name !== "string" || !name.trim()) return null;
+  const enablement = readEnablement(record);
+  if (!enablement.ok) return null;
+  return { name: name.trim(), enabled: enablement.value, record };
+}
+
+function readEnablement(record) {
+  const keys = ["启用", "可用", "开放", "enabled", "available", "open"];
+  const values = keys.filter((key) => Object.hasOwn(record, key)).map((key) => record[key]);
+  if (values.length === 0) return { ok: true, value: true };
+  if (values.some((value) => typeof value !== "boolean")) return { ok: false };
+  if (values.some((value) => value !== values[0])) return { ok: false };
+  return { ok: true, value: values[0] };
+}
+
+function catalogParametersMatch(product, schema) {
+  const declared = declaredParameters(product.record);
+  if (!declared) return false;
+  const expectedRequired = new Set(schema.required);
+  const expectedOptional = new Set(schema.optional);
+  const expectedAll = new Set([...schema.required, ...schema.optional]);
+  if (!sameSet(declared.all, expectedAll)) return false;
+  if (declared.required && !sameSet(declared.required, expectedRequired)) return false;
+  if (declared.optional && !sameSet(declared.optional, expectedOptional)) return false;
+  return true;
+}
+
+function declaredParameters(record) {
+  const required = firstDefined(record, ["必填参数", "required"]);
+  const optional = firstDefined(record, ["可选参数", "optional"]);
+  if (Array.isArray(required) || Array.isArray(optional)) {
+    return parameterGroups(required, optional);
+  }
+
+  const params = firstDefined(record, ["参数", "parameters", "params"]);
+  if (Array.isArray(params)) {
+    const names = parameterNames(params);
+    if (!names) return null;
+    const hasRequiredFlags = params.some((item) => isPlainObject(item)
+      && (Object.hasOwn(item, "必填") || Object.hasOwn(item, "required")));
+    if (!hasRequiredFlags) return { all: new Set(names), required: null, optional: null };
+    const requiredNames = [];
+    const optionalNames = [];
+    params.forEach((item, index) => {
+      (item.必填 === true || item.required === true ? requiredNames : optionalNames).push(names[index]);
+    });
+    return parameterSets(requiredNames, optionalNames);
+  }
+  if (isPlainObject(params)) {
+    const nestedRequired = firstDefined(params, ["必填", "required"]);
+    const nestedOptional = firstDefined(params, ["可选", "optional"]);
+    if (Array.isArray(nestedRequired) || Array.isArray(nestedOptional)) {
+      return parameterGroups(nestedRequired, nestedOptional);
+    }
+    return { all: new Set(Object.keys(params)), required: null, optional: null };
+  }
+  return null;
+}
+
+function parameterGroups(required, optional) {
+  const requiredNames = parameterNames(Array.isArray(required) ? required : []);
+  const optionalNames = parameterNames(Array.isArray(optional) ? optional : []);
+  return requiredNames && optionalNames ? parameterSets(requiredNames, optionalNames) : null;
+}
+
+function parameterSets(required, optional) {
+  return {
+    all: new Set([...required, ...optional]),
+    required: new Set(required),
+    optional: new Set(optional),
+  };
+}
+
+function parameterNames(items) {
+  const names = [];
+  for (const item of items) {
+    const name = typeof item === "string" ? item : firstDefined(item, ["名称", "参数", "name"]);
+    if (typeof name !== "string" || !name.trim()) return null;
+    names.push(name.trim());
+  }
+  return names;
+}
+
+function redactExactKey(value, activeKey) {
+  if (typeof value === "string") return value.replaceAll(activeKey, "[已隐藏]");
+  if (Array.isArray(value)) return value.map((item) => redactExactKey(item, activeKey));
+  if (!isPlainObject(value)) return value;
+  const redacted = {};
+  for (const [key, item] of Object.entries(value)) {
+    redacted[key.replaceAll(activeKey, "[已隐藏]")] = redactExactKey(item, activeKey);
+  }
+  return redacted;
+}
+
+function firstDefined(value, keys) {
+  if (!isPlainObject(value)) return undefined;
+  for (const key of keys) if (Object.hasOwn(value, key)) return value[key];
+  return undefined;
+}
+
+function sameSet(left, right) {
+  return left.size === right.size && [...left].every((value) => right.has(value));
 }
 
 function freezeSchema(required, optional) {

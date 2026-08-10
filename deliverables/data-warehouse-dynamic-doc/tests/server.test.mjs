@@ -225,7 +225,7 @@ test("serves native connection submission and an accessible query control group"
     assert.match(html, /<button id="connect-button"[^>]*type="submit">/);
     assert.match(html, /<div id="product-tabs"[^>]*role="group"[^>]*aria-label="选择数据产品">/);
     assert.doesNotMatch(html, /role="tablist"|role="tab"|aria-selected/);
-    assert.match(html, /<option value="500" selected>500<\/option>/);
+    assert.match(html, /<input id="query-page-size"[^>]*type="number"[^>]*min="1"[^>]*max="2000"[^>]*value="500"/);
     assert.match(css, /\.table-wrap\s*\{[^}]*max-height:\s*[^;]+;[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*auto;/s);
   });
 });
