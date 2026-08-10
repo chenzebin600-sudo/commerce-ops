@@ -69,6 +69,7 @@ h3 { font-size: 1rem; }
 
 .panel { padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--surface); box-shadow: var(--shadow); }
 .connection-panel { margin-bottom: 20px; }
+.results-panel { min-width: 0; }
 .section-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .status, .result-meta { margin: 0; color: var(--muted); font-size: .875rem; text-align: right; }
 .status[data-state="success"] { color: var(--success); font-weight: 700; }
@@ -124,6 +125,7 @@ tbody tr:hover { background: #f7fafc; }
   main { padding: 16px; }
   .panel { padding: 16px; }
   .connection-controls, .input-action { align-items: stretch; flex-direction: column; }
+  .key-field { flex-basis: auto; }
   .connection-controls > .button { width: 100%; }
   .section-heading { flex-direction: column; }
   .status, .result-meta { text-align: left; }
