@@ -24,10 +24,10 @@ const PROXY_ROUTES = Object.freeze({
 });
 
 const STATIC_ROUTES = Object.freeze({
-  "/": { file: "index.html", contentType: "text/html; charset=utf-8" },
-  "/index.html": { file: "index.html", contentType: "text/html; charset=utf-8" },
-  "/app.css": { file: "app.css", contentType: "text/css; charset=utf-8" },
-  "/app.js": { file: "app.js", contentType: "text/javascript; charset=utf-8" },
+  "/": { file: "public/index.html", contentType: "text/html; charset=utf-8" },
+  "/index.html": { file: "public/index.html", contentType: "text/html; charset=utf-8" },
+  "/app.css": { file: "public/app.css", contentType: "text/css; charset=utf-8" },
+  "/app.js": { file: "public/app.js", contentType: "text/javascript; charset=utf-8" },
   "/shared/query-model.mjs": { file: "shared/query-model.mjs", contentType: "text/javascript; charset=utf-8" },
   "/shared/csv.mjs": { file: "shared/csv.mjs", contentType: "text/javascript; charset=utf-8" },
 });

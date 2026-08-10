@@ -206,3 +206,13 @@ test("rejects encoded traversal before static route matching", async () => {
     assert.equal(response.statusCode, 404);
   });
 });
+
+test("serves the semantic application shell with no external assets", async () => {
+  await withServer(async () => new Response("{}"), async (base) => {
+    const html = await (await fetch(`${base}/`)).text();
+    assert.match(html, /id="key-input"/);
+    assert.match(html, /id="query-form"/);
+    assert.match(html, /id="result-table"/);
+    assert.doesNotMatch(html, /https?:\/\//);
+  });
+});
