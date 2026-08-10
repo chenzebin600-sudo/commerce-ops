@@ -162,6 +162,43 @@ test("fulfillment dashboard proxy validates and forwards batch SKU replacement j
   assert.equal(calls.length,3);
 });
 
+test("fulfillment dashboard proxy validates and forwards warehouse transfer jobs", async () => {
+  const calls = [];
+  const proxy = createFulfillmentDashboardProxy({ fetchImpl:async(url,options)=>{
+    calls.push({ url:String(url),options });
+    return new Response(JSON.stringify({ success:true,data:{} }), { status:202 });
+  } });
+  const planRequest = Readable.from([JSON.stringify({
+    orderReferences:["260810ABC123","260810ABC123","260810XYZ789"],unexpected:"drop",
+  })]);
+  planRequest.method = "POST";
+  const planResponse = proxyResponse();
+  assert.equal(await proxy(planRequest,planResponse,
+    new URL("http://localhost/api/fulfillment-dashboard/warehouse-transfers/batch-plan")),true);
+  assert.equal(planResponse.status,202);
+  assert.equal(calls[0].url,"http://127.0.0.1:3112/api/fulfillment/warehouse-transfers/batch-plan");
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    orderReferences:["260810ABC123","260810XYZ789"],
+  });
+
+  const executeRequest = Readable.from([JSON.stringify({
+    batchHash:"c".repeat(64),approvalText:"确认批量换仓 2 单",unexpected:"drop",
+  })]);
+  executeRequest.method = "POST";
+  assert.equal(await proxy(executeRequest,proxyResponse(),
+    new URL("http://localhost/api/fulfillment-dashboard/warehouse-transfers/batch-execute")),true);
+  assert.equal(calls[1].url,"http://127.0.0.1:3112/api/fulfillment/warehouse-transfers/batch-execute");
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    batchHash:"c".repeat(64),approvalText:"确认批量换仓 2 单",
+  });
+
+  const statusRequest = Readable.from([]);
+  statusRequest.method = "GET";
+  assert.equal(await proxy(statusRequest,proxyResponse(),
+    new URL("http://localhost/api/fulfillment-dashboard/warehouse-transfers/batch-executions/task-123")),true);
+  assert.equal(calls[2].url,"http://127.0.0.1:3112/api/fulfillment/warehouse-transfers/batch-executions/task-123");
+});
+
 test("fulfillment dashboard proxy validates SKU preview and single replacement requests", async () => {
   const calls = [];
   const proxy = createFulfillmentDashboardProxy({ fetchImpl:async(url,options)=>{
@@ -198,6 +235,7 @@ test("production fulfillment configuration contains all five Indonesian Shopee s
   assert.equal(resolved.autoFulfillEnabled, false);
   assert.equal(resolved.orderConcurrency, 1);
   assert.equal(resolved.trackingRecoveryResetEnabled, false);
+  assert.equal(resolved.warehouseTransferEnabled, false);
   assert.equal(resolved.shops.every((shop) => shop.autoFulfillEnabled === false), true);
 });
 
@@ -206,12 +244,15 @@ test("automatic fulfillment is opt-in and limited to explicitly configured shops
     FULFILLMENT_AUTO_FULFILL_ENABLED:"true",
     FULFILLMENT_AUTO_FULFILL_SHOP_IDS:"2021578358,2021485965,2021557966",
     FULFILLMENT_ORDER_CONCURRENCY:"2",
+    FULFILLMENT_WAREHOUSE_TRANSFER_ENABLED:"true",
   }});
   assert.deepEqual(resolved.shops.filter((shop) => shop.autoFulfillEnabled).map((shop) => shop.shopId),
     ["2021578358","2021485965","2021557966"]);
   assert.equal(resolved.shops.find((shop) => shop.shopId === "2021640336").autoFulfillEnabled, false);
   assert.equal(resolved.shops.find((shop) => shop.shopId === "2021621760").autoFulfillEnabled, false);
   assert.equal(resolved.orderConcurrency, 2);
+  assert.equal(resolved.warehouseTransferEnabled, true);
+  assert.equal(resolved.realSubmitEnabled, false);
 });
 
 test("fulfillment order concurrency cannot be configured above two", () => {

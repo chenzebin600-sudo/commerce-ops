@@ -103,6 +103,7 @@ export function resolveFulfillmentConfig({ rootDir, env = process.env } = {}) {
     orderConcurrency: integer(env.FULFILLMENT_ORDER_CONCURRENCY, 1, { min: 1, max: 2 }),
     previewTtlSeconds: integer(env.FULFILLMENT_PREVIEW_TTL_SECONDS, 600, { min: 60, max: 3600 }),
     realSubmitEnabled: flag(env.FULFILLMENT_REAL_SUBMIT_ENABLED),
+    warehouseTransferEnabled: flag(env.FULFILLMENT_WAREHOUSE_TRANSFER_ENABLED),
     mabangUsername: String(env.FULFILLMENT_MABANG_USERNAME || "").trim(),
     mabangPassword: String(env.FULFILLMENT_MABANG_PASSWORD || ""),
     lookbackDays: integer(env.FULFILLMENT_LOOKBACK_DAYS, 3, { max: 30 }),
