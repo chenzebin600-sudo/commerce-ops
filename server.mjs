@@ -108,6 +108,19 @@ import { createMabangImageAccessPolicy } from "./lib/mabang-images/access-policy
 import { createMabangImageApi } from "./lib/mabang-images/api.mjs";
 import { createFulfillmentDashboardProxy } from "./lib/fulfillment-dashboard-proxy.mjs";
 import { decryptSecret } from "./lib/mabang-scheduler/crypto.mjs";
+import { FoundationService } from "./lib/foundation/foundation-service.mjs";
+import { MabangListingInternalClient } from "./lib/inventory-sync/mabang-listing-client.mjs";
+import { InventorySyncService } from "./lib/inventory-sync/inventory-sync-service.mjs";
+import { InventorySnapshotStore } from "./lib/inventory-sync/inventory-snapshot-store.mjs";
+import { InventoryScopeStore } from "./lib/inventory-sync/inventory-scope-store.mjs";
+import { createInventorySyncApi } from "./lib/inventory-sync/inventory-sync-api.mjs";
+import { readLazadaRunStatus } from "./lib/inventory-sync/lazada-run-monitor.mjs";
+import { createShopeeConsoleProxy } from "./lib/shopee-console-proxy.mjs";
+import { ShopeeHealthClient } from "./lib/shopee-health/client.mjs";
+import { ShopeeHealthService } from "./lib/shopee-health/service.mjs";
+import { createShopeeHealthApi } from "./lib/shopee-health/api.mjs";
+import { ShopeeAdvertisingService } from "./lib/advertising/shopee-advertising-service.mjs";
+import { createShopeeAdvertisingApi } from "./lib/advertising/shopee-advertising-api.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -202,6 +215,10 @@ const proxyAdServiceRequest = createAdServiceProxy({
 const proxyFulfillmentDashboard = createFulfillmentDashboardProxy({
   baseUrl: process.env.FULFILLMENT_DASHBOARD_BASE_URL || "http://127.0.0.1:3112",
   apiToken: process.env.FULFILLMENT_API_TOKEN || "",
+  actorAssertionSecret: process.env.FULFILLMENT_ACTOR_ASSERTION_SECRET || "",
+});
+const handleShopeeConsoleApi = createShopeeConsoleProxy({
+  baseUrl: process.env.SHOPEE_RELAY_BASE_URL || "http://10.110.80.95:8788",
 });
 const mabangListingProxyConfig = resolveMabangListingProxyConfig(runtimeEnv);
 const mabangListingInternalToken = await resolveMabangListingInternalToken({
@@ -328,10 +345,22 @@ async function readBody(req) {
 const scheduledExportRoot = fileStorageConfig.exportRoot;
 const dataAccess = openCommerceDataAccess({ rootDir: runtimeConfig.appRoot, databasePath: runtimeConfig.databasePath });
 const schedulerDatabase = dataAccess.repositories.scheduler;
+const foundationService = new FoundationService({ repository: dataAccess.repositories.foundation });
 const auditService = createOperationAuditService({ repository: dataAccess.repositories.audit, env: process.env });
 const trustedAuditProxies = parseTrustedProxies(process.env.TRUST_PROXY);
 const auditRetentionDays = Number(process.env.AUDIT_RETENTION_DAYS || 180);
 const handleAuditApi = createAuditApi({ audit: auditService, retentionDays: auditRetentionDays });
+const shopeeHealthService = new ShopeeHealthService({
+  repository: dataAccess.repositories.shopeeHealth,
+  client: new ShopeeHealthClient({
+    baseUrl: process.env.SHOPEE_RELAY_BASE_URL || "http://10.110.80.95:8788",
+  }),
+  robotRepository: schedulerDatabase,
+});
+const handleShopeeHealthApi = createShopeeHealthApi({
+  service: shopeeHealthService,
+  repository: dataAccess.repositories.shopeeHealth,
+});
 const exportFileService = createExportFileService({
   repository: dataAccess.repositories.exportFiles,
   exportRoot: scheduledExportRoot,
@@ -339,6 +368,10 @@ const exportFileService = createExportFileService({
   audit: auditService,
 });
 const handleFileApi = createFileApi({ fileService: exportFileService });
+const shopeeAdvertisingService = new ShopeeAdvertisingService({
+  repository: dataAccess.repositories.shopeeAdvertising,
+});
+const handleShopeeAdvertisingApi = createShopeeAdvertisingApi({ service: shopeeAdvertisingService });
 const productPackagePython = resolvePythonRuntime({
   appRoot: runtimeConfig.appRoot,
   env: runtimeEnv,
@@ -458,6 +491,26 @@ const runMabangWorker = createMabangWorkerRunner({
   exportRoot: fileStorageConfig.tempRoot,
   runtimeConfig,
   env: runtimeEnv,
+});
+const inventorySyncService = new InventorySyncService({
+  accountRepository: dataAccess.repositories.accounts,
+  operationPlans: foundationService.operationPlans,
+  runWorker: runMabangWorker,
+  listingClient: new MabangListingInternalClient({
+    baseUrl: mabangListingProxyConfig.baseUrl,
+    internalToken: mabangListingInternalToken,
+  }),
+  ensureListingService: () => mabangListingServiceManager.ensure(),
+  snapshotStore: new InventorySnapshotStore({
+    rootDir: path.join(fileStorageConfig.storageRoot, "inventory-sync", "snapshots"),
+  }),
+  scopeStore: new InventoryScopeStore({
+    rootDir: path.join(fileStorageConfig.storageRoot, "inventory-sync", "scopes"),
+  }),
+});
+const handleInventorySyncApi = createInventorySyncApi({
+  service: inventorySyncService,
+  lazadaRunMonitor: () => readLazadaRunStatus({ rootDir: runtimeConfig.appRoot, storageRoot: fileStorageConfig.storageRoot }),
 });
 const mabangImageRoot = path.join(fileStorageConfig.storageRoot, "product-media");
 const mabangImageMaxBytes = Number(process.env.MABANG_IMAGE_MAX_BYTES || 10 * 1024 * 1024);
@@ -2404,6 +2457,18 @@ async function handleApi(req, res, url) {
 
   const auditHandled = await handleAuditApi(req, res, url);
   if (auditHandled) return true;
+
+  const inventorySyncHandled = await handleInventorySyncApi(req, res, url);
+  if (inventorySyncHandled) return true;
+
+  const shopeeConsoleHandled = await handleShopeeConsoleApi(req, res, url);
+  if (shopeeConsoleHandled) return true;
+
+  const shopeeHealthHandled = await handleShopeeHealthApi(req, res, url);
+  if (shopeeHealthHandled) return true;
+
+  const shopeeAdvertisingHandled = await handleShopeeAdvertisingApi(req, res, url);
+  if (shopeeAdvertisingHandled) return true;
 
   const growthRadarV2Handled = await handleGrowthRadarV2Api(req, res, url);
   if (growthRadarV2Handled) return true;

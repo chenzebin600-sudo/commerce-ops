@@ -47,6 +47,11 @@ function log(service, message) {
   process.stdout.write(line);
 }
 
+function errorSummary(error) {
+  if (error instanceof Error) return error.stack || `${error.name}: ${error.message}`;
+  try { return JSON.stringify(error); } catch { return String(error); }
+}
+
 function processAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
@@ -144,12 +149,27 @@ async function shutdown() {
   }
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+function handleSignal(signal) {
+  log("system", `Received ${signal}; shutting down.`);
+  void shutdown();
+}
+
+function handleFatal(kind, error) {
+  log("system", `${kind}: ${errorSummary(error)}`);
+  void shutdown();
+  setTimeout(() => process.exit(1), 250).unref();
+}
+
+process.on("SIGINT", () => handleSignal("SIGINT"));
+process.on("SIGTERM", () => handleSignal("SIGTERM"));
+process.on("uncaughtException", (error) => handleFatal("Uncaught exception", error));
+process.on("unhandledRejection", (reason) => handleFatal("Unhandled rejection", reason));
 process.on("exit", () => { clearInterval(lockHeartbeat); try { unlinkSync(lockPath); } catch {} });
 
-log("system", "Unified Commerce Ops supervisor started.");
-Promise.all(services.map(supervise)).finally(() => {
+log("system", `Unified Commerce Ops supervisor started (PID ${process.pid}, parent ${process.ppid}).`);
+Promise.all(services.map(supervise)).then(() => {
   try { unlinkSync(lockPath); } catch {}
   process.exit(0);
+}, (error) => {
+  handleFatal("Supervisor loop failed", error);
 });

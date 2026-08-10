@@ -53,6 +53,11 @@ test("SQLite readiness inspection is read-only and returns schema metadata only"
     "foundation_tasks",
     "foundation_task_events",
     "foundation_task_leases",
+    "foundation_operation_plans",
+    "foundation_operation_plan_events",
+    "advertising_source_batches",
+    "advertising_performance_facts",
+    "advertising_target_policies",
   ]) {
     assert.ok(report.tables.some((candidate) => candidate.name === table), table);
   }

@@ -83,6 +83,22 @@ export function testMabangLogin(username: string, password: string) {
   });
 }
 
+export async function connectMabangAccount(username: string, password: string, accountId = "") {
+  await testMabangLogin(username, password);
+  const existing = accountId ? await apiJson<{ profiles: MabangAccount[] }>("/api/mabang/account-profiles") : { profiles: [] };
+  const matched = (existing.profiles || []).find((profile) => profile.id === accountId);
+  const path = accountId ? `/api/mabang/account-profiles/${encodeURIComponent(accountId)}` : "/api/mabang/account-profiles";
+  const result = await apiJson<{ profile: MabangAccount }>(path, {
+    method: accountId ? "PUT" : "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: matched?.name || "马帮主账号", username, password, enabled: true, allowUsernameChange: true }),
+  });
+  return result.profile;
+}
+
+export function loadMabangAccounts() {
+  return apiJson<{ profiles: MabangAccount[] }>("/api/mabang/account-profiles").then((result) => result.profiles || []);
+}
+
 export function collectMabangData(input: Record<string, unknown>) {
   return apiJson<Record<string, unknown>>("/api/mabang-data/collect", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input),

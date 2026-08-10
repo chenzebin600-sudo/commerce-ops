@@ -11,7 +11,7 @@ const sourceRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const excludedNames = new Set([
   ".git", ".agents", ".mabang-exports", ".pnpm-store", ".venv", ".venv-mabang",
   "node_modules", "storage", "tmp", "ui-check", "packaged-skills", "design-system",
-  "lazada-images", "lazada-images-th",
+  "lazada-images", "lazada-images-th", ".codex-work", "deliverables", "outputs", "backups",
 ]);
 
 function freePort() {

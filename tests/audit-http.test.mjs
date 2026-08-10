@@ -58,6 +58,10 @@ test("sensitive endpoint mappings cover security, advertising, Mabang and files"
   assert.equal(describeAuditRequest("GET", "/api/image").action, "image.proxy.fetch");
   assert.equal(describeAuditRequest("POST", "/api/ads/analyze").action, "ads.analysis.run");
   assert.equal(describeAuditRequest("POST", "/api/mabang/scheduled-tasks/task_1/run-now").action, "mabang.task.run_now");
+  assert.equal(describeAuditRequest("POST", "/api/inventory-sync/prepare").action, "inventory_sync.source.refreshed");
+  assert.equal(describeAuditRequest("POST", "/api/inventory-sync/preview").action, "inventory_sync.plan.previewed");
+  assert.equal(describeAuditRequest("POST", "/api/inventory-sync/plans/plan_1/approve").action, "inventory_sync.plan.approved");
+  assert.equal(describeAuditRequest("POST", "/api/inventory-sync/plans/plan_1/execute").action, "inventory_sync.execution.started");
   assert.equal(describeAuditRequest("GET", "/api/mabang/export-files/file_1/download").action, "file.download");
   assert.equal(describeAuditRequest("GET", "/api/files/file_1/download").action, "file.download");
   assert.equal(describeAuditRequest("POST", "/api/files/lifecycle/scan").action, "file.lifecycle.scan.requested");

@@ -41,6 +41,14 @@ test("supervisor locks use a heartbeat before trusting a live PID", () => {
   }
 });
 
+test("unified supervisor logs fatal process errors before exiting", () => {
+  const source = fs.readFileSync(path.join(rootDir, "scripts", "system-supervisor.mjs"), "utf8");
+  assert.match(source, /uncaughtException/);
+  assert.match(source, /unhandledRejection/);
+  assert.match(source, /Supervisor loop failed/);
+  assert.match(source, /parent \$\{process\.ppid\}/);
+});
+
 test("package commands expose one-command development and production startup", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"));
   assert.match(pkg.scripts.dev, /start-dev\.mjs/);
@@ -65,6 +73,8 @@ test("Windows startup migrates the legacy task only after installing the unified
   assert.ok(unifiedCreate >= 0);
   assert.ok(legacyDelete > unifiedCreate);
   assert.match(installer, /run-system-supervisor\.cmd/);
+  assert.match(installer, /RestartCount=999/);
+  assert.match(installer, /RestartInterval='PT1M'/);
   assert.match(installer, /http:\/\/127\.0\.0\.1:3101/);
   assert.match(installer, /http:\/\/127\.0\.0\.1:3112\/docs/);
 });

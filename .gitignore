@@ -27,8 +27,12 @@ uploads/
 temp/
 tmp/
 logs/
+.codex-work/
+deliverables/
+outputs/
 .mabang-exports/
 *.log
+*.pid.json
 *.db
 *.db-*
 *.sqlite

@@ -27,6 +27,24 @@ const routes = [
     meta: { title: "商品刊登", subtitle: "连接马帮，管理跨平台刊登、店铺、SKU 变体和发布状态。" },
   },
   {
+    path: "/inventory-sync",
+    name: "inventory-sync",
+    component: () => import("@/pages/InventorySyncPage.vue"),
+    meta: { title: "库存同步", subtitle: "读取马帮仓库库存，预览并安全同步 Shopee / Lazada 在线库存。" },
+  },
+  {
+    path: "/shopee-api",
+    name: "shopee-api",
+    component: () => import("@/pages/ShopeeApiConsolePage.vue"),
+    meta: { title: "Shopee API 控制台", subtitle: "选择店铺和接口，安全执行单店或批量 Shopee V2 请求。" },
+  },
+  {
+    path: "/returns-collection",
+    name: "returns-collection",
+    component: () => import("@/pages/ReturnsCollectionPage.vue"),
+    meta: { title: "售后数据采集", subtitle: "监控多店铺退货退款数据的覆盖、延迟、任务与补漏状态。" },
+  },
+  {
     path: "/advertising",
     name: "advertising",
     component: () => import("@/pages/AdvertisingPage.vue"),
@@ -59,6 +77,12 @@ const routes = [
     meta: { title: "增长雷达", subtitle: "识别店铺异常、产品机会和可执行增长任务。" },
   },
   {
+    path: "/shop-health",
+    name: "shop-health",
+    component: () => import("@/pages/ShopHealthPage.vue"),
+    meta: { title: "店铺健康", subtitle: "每日监控 Shopee 店铺表现、扣分、处罚与人工申诉进度。" },
+  },
+  {
     path: "/audit",
     name: "audit",
     component: () => import("@/pages/AuditPage.vue"),
@@ -68,7 +92,13 @@ const routes = [
     path: "/fulfillment",
     name: "fulfillment",
     component: () => import("@/pages/FulfillmentPage.vue"),
-    meta: { title: "履约中心", subtitle: "查看订单扫描、自动发货、异常恢复和店铺状态。" },
+    meta: { title: "自动发货", subtitle: "查看待处理订单、发货记录和店铺自动发货设置。" },
+  },
+  {
+    path: "/warehouse-transfer",
+    name: "warehouse-transfer",
+    component: () => import("@/pages/WarehouseTransferPage.vue"),
+    meta: { title: "订单换仓", subtitle: "核对整单 SKU 库存，预览并安全修改马帮订单仓库。" },
   },
   {
     path: "/:module",
