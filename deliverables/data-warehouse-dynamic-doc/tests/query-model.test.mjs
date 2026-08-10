@@ -79,3 +79,15 @@ test("appends a page and retains server metadata", () => {
   assert.equal(next.hasMore, true);
   assert.equal(next.meta.product, "库存");
 });
+
+test("merges later pages without mutating earlier state", () => {
+  const first = mergeResultPage(emptyResultState(), { rows: [{ id: 1 }], 游标: "a", 还有更多: true });
+  const second = mergeResultPage(first, { rows: [{ id: 2 }], 游标: null, 还有更多: false });
+  assert.deepEqual(first.rows, [{ id: 1 }]);
+  assert.deepEqual(second.rows, [{ id: 1 }, { id: 2 }]);
+  assert.equal(second.hasMore, false);
+});
+
+test("a fresh empty state has no rows, cursor, or metadata", () => {
+  assert.deepEqual(emptyResultState(), { rows: [], cursor: null, hasMore: false, meta: null });
+});

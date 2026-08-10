@@ -45,7 +45,7 @@ export function validateQueryPayload(payload) {
 }
 
 export function emptyResultState() {
-  return { rows: [], cursor: null, hasMore: false, meta: {} };
+  return { rows: [], cursor: null, hasMore: false, meta: null };
 }
 
 export function mergeResultPage(state, response) {
