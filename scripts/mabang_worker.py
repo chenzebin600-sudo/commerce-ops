@@ -327,7 +327,7 @@ def inspect_order_warehouse_batch(payload):
     orders, failures = [], []
     for reference in references:
         try:
-            orders.append({'orderReference': reference, 'order': json_safe(client.read_order_warehouse_form(reference))})
+            orders.append({'orderReference': reference, 'order': json_safe(client.read_order_warehouse_form(reference, None))})
         except Exception as error:
             failures.append({'orderReference': reference, 'message': str(error)[:300]})
     return {'ok': True, 'kind': 'order-warehouse-inspect-batch', 'orders': orders, 'failures': failures}
@@ -340,7 +340,22 @@ def inspect_order_warehouse(payload):
         raise ValueError('必须指定订单号，检查操作不接受写入确认标记。')
     client = order_source.MabangClient()
     client.login(username, password)
-    return {'ok': True, 'kind': 'order-warehouse-inspect', 'order': json_safe(client.read_order_warehouse_form(reference))}
+    return {'ok': True, 'kind': 'order-warehouse-inspect', 'order': json_safe(client.read_order_warehouse_form(reference, None))}
+
+
+def change_order_warehouse(payload):
+    username, password = require_credentials(payload)
+    if payload.get("commit") != "WAREHOUSE_CHANGE_CONFIRMED":
+        raise ValueError("换仓写入缺少明确确认标记。")
+    reference = str(payload.get("orderReference") or "").strip()
+    target = str(payload.get("targetWarehouse") or "").strip()
+    expected_items = payload.get("expectedItems") or []
+    if not reference or not target or not isinstance(expected_items, list) or not expected_items:
+        raise ValueError("换仓参数不完整。")
+    client = order_source.MabangClient()
+    client.login(username, password)
+    result = client.change_order_warehouse(reference, target, expected_items)
+    return {"ok": True, "kind": "order-warehouse-change", "result": json_safe(result)}
 
 
 def resolve_order_sku(payload):
@@ -646,6 +661,8 @@ def dispatch(payload):
         return inspect_order_warehouse(payload)
     if action == "order-warehouse-inspect-batch":
         return inspect_order_warehouse_batch(payload)
+    if action == "order-warehouse-change":
+        return change_order_warehouse(payload)
     if action == "order-sku-resolve":
         return resolve_order_sku(payload)
     if action == "order-sku-change":

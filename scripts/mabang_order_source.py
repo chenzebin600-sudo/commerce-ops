@@ -44,6 +44,7 @@ FULFILLMENT_SUBMIT_URL = BASE_URL + '/index.php?mod=order.doReportingInformation
 FULFILLMENT_DISTRIBUTION_URL = BASE_URL + '/index.php?mod=order.doBatchDistribution'
 FULFILLMENT_BATCH_EDIT_URL = BASE_URL + '/index.php?mod=order.all'
 ORDER_WAREHOUSE_FORM_URL = BASE_URL + '/index.php?mod=order.getOrderItemWarehouse'
+ORDER_WAREHOUSE_CHANGE_URL = BASE_URL + '/index.php?mod=order.doChangeOrderItemWarehouse'
 ORDER_ITEM_SKU_CHANGE_URL = BASE_URL + '/index.php?mod=order.doChanegOrderItem'
 STOCK_LIKE_URL = BASE_URL + '/index.php?mod=common.getStockLike'
 EXPORT_TEMPLATE_ID = '1049202'
@@ -653,14 +654,46 @@ class MabangClient:
                 'stockSku': str(data.get('stockSku') or '').strip(),
                 'title': str(data.get('title') or '').strip(),
                 'quantity': int(to_number(input_value(f'quantity[{item_id}]') or data.get('quantity')) or 1),
+                'sellPrice': input_value(f'sellPrice[{item_id}]') or str(data.get('sellPrice') or '0'),
+                'stockWarehouseId': str(selected.get('value') or data.get('stockWarehouseId') or '').strip(),
                 'stockWarehouseName': str(selected.get('text') or '').strip(),
+                'stockGridId': input_value(f'stockGridId[{item_id}]') or str(data.get('stockGridId') or selected.get('stockGridId') or ''),
+                'stockGrid': input_value(f'stockGrid[{item_id}]') or str(data.get('stockGrid') or selected.get('stockGrid') or ''),
                 'warehouseOptions': options,
                 'isCombo': str(data.get('isCombo') or '').strip().lower() in {'1', 'true', 'yes'},
             })
         return items
 
-    def read_order_warehouse_form(self, order_reference):
-        order = self.find_order_for_fulfillment(order_reference, '2')
+    @staticmethod
+    def warehouse_anomaly_reasons(order, items):
+        reasons = []
+        status = str((order or {}).get('orderStatus') or (order or {}).get('status') or '').strip()
+        status_text = str((order or {}).get('showOrderStatusText') or '').strip()
+        if status == '99' or '待审核' in status_text:
+            reasons.append('pending_review')
+        warehouses = {
+            re.sub(r'/[-\d.]+$', '', str(item.get('stockWarehouseName') or '')).strip()
+            for item in (items or [])
+            if str(item.get('stockWarehouseName') or '').strip()
+        }
+        if len(warehouses) > 1:
+            reasons.append('multi_warehouse')
+        for item in items or []:
+            current_name = re.sub(r'/[-\d.]+$', '', str(item.get('stockWarehouseName') or '')).strip()
+            selected = next((option for option in (item.get('warehouseOptions') or []) if option.get('selected')), None)
+            if selected is None:
+                selected = next((option for option in (item.get('warehouseOptions') or [])
+                                 if re.sub(r'/[-\d.]+$', '', str(option.get('text') or '')).strip() == current_name), None)
+            available = to_number((selected or {}).get('available'))
+            quantity = int(to_number(item.get('quantity')) or 0)
+            if available != '' and float(available) < quantity:
+                reasons.append('out_of_stock')
+                break
+        order_by_priority = ['pending_review', 'out_of_stock', 'multi_warehouse']
+        return [reason for reason in order_by_priority if reason in reasons]
+
+    def read_order_warehouse_form(self, order_reference, pending_status='2'):
+        order = self.find_order_for_fulfillment(order_reference, pending_status)
         order_id = str(order.get('id') or order.get('orderId') or '').strip()
         if not order_id:
             raise Exception('SKU_REPLACEMENT_ORDER_ID_MISSING: 订单缺少马帮内部 ID。')
@@ -681,8 +714,72 @@ class MabangClient:
             'platformId': str(order.get('platformId') or '').strip(),
             'orderStatus': str(order.get('orderStatus') or order.get('status') or '').strip(),
             'trackNumber': str(order.get('trackNumber') or order.get('trackingNumber') or '').strip(),
+            'anomalyReasons': self.warehouse_anomaly_reasons(order, items),
             'items': items,
         }
+
+    def change_order_warehouse(self, order_reference, target_warehouse, expected_items):
+        form = self.read_order_warehouse_form(order_reference, None)
+        if form.get('trackNumber'):
+            raise Exception('WAREHOUSE_ORDER_SHIPPED: 订单已有物流单号，禁止换仓。')
+        if not set(form.get('anomalyReasons') or []).intersection({'pending_review', 'out_of_stock', 'multi_warehouse'}):
+            raise Exception('WAREHOUSE_ORDER_NOT_ANOMALOUS: 仅待审核、缺货或多仓异常订单允许换仓。')
+        expected = {str(item.get('itemId') or ''): item for item in (expected_items or [])}
+        form_item_ids = {item['itemId'] for item in form['items']}
+        if not expected or not set(expected).issubset(form_item_ids):
+            raise Exception('WAREHOUSE_PLAN_STALE: 订单商品行已变化，请重新预览。')
+        payload = [('changeComboConfirm', '0'), ('process', '0'), ('input_orderId[]', form['internalOrderId'])]
+        selected = []
+        for item in form['items']:
+            payload.extend([
+                (f'sellPrice[{item["itemId"]}]', item['sellPrice']),
+                (f'quantity[{item["itemId"]}]', str(item['quantity'])),
+                (f'stockWarehouseId[{item["itemId"]}]', item['stockWarehouseId']),
+                (f'stockGridId[{item["itemId"]}]', item['stockGridId']),
+                (f'stockGrid[{item["itemId"]}]', item['stockGrid']),
+            ])
+            if item['itemId'] not in expected:
+                continue
+            before = expected[item['itemId']]
+            if (str(before.get('stockSku') or '').strip().upper() != item['stockSku'].strip().upper()
+                    or int(before.get('quantity') or 0) != item['quantity']):
+                raise Exception('WAREHOUSE_PLAN_STALE: SKU 或数量已变化，请重新预览。')
+            expected_warehouse = re.sub(r'/[-\d.]+$', '', str(before.get('currentWarehouse') or '')).strip()
+            current_warehouse = re.sub(r'/[-\d.]+$', '', item['stockWarehouseName']).strip()
+            if expected_warehouse and expected_warehouse != current_warehouse:
+                raise Exception('WAREHOUSE_PLAN_STALE: 商品当前仓库已变化，请重新预览。')
+            option = next((candidate for candidate in item['warehouseOptions']
+                           if candidate['text'] == target_warehouse or candidate['value'] == target_warehouse), None)
+            if not option:
+                raise Exception(f'WAREHOUSE_TARGET_UNAVAILABLE: 商品 {item["stockSku"]} 不支持目标仓库。')
+            payload = [(key, value) for key, value in payload if key not in {
+                f'stockWarehouseId[{item["itemId"]}]', f'stockGridId[{item["itemId"]}]', f'stockGrid[{item["itemId"]}]'
+            }]
+            payload.extend([
+                (f'stockWarehouseId[{item["itemId"]}]', option['value']),
+                (f'stockGridId[{item["itemId"]}]', option.get('stockGridId') or item['stockGridId']),
+                (f'stockGrid[{item["itemId"]}]', option.get('stockGrid') or item['stockGrid']),
+                (f'orderItem[{item["itemId"]}]', item['itemId']),
+            ])
+            selected.append({'itemId': item['itemId'], 'sku': item['stockSku'], 'warehouseId': option['value']})
+        payload.append(('successOrderId', ''))
+        response = self.session.post(
+            ORDER_WAREHOUSE_CHANGE_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data=payload, timeout=REQUEST_TIMEOUT, allow_redirects=True,
+        )
+        result = safe_json(response)
+        if response_looks_unauthenticated(response, result):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_WAREHOUSE_CHANGE: 写入结果未知，禁止自动重试。')
+        if not (result.get('success') is True or result.get('success') == 1 or result.get('success') == '1'):
+            raise Exception('WAREHOUSE_CHANGE_REJECTED: 马帮未确认换仓成功。')
+        verified = self.read_order_warehouse_form(order_reference, None)
+        if any(item['itemId'] in expected
+               and re.sub(r'/[-\d.]+$', '', item['stockWarehouseName']).strip()
+               != re.sub(r'/[-\d.]+$', '', target_warehouse).strip()
+               for item in verified['items']):
+            raise Exception('WAREHOUSE_CHANGE_VERIFY_FAILED: 写入后仓库回读不一致。')
+        return {'changed': True, 'targetWarehouse': target_warehouse, 'items': selected, 'after': verified}
 
     def resolve_stock_sku(self, stock_sku):
         wanted = str(stock_sku or '').strip()

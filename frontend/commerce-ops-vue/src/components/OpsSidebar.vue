@@ -50,6 +50,7 @@ const groups = [
     { path: "/mabang-listing", label: "商品刊登", icon: Send },
     { path: "/fulfillment", label: "履约中心", icon: Truck },
     { path: "/sku-replacement", label: "缺货 SKU 替换", icon: Replace },
+    { path: "/warehouse-transfer", label: "异常订单换仓", icon: Truck },
     { path: "/customer-service", label: "客服中心", icon: Headphones },
   ] },
   { label: "治理", items: [

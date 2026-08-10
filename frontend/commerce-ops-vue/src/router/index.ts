@@ -107,6 +107,12 @@ const routes = [
     meta: { title: "缺货 SKU 替换", subtitle: "检查订单缺货商品，复核同仓候选并安全执行批量替换。" },
   },
   {
+    path: "/warehouse-transfer",
+    name: "warehouse-transfer",
+    component: () => import("@/pages/WarehouseTransferPage.vue"),
+    meta: { title: "异常订单换仓", subtitle: "仅对异常订单按实时库存自动选仓，并安全执行批量换仓。" },
+  },
+  {
     path: "/customer-service",
     name: "customer-service",
     component: () => import("@/pages/CustomerServicePage.vue"),

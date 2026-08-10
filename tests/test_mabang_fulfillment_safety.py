@@ -1,4 +1,6 @@
 import unittest
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from scripts.mabang_order_source import MabangClient, extract_fulfillment_stock_flags, response_looks_unauthenticated
@@ -11,6 +13,113 @@ class FakeResponse:
 
 
 class MabangFulfillmentSafetyTests(unittest.TestCase):
+    def test_warehouse_anomaly_reasons_cover_pending_review_out_of_stock_and_multi_warehouse(self):
+        items = [
+            {
+                'itemId': '1', 'quantity': 2, 'stockWarehouseName': '仓库A',
+                'warehouseOptions': [{'text': '仓库A', 'selected': True, 'available': 1}],
+            },
+            {
+                'itemId': '2', 'quantity': 1, 'stockWarehouseName': '仓库B',
+                'warehouseOptions': [{'text': '仓库B', 'selected': True, 'available': 5}],
+            },
+        ]
+
+        self.assertEqual(
+            MabangClient.warehouse_anomaly_reasons({'orderStatus': '99'}, items),
+            ['pending_review', 'out_of_stock', 'multi_warehouse'],
+        )
+
+    def test_order_warehouse_form_exposes_anomaly_reasons_to_the_service(self):
+        client = MabangClient()
+        client.find_order_for_fulfillment = MagicMock(return_value={
+            'id': '100', 'platformOrderId': 'ORDER_1', 'shopId': '88',
+            'platformId': '17', 'orderStatus': '99', 'showOrderStatusText': '待审核',
+        })
+        client.post_json_with_reauth = MagicMock(return_value={'success': True})
+        client._warehouse_form_items = MagicMock(return_value=[{
+            'itemId': '1', 'quantity': 1, 'stockWarehouseName': '仓库A',
+            'warehouseOptions': [{'text': '仓库A', 'selected': True, 'available': 0}],
+        }])
+
+        result = client.read_order_warehouse_form('ORDER_1')
+
+        self.assertEqual(result['anomalyReasons'], ['pending_review', 'out_of_stock'])
+
+    def test_change_order_warehouse_submits_target_fields_and_verifies_by_readback(self):
+        client = MabangClient()
+        before = {
+            'internalOrderId': '100', 'platformOrderId': 'ORDER_1', 'trackNumber': '',
+            'anomalyReasons': ['out_of_stock'],
+            'items': [{
+                'itemId': '1', 'stockSku': 'SKU_1', 'quantity': 2, 'sellPrice': '99.5',
+                'stockWarehouseId': '10', 'stockWarehouseName': '旧仓',
+                'stockGridId': 'GRID_OLD', 'stockGrid': 'A-01',
+                'warehouseOptions': [
+                    {'value': '10', 'text': '旧仓', 'stockGridId': 'GRID_OLD', 'stockGrid': 'A-01'},
+                    {'value': '20', 'text': '目标仓', 'stockGridId': 'GRID_NEW', 'stockGrid': 'B-02'},
+                ],
+            }],
+        }
+        after = {
+            **before,
+            'items': [{**before['items'][0], 'stockWarehouseId': '20', 'stockWarehouseName': '目标仓'}],
+        }
+        client.read_order_warehouse_form = MagicMock(side_effect=[before, after])
+        response = MagicMock(url='https://example.test/index.php?mod=order.doChangeOrderItemWarehouse', text='{"success":true}')
+        response.json.return_value = {'success': True}
+        client.session.post = MagicMock(return_value=response)
+
+        result = client.change_order_warehouse('ORDER_1', '目标仓', [{
+            'itemId': '1', 'stockSku': 'SKU_1', 'quantity': 2, 'currentWarehouse': '旧仓',
+        }])
+
+        self.assertTrue(result['changed'])
+        submitted = client.session.post.call_args.kwargs['data']
+        self.assertIn(('stockWarehouseId[1]', '20'), submitted)
+        self.assertIn(('stockGridId[1]', 'GRID_NEW'), submitted)
+        self.assertIn(('stockGrid[1]', 'B-02'), submitted)
+        self.assertIn(('orderItem[1]', '1'), submitted)
+        self.assertEqual(client.read_order_warehouse_form.call_count, 2)
+
+    def test_worker_dispatch_requires_commit_marker_for_warehouse_change(self):
+        scripts_dir = str(Path(__file__).resolve().parents[1] / 'scripts')
+        with patch.object(sys, 'path', [scripts_dir, *sys.path]):
+            from scripts import mabang_worker
+
+        client = MagicMock()
+        client.change_order_warehouse.return_value = {'changed': True, 'targetWarehouse': '目标仓'}
+        payload = {
+            'action': 'order-warehouse-change', 'username': 'user', 'password': 'secret',
+            'orderReference': 'ORDER_1', 'targetWarehouse': '目标仓',
+            'expectedItems': [{'itemId': '1'}],
+        }
+        with patch.object(mabang_worker.order_source, 'MabangClient', return_value=client):
+            with self.assertRaisesRegex(ValueError, '明确确认标记'):
+                mabang_worker.dispatch(payload)
+            result = mabang_worker.dispatch({**payload, 'commit': 'WAREHOUSE_CHANGE_CONFIRMED'})
+
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['kind'], 'order-warehouse-change')
+        client.change_order_warehouse.assert_called_once_with(
+            'ORDER_1', '目标仓', [{'itemId': '1'}]
+        )
+
+    def test_worker_warehouse_inspection_searches_across_editable_statuses(self):
+        scripts_dir = str(Path(__file__).resolve().parents[1] / 'scripts')
+        with patch.object(sys, 'path', [scripts_dir, *sys.path]):
+            from scripts import mabang_worker
+
+        client = MagicMock()
+        client.read_order_warehouse_form.return_value = {'platformOrderId': 'ORDER_1', 'items': []}
+        with patch.object(mabang_worker.order_source, 'MabangClient', return_value=client):
+            mabang_worker.dispatch({
+                'action': 'order-warehouse-inspect', 'username': 'user', 'password': 'secret',
+                'orderReference': 'ORDER_1',
+            })
+
+        client.read_order_warehouse_form.assert_called_once_with('ORDER_1', None)
+
     def test_pending_tracking_channel_reset_matches_confirmed_batch_edit_request(self):
         client = MabangClient()
         pending = {

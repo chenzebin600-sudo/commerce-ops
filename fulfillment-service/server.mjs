@@ -15,6 +15,8 @@ import { FulfillmentAgent } from "./agent.mjs";
 import { FulfillmentAgentTools } from "./agent-tools.mjs";
 import { SkuReplacementService } from "./sku-replacement.mjs";
 import { SkuReplacementBatchService } from "./sku-replacement-batch.mjs";
+import { WarehouseTransferService } from "./warehouse-transfer.mjs";
+import { WarehouseTransferBatchService } from "./warehouse-transfer-batch.mjs";
 import { OperationDrainController } from "../lib/operation-drain.mjs";
 
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -120,6 +122,20 @@ const recoveredSkuReplacementTasks = skuReplacementBatchService.reconcileInterru
 if (recoveredSkuReplacementTasks.length) {
   console.warn(`Recovered ${recoveredSkuReplacementTasks.length} interrupted SKU replacement task(s) for manual review.`);
 }
+const warehouseTransferService = new WarehouseTransferService({
+  rootDir,
+  credentials:() => config.mabangUsername && config.mabangPassword
+    ? { ok:true,username:config.mabangUsername,password:config.mabangPassword }
+    : { ok:false,code:"MABANG_ACCOUNT_NOT_CONNECTED",message:"请配置履约服务马帮账号" },
+  hasShopAccess:(shopId) => servicesByShopId.has(String(shopId || "")),
+  allowedWarehouses:(shopId) => servicesByShopId.get(String(shopId || ""))?.config?.allowedWarehouses || [],
+  writeEnabled:config.warehouseTransferEnabled,
+});
+const warehouseTransferBatchService = new WarehouseTransferBatchService({ rootDir,warehouseTransferService });
+const recoveredWarehouseTransferTasks = warehouseTransferBatchService.reconcileInterruptedExecutions();
+if (recoveredWarehouseTransferTasks.length) {
+  console.warn(`Recovered ${recoveredWarehouseTransferTasks.length} interrupted warehouse transfer task(s) for manual review.`);
+}
 const operationDrain = new OperationDrainController();
 let shuttingDown = false;
 
@@ -148,6 +164,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { success: true, ...operationDrain.status(), realSubmitEnabled: config.realSubmitEnabled,
+      warehouseTransferEnabled: config.warehouseTransferEnabled,
       database: { provider: repository.databaseProviderName, mode: repository.databaseMode,
         target: repository.databaseTarget, readOnly: repository.readOnly },
       schedulerEnabled: config.schedulerEnabled, schedulerIntervalSeconds: config.schedulerIntervalSeconds,
@@ -216,6 +233,29 @@ const server = http.createServer(async (req, res) => {
         return send(res,200,{ success:true,data:task });
       } catch (error) {
         throw skuReplacementFailure(error,"SKU_REPLACEMENT_TASK_NOT_FOUND","批量更换任务不存在",404);
+      }
+    }
+    if (req.method === "POST" && url.pathname === "/api/fulfillment/warehouse-transfers/batch-plan") {
+      const payload = await body(req);
+      try { return send(res,201,{ success:true,data:await trackedOperation("warehouse-batch-plan",{},() => warehouseTransferBatchService.createPlan(payload)) }); }
+      catch (error) { throw skuReplacementFailure(error,"WAREHOUSE_BATCH_PLAN_FAILED","批量换仓计划生成失败"); }
+    }
+    if (req.method === "POST" && url.pathname === "/api/fulfillment/warehouse-transfers/batch-execute") {
+      let task;
+      try { operationDrain.assertAccepting(); task = warehouseTransferBatchService.createExecution(await body(req)); }
+      catch (error) { throw skuReplacementFailure(error,"WAREHOUSE_BATCH_EXECUTE_FAILED","批量换仓执行失败"); }
+      void trackedOperation("warehouse-batch-execute",{ write:true },() => warehouseTransferBatchService.runExecution(task.taskId))
+        .catch((error) => console.error(`Warehouse transfer task ${task.taskId} stopped with ${String(error?.code || "INTERNAL_ERROR").slice(0,80)}.`));
+      return send(res,202,{ success:true,data:task });
+    }
+    const warehouseTaskMatch = url.pathname.match(/^\/api\/fulfillment\/warehouse-transfers\/batch-executions\/([a-zA-Z0-9-]{1,80})$/);
+    if (req.method === "GET" && warehouseTaskMatch) {
+      try {
+        const task = warehouseTransferBatchService.getExecution(warehouseTaskMatch[1]);
+        if (!task) throw Object.assign(new Error("批量换仓任务不存在"), { code:"WAREHOUSE_TASK_NOT_FOUND" });
+        return send(res,200,{ success:true,data:task });
+      } catch (error) {
+        throw skuReplacementFailure(error,"WAREHOUSE_TASK_NOT_FOUND","批量换仓任务不存在",404);
       }
     }
     if (req.method === "GET" && url.pathname === "/api/fulfillment/agent/status") {
