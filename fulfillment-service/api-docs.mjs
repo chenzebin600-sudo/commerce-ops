@@ -64,7 +64,7 @@ export function createOpenApiDocument(config) {
       description: `一个马帮账号下的 ${config.shops.length} 个已配置店铺，每店铺每批最多10单。国家、平台、店铺、渠道、仓库范围和自动发货开关由独立配置文件维护；环境变量继续作为全局开关和店铺白名单。`,
     },
     servers: [{ url: `http://${config.host}:${config.port}`, description: "本机服务" }],
-    tags: [{ name: "状态" }, { name: "只读 Agent" }, { name: "看板" }, { name: "定时预览" }, { name: "发货预览与确认" }, { name: "批次" }, { name: "运单恢复" }],
+    tags: [{ name: "状态" }, { name: "只读 Agent" }, { name: "看板" }, { name: "定时预览" }, { name: "发货预览与确认" }, { name: "批次" }, { name: "运单恢复" }, { name: "待审核恢复" }, { name: "人工处理" }],
     components: {
       securitySchemes: { bearerAuth: { type: "http", scheme: "bearer", description: "仅在配置 FULFILLMENT_API_TOKEN 后需要" } },
       schemas: {
@@ -135,6 +135,29 @@ export function createOpenApiDocument(config) {
           } } } } },
           responses: { 200: { description: "仓库、库存、状态、渠道和空运单号均通过，人工锁已解除；本次不会提交发货" },
             404: { description: "没有找到对应人工处理订单" }, 409: { description: "仍为多仓、状态未恢复、深度预检失败或系统忙" } } },
+      },
+      "/api/fulfillment/message-review-recoveries/candidates": {
+        get: { tags: ["待审核恢复"], summary: "只读检查可恢复的待审核留言异常订单", security: [{ bearerAuth: [] }],
+          parameters: [{ name: "limit", in: "query", required: false, schema: { type: "integer", minimum: 1, maximum: 10, default: 3 } }],
+          description: "只返回同时满足留言单一异常、配置店铺与平台匹配、无运单号、库存安全、导出状态仍为待审核、全部 SKU 位于同一仓库且库存充足的订单；不会修改马帮订单。",
+          responses: { 200: { description: "返回通过全部恢复前检查的候选订单" }, 409: { description: "马帮读取失败或当前系统忙" } } },
+      },
+      "/api/fulfillment/message-review-recoveries": {
+        post: { tags: ["待审核恢复"], summary: "恢复一笔待审核留言异常订单", security: [{ bearerAuth: [] }],
+          description: "这是马帮真实写操作。每次只允许一笔订单，必须提供固定确认标记。服务会重新执行全部安全检查，调用异常订单处理接口，再回查订单已经转为待处理；随后延迟执行定向完整安全扫描，同一轮不会直接发货。",
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["orderId", "confirmation"], properties: {
+            orderId: { type: "string", description: "马帮订单编号或平台交易编号" },
+            confirmation: { type: "string", enum: ["MESSAGE_REVIEW_RECOVERY_CONFIRMED"] },
+          } }, example: { orderId: "填写待恢复订单号", confirmation: "MESSAGE_REVIEW_RECOVERY_CONFIRMED" } } } },
+          responses: { 200: { description: "恢复已确认，并已安排延迟定向复扫" }, 400: { description: "订单号或确认标记无效" }, 409: { description: "安全检查未通过、恢复后状态未变化或系统忙" } } },
+      },
+      "/api/fulfillment/message-review-recoveries/mode": {
+        put: { tags: ["待审核恢复"], summary: "设置待审核留言订单处理方式", security: [{ bearerAuth: [] }],
+          description: "模式保存在履约数据库并即时生效：off 只读展示且拒绝恢复；manual 允许逐单固定确认；auto 按独立间隔自动恢复全部安全检查通过的候选。切换时若调度或发货批次正在运行会安全拒绝。",
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["mode"], properties: {
+            mode: { type: "string", enum: ["off", "manual", "auto"] },
+          } }, example: { mode: "manual" } } } },
+          responses: { 200: { description: "模式已持久化并返回最新履约设置" }, 400: { description: "模式无效" }, 409: { description: "账号未连接或系统正在处理订单" } } },
       },
       "/api/fulfillment/previews": {
         post: {

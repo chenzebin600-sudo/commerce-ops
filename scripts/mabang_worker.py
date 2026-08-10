@@ -1,10 +1,12 @@
 import contextlib
+import hashlib
 import json
 import math
 import os
 import re
 import sys
 import time
+import unicodedata
 from urllib.parse import urlencode
 from datetime import date, datetime
 from decimal import Decimal
@@ -27,6 +29,7 @@ ORDER_FILTER_OPERATORS = {
     "empty": "为空",
     "notEmpty": "非空",
 }
+ORDER_FILTER_MAX_VALUES = 500
 ORDER_FILTERS_WITHOUT_VALUE = {"empty", "notEmpty"}
 
 
@@ -103,7 +106,9 @@ def normalize_order_filters(payload):
         operator = str(raw_condition.get("operator") or "contains").strip()
         raw_values = raw_condition.get("values")
         if isinstance(raw_values, list):
-            values = list(dict.fromkeys(str(item or "").strip() for item in raw_values if str(item or "").strip()))[:100]
+            values = list(dict.fromkeys(str(item or "").strip() for item in raw_values if str(item or "").strip()))
+            if len(values) > ORDER_FILTER_MAX_VALUES:
+                raise ValueError(f"第 {index} 个订单筛选条件最多支持 {ORDER_FILTER_MAX_VALUES} 个值。")
         else:
             value = str(raw_condition.get("value") or "").strip()
             values = [value] if value else []
@@ -269,17 +274,55 @@ def collect_inventory(payload):
     client = inventory_source.MabangInventoryClient()
     client.login(username, password)
     client.open_inventory_page()
-    client.initialize_default_search()
+    catalog = client.get_warehouse_catalog()
+    requested_warehouse_names = [str(value or '').strip() for value in (payload.get('warehouseNames') or []) if str(value or '').strip()]
+    warehouse_ids = inventory_source.resolve_inventory_warehouse_scope(catalog, requested_warehouse_names)
+    use_html_source = bool(payload.get('compact') and requested_warehouse_names)
+    html_page_size = 200
+    client.initialize_default_search(warehouse_ids=warehouse_ids, rows_per_page=html_page_size if use_html_source else inventory_source.SEARCH_ROWS_PER_PAGE)
     record_count = client.get_record_count()
     summary = client.get_stock_summary()
-    records = client.export_inventory_records(record_count) if record_count else []
+    target_fields = inventory_source.REQUIRED_FIELDS if payload.get("compact") else inventory_source.TARGET_FIELDS
+    source_mode = 'excel'
+    fallback_reason = ''
+    if record_count and use_html_source:
+        try:
+            records = client.read_inventory_html_records(record_count, warehouse_ids=warehouse_ids, rows_per_page=html_page_size)
+            expected_warehouses = set(requested_warehouse_names)
+            unexpected_warehouses = sorted({
+                str(record.get('仓库') or '').strip()
+                for record in records
+                if str(record.get('仓库') or '').strip() not in expected_warehouses
+            })
+            if unexpected_warehouses:
+                raise ValueError(f'库存 HTML 返回了范围外仓库，共 {len(unexpected_warehouses)} 个')
+            source_mode = 'html_pages'
+        except Exception as error:
+            fallback_reason = str(error)[:240]
+            inventory_source.logger.warning(f'库存 HTML 直读失败，安全回退 Excel：{fallback_reason}')
+            # HTML pagination can take several minutes for large inventories. Live
+            # stock changes during that window make its original row count stale,
+            # so refresh the same warehouse-scoped search immediately before the
+            # Excel fallback instead of rejecting a newer, internally complete file.
+            client.initialize_default_search(warehouse_ids=warehouse_ids, rows_per_page=html_page_size)
+            refreshed_record_count = client.get_record_count()
+            if refreshed_record_count != record_count:
+                inventory_source.logger.warning(
+                    f'库存行数在 HTML 读取期间变化：{record_count} -> {refreshed_record_count}；按刷新后的行数校验 Excel。'
+                )
+            record_count = refreshed_record_count
+            records = client.export_inventory_records(record_count, target_fields=target_fields) if record_count else []
+            source_mode = 'excel_fallback'
+    else:
+        records = client.export_inventory_records(record_count, target_fields=target_fields) if record_count else []
     records = json_safe(records)
     return {
         "ok": True,
         "kind": "inventory",
         "message": f"库存采集完成，共 {len(records)} 行。",
-        "columns": list(inventory_source.TARGET_FIELDS),
+        "columns": list(target_fields),
         "records": records,
+        "warehouseCatalog": catalog,
         "summary": {
             "rows": len(records),
             "reportedRows": record_count,
@@ -287,6 +330,12 @@ def collect_inventory(payload):
             "totalCost": summary.get("totalCost", ""),
             "inTransitTotal": summary.get("inTransitTotal", ""),
             "cacheUpdateTime": summary.get("cacheUpdateTime", ""),
+            "scopeWarehouseIds": warehouse_ids,
+            "scopeWarehouseNames": requested_warehouse_names,
+            "sourceMode": source_mode,
+            "htmlPageSize": html_page_size if source_mode == 'html_pages' else None,
+            "htmlPageCount": math.ceil(record_count / html_page_size) if source_mode == 'html_pages' and record_count else 0,
+            "fallbackReason": fallback_reason,
         },
     }
 
@@ -314,6 +363,224 @@ def collect_fulfillment_orders(payload):
     }
 
 
+def collect_inventory_warehouse_catalog(payload):
+    username, password = require_credentials(payload)
+    client = inventory_source.MabangInventoryClient()
+    client.login(username, password)
+    client.open_inventory_page()
+    catalog = client.get_warehouse_catalog()
+    return {
+        "ok": True,
+        "kind": "inventory-warehouse-catalog",
+        "catalog": json_safe(catalog),
+    }
+
+
+def probe_inventory_warehouse_scope(payload):
+    username, password = require_credentials(payload)
+    requested_ids = [str(value or '').strip() for value in (payload.get('warehouseIds') or []) if str(value or '').strip()]
+    if not requested_ids or len(requested_ids) > 5:
+        raise ValueError('仓库范围探测需要选择 1 至 5 个仓库。')
+    client = inventory_source.MabangInventoryClient()
+    client.login(username, password)
+    client.open_inventory_page()
+    catalog = client.get_warehouse_catalog()
+    by_id = {str(option.get('id') or ''): str(option.get('name') or '') for option in catalog.get('options') or []}
+    missing = [identifier for identifier in requested_ids if identifier not in by_id]
+    if missing:
+        raise ValueError('仓库范围探测包含当前账号不可见的仓库。')
+    client.initialize_default_search(warehouse_ids=requested_ids)
+    record_count = client.get_record_count()
+    result = {
+        'ok': True,
+        'kind': 'inventory-warehouse-scope-probe',
+        'warehouseIds': requested_ids,
+        'warehouseNames': [by_id[identifier] for identifier in requested_ids],
+        'reportedRows': record_count,
+        'exportValidated': False,
+    }
+    if payload.get('validateExport'):
+        records = client.export_inventory_records(record_count, target_fields=inventory_source.REQUIRED_FIELDS) if record_count else []
+        exported_warehouses = sorted({str(record.get('仓库') or '').strip() for record in records if str(record.get('仓库') or '').strip()})
+        expected = set(result['warehouseNames'])
+        unexpected = [name for name in exported_warehouses if name not in expected]
+        result.update({
+            'exportValidated': not unexpected,
+            'parsedRows': len(records),
+            'exportedWarehouses': exported_warehouses,
+            'unexpectedWarehouses': unexpected,
+        })
+    return result
+
+
+def probe_inventory_page_contract(payload):
+    username, password = require_credentials(payload)
+    requested_names = [str(value or '').strip() for value in (payload.get('warehouseNames') or []) if str(value or '').strip()]
+    if len(requested_names) > 5:
+        raise ValueError('库存分页结构探测最多选择 5 个仓库。')
+    client = inventory_source.MabangInventoryClient()
+    client.login(username, password)
+    client.open_inventory_page()
+    catalog = client.get_warehouse_catalog()
+    warehouse_ids = inventory_source.resolve_inventory_warehouse_scope(catalog, requested_names)
+    client.initialize_default_search(warehouse_ids=warehouse_ids)
+    search_message = str((client.last_search_response or {}).get('message') or '')
+    return {
+        'ok': True,
+        'kind': 'inventory-page-contract-probe',
+        'scopeWarehouseNames': requested_names,
+        'scopeWarehouseCount': len(warehouse_ids),
+        'searchContract': inventory_source.describe_response_structure(client.last_search_response),
+        'searchMessageContract': {
+            'length': len(search_message),
+            'tables': inventory_source.describe_html_table_contracts(search_message),
+            'repeatedElements': inventory_source.describe_repeated_html_elements(search_message),
+            'rows': inventory_source.describe_inventory_search_rows(search_message),
+            'firstRowTokenShape': inventory_source.describe_inventory_search_row_tokens(search_message),
+        },
+        'contract': client.get_page_response_contract(
+            page=payload.get('page') or 1,
+            rows_per_page=payload.get('rowsPerPage') or inventory_source.SEARCH_ROWS_PER_PAGE,
+        ),
+        'iframeContract': client.get_inventory_iframe_contract(),
+    }
+
+
+def probe_inventory_html_page(payload):
+    username, password = require_credentials(payload)
+    requested_names = [str(value or '').strip() for value in (payload.get('warehouseNames') or []) if str(value or '').strip()]
+    if not requested_names or len(requested_names) > 5:
+        raise ValueError('库存 HTML 分页探测需要选择 1 至 5 个仓库。')
+    page = max(1, int(payload.get('page') or 1))
+    rows_per_page = max(1, min(200, int(payload.get('rowsPerPage') or inventory_source.SEARCH_ROWS_PER_PAGE)))
+    client = inventory_source.MabangInventoryClient()
+    client.login(username, password)
+    client.open_inventory_page()
+    catalog = client.get_warehouse_catalog()
+    warehouse_ids = inventory_source.resolve_inventory_warehouse_scope(catalog, requested_names)
+    started_at = time.time()
+    result = client.search_inventory_page(warehouse_ids=warehouse_ids, page=page, rows_per_page=rows_per_page)
+    message = str(result.get('message') or '')
+    records = inventory_source.parse_inventory_search_records(message)
+    digest_payload = json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return {
+        'ok': True,
+        'kind': 'inventory-html-page-probe',
+        'page': page,
+        'rowsPerPage': rows_per_page,
+        'parsedRows': len(records),
+        'warehouseCount': len({str(record.get('仓库') or '') for record in records}),
+        'pageHash': hashlib.sha256(digest_payload).hexdigest(),
+        'durationMs': int((time.time() - started_at) * 1000),
+    }
+
+
+def inventory_core_digest(records):
+    rows = sorted([
+        [str(record.get('库存SKU编号') or '').strip(), str(record.get('仓库') or '').strip(), record.get('可用库存量') or 0]
+        for record in records
+    ])
+    payload = json.dumps(rows, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()
+
+
+def probe_inventory_html_full(payload):
+    username, password = require_credentials(payload)
+    requested_names = [str(value or '').strip() for value in (payload.get('warehouseNames') or []) if str(value or '').strip()]
+    if not requested_names or len(requested_names) > 5:
+        raise ValueError('库存 HTML 完整探测需要选择 1 至 5 个仓库。')
+    client = inventory_source.MabangInventoryClient()
+    client.login(username, password)
+    client.open_inventory_page()
+    catalog = client.get_warehouse_catalog()
+    warehouse_ids = inventory_source.resolve_inventory_warehouse_scope(catalog, requested_names)
+    started_at = time.time()
+    client.initialize_default_search(warehouse_ids=warehouse_ids, rows_per_page=200)
+    record_count = client.get_record_count()
+    records = client.read_inventory_html_records(record_count, warehouse_ids=warehouse_ids, rows_per_page=200)
+    normalized_skus = {
+        re.sub(r'\s+', '', unicodedata.normalize('NFKC', str(record.get('库存SKU编号') or ''))).upper()
+        for record in records
+    }
+    normalized_identities = {
+        (
+            re.sub(r'\s+', '', unicodedata.normalize('NFKC', str(record.get('库存SKU编号') or ''))).upper(),
+            str(record.get('仓库') or '').strip(),
+        )
+        for record in records
+    }
+    return {
+        'ok': True,
+        'kind': 'inventory-html-full-probe',
+        'reportedRows': record_count,
+        'parsedRows': len(records),
+        'uniqueSkuCount': len({str(record.get('库存SKU编号') or '').strip() for record in records}),
+        'normalizedUniqueSkuCount': len(normalized_skus),
+        'normalizationCollisionCount': len(records) - len(normalized_skus),
+        'normalizedIdentityCount': len(normalized_identities),
+        'identityCollisionCount': len(records) - len(normalized_identities),
+        'missingSkuCount': sum(1 for record in records if not str(record.get('库存SKU编号') or '').strip()),
+        'missingWarehouseCount': sum(1 for record in records if not str(record.get('仓库') or '').strip()),
+        'availableQuantity': sum(float(record.get('可用库存量') or 0) for record in records),
+        'coreHash': inventory_core_digest(records),
+        'durationMs': int((time.time() - started_at) * 1000),
+    }
+
+
+def message_review_candidates(payload):
+    username, password = require_credentials(payload)
+    shops = payload.get('shops') or []
+    if not isinstance(shops, list) or not shops:
+        raise ValueError('店铺配置不能为空。')
+    client = order_source.MabangClient()
+    client.login(username, password)
+    records = client.inspect_message_review_candidates(shops, payload.get('limit') or 10)
+    return {
+        'ok': True, 'kind': 'fulfillment-message-review-candidates', 'records': json_safe(records),
+        'summary': {'checked': len(records), 'eligible': sum(1 for item in records if item.get('eligible'))},
+    }
+
+
+def recover_message_review(payload):
+    username, password = require_credentials(payload)
+    if payload.get('commit') != 'MESSAGE_REVIEW_RECOVERY_CONFIRMED':
+        raise ValueError('缺少待审核留言恢复确认标记。')
+    order_reference = str(payload.get('orderReference') or '').strip()
+    shops = payload.get('shops') or []
+    if not order_reference or not isinstance(shops, list) or not shops:
+        raise ValueError('订单号和店铺配置不能为空。')
+    client = order_source.MabangClient()
+    client.login(username, password)
+    return {
+        'ok': True, 'kind': 'fulfillment-message-review-recovery',
+        **json_safe(client.recover_message_review_order(order_reference, shops)),
+    }
+
+
+def inspect_order_warehouse(payload):
+    username, password = require_credentials(payload)
+    reference = str(payload.get('orderReference') or '').strip()
+    if not reference or payload.get('commit'):
+        raise ValueError('必须指定订单号，检查操作不接受写入确认标记。')
+    client = order_source.MabangClient()
+    client.login(username, password)
+    return {'ok': True, 'kind': 'order-warehouse-inspect', 'order': json_safe(client.read_order_warehouse_form(reference))}
+
+
+def change_order_warehouse(payload):
+    username, password = require_credentials(payload)
+    if payload.get('commit') != 'WAREHOUSE_CHANGE_CONFIRMED':
+        raise ValueError('换仓写入缺少明确确认标记。')
+    reference = str(payload.get('orderReference') or '').strip()
+    target = str(payload.get('targetWarehouse') or '').strip()
+    expected_items = payload.get('expectedItems') or []
+    if not reference or not target or not isinstance(expected_items, list):
+        raise ValueError('换仓参数不完整。')
+    client = order_source.MabangClient()
+    client.login(username, password)
+    return {'ok': True, 'kind': 'order-warehouse-change', 'result': json_safe(client.change_order_warehouse(reference, target, expected_items))}
+
+
 def inspect_fulfillment(payload):
     username, password = require_credentials(payload)
     order_reference = str(payload.get("orderReference") or "").strip()
@@ -324,6 +591,18 @@ def inspect_fulfillment(payload):
     client = order_source.MabangClient()
     client.login(username, password)
     return {"ok": True, "kind": "fulfillment-inspection", **json_safe(client.inspect_fulfillment(order_reference, channel_value, channel_id))}
+
+
+def inspect_fulfillment_order_state(payload):
+    username, password = require_credentials(payload)
+    order_reference = str(payload.get("orderReference") or "").strip()
+    if not order_reference or payload.get("commit"):
+        raise ValueError("订单号不能为空，状态核对不接受提交标记。")
+    client = order_source.MabangClient()
+    client.login(username, password)
+    return {"ok": True, "kind": "fulfillment-order-state", **json_safe(client.inspect_fulfillment_order_state(
+        order_reference, str(payload.get("channelId") or ""), str(payload.get("channelValue") or "")
+    ))}
 
 
 def preflight_fulfillment(payload):
@@ -355,6 +634,8 @@ def submit_fulfillment(payload):
         payload["orderReference"], payload["channelValue"], payload["channelId"],
         payload.get("channelSource") or "1", payload["shopId"], payload["platformId"],
         payload.get("verifyTimeoutSeconds") or 90, bool(payload.get("singleWarehouseVerified")),
+        payload.get("trackingWaitTimeoutSeconds") or 30,
+        payload.get("distributionVerifyTimeoutSeconds") or 12,
     )
     return {"ok": True, "kind": "fulfillment-submission", **json_safe(result)}
 
@@ -373,6 +654,14 @@ def distribute_existing_fulfillment(payload):
         payload["shopId"], payload["platformId"], payload.get("verifyTimeoutSeconds") or 90,
     )
     return {"ok": True, "kind": "fulfillment-distribution", **json_safe(result)}
+
+
+def collect_fulfillment_catalog(payload):
+    username, password = require_credentials(payload)
+    client = order_source.MabangClient()
+    client.login(username, password)
+    result = client.fulfillment_catalog(payload.get("shopIds"))
+    return {"ok": True, "kind": "fulfillment-catalog", **json_safe(result)}
 
 
 def clear_pending_tracking_channel(payload):
@@ -544,10 +833,32 @@ def dispatch(payload):
         return collect_orders(payload)
     if action == "fulfillment-orders":
         return collect_fulfillment_orders(payload)
+    if action == "fulfillment-message-review-candidates":
+        return message_review_candidates(payload)
+    if action == "fulfillment-message-review-recover":
+        return recover_message_review(payload)
+    if action == "order-warehouse-inspect":
+        return inspect_order_warehouse(payload)
+    if action == "order-warehouse-change":
+        return change_order_warehouse(payload)
+    if action == "fulfillment-catalog":
+        return collect_fulfillment_catalog(payload)
     if action == "inventory":
         return collect_inventory(payload)
+    if action == "inventory-warehouse-catalog":
+        return collect_inventory_warehouse_catalog(payload)
+    if action == "inventory-warehouse-scope-probe":
+        return probe_inventory_warehouse_scope(payload)
+    if action == "inventory-page-contract-probe":
+        return probe_inventory_page_contract(payload)
+    if action == "inventory-html-page-probe":
+        return probe_inventory_html_page(payload)
+    if action == "inventory-html-full-probe":
+        return probe_inventory_html_full(payload)
     if action == "fulfillment-inspect":
         return inspect_fulfillment(payload)
+    if action == "fulfillment-order-state":
+        return inspect_fulfillment_order_state(payload)
     if action == "fulfillment-preflight":
         return preflight_fulfillment(payload)
     if action == "fulfillment-submit":
