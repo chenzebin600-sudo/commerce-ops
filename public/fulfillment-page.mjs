@@ -23,6 +23,7 @@ const EXCLUSION_LABELS = {
   OUT_OF_STOCK: "库存不足",
   INVENTORY_UNKNOWN: "库存未知",
   MULTI_WAREHOUSE_REQUIRES_REVIEW: "多仓订单，需人工换仓",
+  GIFT_ONLY_ORDER_NOT_ALLOWED: "赠品不可单独销售",
   ALREADY_FULFILLED: "已完成或处于人工处理",
 };
 

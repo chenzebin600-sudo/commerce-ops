@@ -8,6 +8,18 @@
 
 多 SKU 订单会按订单号合并：`skuCount` 是不同 SKU 的种类数，`totalItemQuantity` 是商品总件数。任意 SKU 缺货或库存未知都会阻止整单发货；预览只返回汇总数量，不暴露具体 SKU 字符串。
 
+## 订单换仓
+
+运营工作台的“订单换仓”复用当前马帮账号和店铺仓库策略：
+
+- 目标仓必须同时属于店铺允许仓库、每个订单行的可选仓库，并满足整单非赠品 SKU 库存；
+- 单批支持 1–10 个订单，按输入顺序规划，并预占前序订单库存，防止同一份库存被重复分配；
+- 先生成 10 分钟有效的只读计划，输入精确确认文字后才写入马帮；
+- 写入前重新核对商品行、SKU 和数量，写入后再次回读目标仓；
+- 每个计划最多提交一次。超时或结果未知时必须先到马帮核对，不能直接重试；
+- 批量执行逐单串行，单笔失败会记录原因并继续处理批次中的下一单；
+- 预览和执行审计分别保存在 `storage/warehouse-transfers/previews` 与 `storage/warehouse-transfers/executions`。
+
 ## 启动
 
 在项目 `.env` 中配置：
@@ -21,12 +33,23 @@ FULFILLMENT_MABANG_USERNAME=
 FULFILLMENT_MABANG_PASSWORD=
 FULFILLMENT_REAL_SUBMIT_ENABLED=false
 FULFILLMENT_ORDER_CONCURRENCY=2
+FULFILLMENT_MIN_ORDER_AGE_MINUTES=10
 FULFILLMENT_SCHEDULER_ENABLED=true
 FULFILLMENT_SCHEDULER_INTERVAL_SECONDS=300
+FULFILLMENT_CATCH_UP_ENABLED=true
+FULFILLMENT_CATCH_UP_THRESHOLD_ORDERS=20
+FULFILLMENT_CATCH_UP_LOW_WATER_ORDERS=10
+FULFILLMENT_CATCH_UP_MAX_WAIT_MINUTES=30
+FULFILLMENT_CATCH_UP_REFILL_DELAY_SECONDS=3
+FULFILLMENT_DISPATCH_FAILURE_CIRCUIT_THRESHOLD=3
 FULFILLMENT_TRACKING_RECOVERY_CHECK_SECONDS=300
 FULFILLMENT_TRACKING_RECOVERY_RESET_MINUTES=30
 FULFILLMENT_TRACKING_RECOVERY_DEADLINE_HOURS=24
 FULFILLMENT_TRACKING_RECOVERY_RESET_ENABLED=false
+FULFILLMENT_MESSAGE_REVIEW_RECOVERY_ENABLED=false
+FULFILLMENT_MESSAGE_REVIEW_RECOVERY_LIMIT=3
+FULFILLMENT_MESSAGE_REVIEW_RECOVERY_INTERVAL_MINUTES=30
+FULFILLMENT_MESSAGE_REVIEW_FOLLOW_UP_DELAY_SECONDS=30
 FULFILLMENT_AUTO_FULFILL_ENABLED=false
 FULFILLMENT_AUTO_FULFILL_SHOP_IDS=2021578358,2021485965,2021621760,2021557966
 ```
@@ -56,6 +79,11 @@ FULFILLMENT_AUTO_FULFILL_SHOP_IDS=2021578358,2021485965,2021621760,2021557966
 - `POST /api/fulfillment/previews/{previewId}/confirm`
 - `GET /api/fulfillment/batches/{batchId}`
 - `POST /api/fulfillment/manual-reviews/recheck`，请求体 `{ "shopId": "店铺ID", "orderId": "订单号" }`；只重新核对并解除已修复订单的人工锁，不会立即提交发货
+- `POST /api/fulfillment/scheduler/pause`，当前批次安全结束后暂停后续队列
+- `POST /api/fulfillment/scheduler/resume`，清除操作员暂停或失败熔断并继续持久化队列
+- `GET /api/fulfillment/message-review-recoveries/candidates?limit=3`，只读检查满足全部安全条件的“待审核留言异常”候选订单
+- `POST /api/fulfillment/message-review-recoveries`，单笔受控恢复使用 `{ "orderId": "指定订单号", "confirmation": "MESSAGE_REVIEW_RECOVERY_CONFIRMED" }`；恢复后延迟定向复扫，不会在同一轮直接发货
+- `PUT /api/fulfillment/message-review-recoveries/mode`，请求体 `{ "mode": "off|manual|auto" }`；处理方式保存到履约数据库并即时生效，无需修改 `.env` 或重启
 - `GET /api/fulfillment/tracking-recoveries`，查看跨店铺运单号审批恢复队列
 - `POST /api/fulfillment/tracking-recoveries/check`，单笔受控真实测试使用 `{ "shopId": "店铺ID", "orderId": "指定订单号", "confirmation": "TRACKING_RECOVERY_CONFIRMED" }`；确认标记只授权这一单，不会开启全局自动清空
 
@@ -77,9 +105,17 @@ Agent 与现有自动发货调度器相互隔离。它不能调用 `/scheduler/s
 
 确认请求体为 `{ "confirmationToken": "预览接口返回的一次性令牌" }`。人工确认接口继续保留；自动模式只对配置名单内的店铺使用内部一次性令牌，并执行与人工确认完全相同的提交前复检和逐单回查。
 
+自动扫描默认回看最近 7 天，并最多读取 `FULFILLMENT_SCAN_MAX_PAGES` 页（默认 500 页），确保积压订单不会因日期或分页上限被遗漏。候选严格按付款时间从早到晚选择，缺失付款时间的异常数据不会抢占积压订单位置。发现积压时，每家店一次扫描最多拆分 `FULFILLMENT_BACKLOG_BATCHES_PER_SCAN` 个小批次（默认 5 个），各店按最老订单时间排序并逐轮入队；当前批次结束后立即执行下一批，不等待下一次五分钟扫描。缺货、错仓或人工处理订单只排除自身，不占用正常订单的批次名额。
+
+待处理达到 20 单，或最老订单等待超过 30 分钟时，调度器进入积压恢复模式。队列降到 10 单后默认等待 3 秒立即补充，不等待普通扫描周期；没有新候选且持久化队列清空后自动退出。连续 3 个批次安全失败会熔断，页面会显示原因并提供人工恢复按钮。服务重启时，执行到一半的订单先保持幂等锁：跨状态只读对账确认已配货且有运单的记为成功，发现交运痕迹的转入运单恢复，仍为干净待处理的订单经过连续两轮完整预检后才重新入队，其他状态继续人工锁定。
+
 提交前会再次校验店铺、平台、待处理状态和空运单号；提交后轮询订单状态、固定渠道和运单号。任何一项不一致都会停止或标记为需要人工处理。
 
 Shopee 已接受交运但暂未返回运单号时，订单进入持久化恢复队列。系统默认每 5 分钟逐单回查；当 `FULFILLMENT_TRACKING_RECOVERY_RESET_ENABLED=true` 时，超过 30 分钟仍无运单号的订单会再次确认店铺、平台、待处理状态、空运单号、库存有货以及既有交运记录，然后调用马帮“批量修改订单”的空物流渠道动作。清空成功会先记录不可重复状态，再按固定物流渠道重新交运一次。第二次交运不会再次清空或再次提交；取得运单号后转入“配货中”，超过 24 小时或任何写操作结果不确定时转人工处理。该真实写操作开关默认关闭，须完成一笔受控验证后再开启。
+
+待审核订单中的“留言”单一异常可通过独立恢复链路转回待处理。系统会同时核对异常类型、店铺、平台、空运单号、库存标志、导出状态、单一仓库和逐 SKU 库存；任一条件不满足都不会写入。手动接口必须精确提供 `MESSAGE_REVIEW_RECOVERY_CONFIRMED`，自动模式必须通过持久化三档控制显式开启。恢复成功后默认等待 30 秒，再只针对该订单执行正常待处理扫描；不会在恢复的同一轮直接提交发货。自动模式默认不开启，启用前应先用候选只读接口和一笔受控恢复完成验证。
+
+Vue 发货任务页提供“关闭 / 人工确认 / 自动处理”三档显式控制。首次启动且数据库尚未保存模式时，`FULFILLMENT_MESSAGE_REVIEW_RECOVERY_ENABLED=true` 初始化为自动处理，否则初始化为人工确认；此后以数据库模式为准。关闭模式只展示候选并在后端拒绝恢复，人工模式必须逐单确认，自动模式按独立间隔处理安全候选。切换模式不会绕过店铺、库存、仓库、运单号或恢复后定向复扫规则。
 
 恢复过程中的 `ready_to_resubmit` 表示渠道已清空、等待唯一一次重新交运；`resubmitting` 表示请求可能在途，服务重启后只回查马帮现状，不会盲目重发；`waiting_after_reset` 表示重新交运已接受并继续等待运单号。这三种状态都由数据库保存，电脑或服务重启不会丢失。
 
@@ -91,9 +127,9 @@ Shopee 已接受交运但暂未返回运单号时，订单进入持久化恢复�
 
 真实提交前会读取马帮“批处理功能 → 批量修改订单 → 设置物流渠道”弹窗中的渠道列表，并精确匹配固定渠道 ID `1143663` 及完整渠道值。列表读取失败或不存在该渠道时返回 `CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT`，不会调用交运提交接口。交运弹窗接口仅用于确认目标订单仍可交运，不再作为渠道列表来源。
 
-马帮订单原始库存标志中 `0` 表示有货、`2` 表示缺货、`3` 表示同一订单中的 SKU 分属不同仓库并需要进入待审核处理。任一标志为 `2` 时停止提交；标志为 `3` 或预览检测到多个仓库时标记为 `MULTI_WAREHOUSE_REQUIRES_REVIEW`；标志缺失或出现其他未识别值时按库存未知停止，不作乐观推断。
+马帮订单原始库存标志中 `0` 表示有货、`2` 表示缺货、`3` 表示同一订单中的 SKU 分属不同仓库并需要进入待审核处理。任一标志为 `2` 时停止提交；预览多仓判断会忽略准确名称为“赠品SKU仓”的赠品仓：一个普通履约仓加赠品仓且全部有库存时允许交运；两个及以上普通履约仓仍标记为 `MULTI_WAREHOUSE_REQUIRES_REVIEW`；仅包含赠品仓商品的订单以 `GIFT_ONLY_ORDER_NOT_ALLOWED` 拦截。标志缺失或出现其他未识别值时仍按库存未知停止，不作乐观推断。
 
-人工换仓完成后，马帮可能仍保留订单级 `hasGoods=3`。系统不会直接忽略该标志：只有最新指定订单导出明细确认所有 SKU 属于同一个仓库、商品库存正常，并且商品级标志为有货时，才把残留的 `3/0` 组合视为已人工修复；真正仍包含多个仓库的订单继续拦截。该单仓证明会同时传入深度预检和真实执行器，缺失时禁止提交。
+人工换仓完成后，或订单由一个普通履约仓与赠品仓组成时，马帮可能仍保留订单级 `hasGoods=3`。系统不会直接忽略该标志：只有最新指定订单导出明细确认只有一个普通履约仓、商品库存正常，并且商品级标志为有货时，才把 `3/0` 组合视为安全；真正包含多个普通履约仓的订单继续拦截。该证明会同时传入深度预检和真实执行器，缺失时禁止提交。
 
 如果订单在真正提交前返回 `INVENTORY_UNKNOWN_BEFORE_SUBMIT`，该订单会进入 `needs_attention` 人工处理状态并建立幂等锁。后续定时扫描不会再次提交或重复提醒这笔订单，但同店铺其他正常订单继续自动处理。确认马帮库存标志含义并修复规则前，不得把未知值直接当作有货。
 

@@ -20,6 +20,8 @@ echo.
 rem Install the replacement first. The legacy fulfillment-only task is removed only after success.
 schtasks.exe /Create /TN "%TASK_NAME%" /SC ONLOGON /RL LIMITED /TR "cmd.exe /d /c %RUNNER%" /F >>"%INSTALL_LOG%" 2>&1
 if not errorlevel 1 (
+  powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$task=Get-ScheduledTask -TaskName $env:TASK_NAME -ErrorAction Stop;$task.Settings.RestartCount=999;$task.Settings.RestartInterval='PT1M';$task.Settings.ExecutionTimeLimit='PT0S';$task.Settings.StartWhenAvailable=$true;$task.Settings.DisallowStartIfOnBatteries=$false;$task.Settings.StopIfGoingOnBatteries=$false;Set-ScheduledTask -InputObject $task -ErrorAction Stop | Out-Null" >>"%INSTALL_LOG%" 2>&1
+  if errorlevel 1 goto failed
   echo Installed with Windows Task Scheduler.
   schtasks.exe /Run /TN "%TASK_NAME%" >>"%INSTALL_LOG%" 2>&1
   schtasks.exe /End /TN "%LEGACY_TASK_NAME%" >>"%INSTALL_LOG%" 2>&1

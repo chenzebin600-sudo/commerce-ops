@@ -26,6 +26,8 @@ button { touch-action: manipulation; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .ops-shell { min-height: 100dvh; padding-left: var(--ops-sidebar-width); transition: padding-left var(--ops-transition); }
 .ops-shell.sidebar-collapsed { padding-left: var(--ops-sidebar-collapsed); }
+.ops-shell.standalone { padding-left: 0; }
+.ops-shell.standalone .page-content { padding: 18px; }
 .ops-sidebar { position: fixed; inset: 0 auto 0 0; z-index: 30; width: var(--ops-sidebar-width); display: flex; flex-direction: column; padding: 18px 12px 14px; overflow: hidden; color: white; background: var(--ops-sidebar); transition: width var(--ops-transition); }
 .sidebar-collapsed .ops-sidebar:not(.mobile) { width: var(--ops-sidebar-collapsed); }
 .ops-sidebar.mobile { position: static; width: 100%; height: 100%; }

@@ -20,6 +20,8 @@ import { AiGateway } from "./lib/ai/ai-gateway.mjs";
 import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
 import { SalesAssortmentService } from "./lib/sales-assortment/sales-assortment-service.mjs";
 import { SalesAssortmentAiService } from "./lib/sales-assortment/sales-assortment-ai-service.mjs";
+import { ShopeeHealthClient } from "./lib/shopee-health/client.mjs";
+import { ShopeeHealthService } from "./lib/shopee-health/service.mjs";
 import {
   buildSalesAssortmentDailyReport,
   salesReportDateFor,
@@ -111,11 +113,22 @@ const executor = createTaskExecutor({
   },
 });
 const scheduler = new MabangSchedulerService({ db, executor, exportRoot, audit });
+const shopeeHealthService = new ShopeeHealthService({
+  repository: dataAccess.repositories.shopeeHealth,
+  client: new ShopeeHealthClient({
+    baseUrl: process.env.SHOPEE_RELAY_BASE_URL || "http://10.110.80.95:8788",
+  }),
+  robotRepository: db,
+});
 
 scheduler.start();
+shopeeHealthService.runScheduledIfDue();
+const shopeeHealthTimer = setInterval(() => shopeeHealthService.runScheduledIfDue(), 60_000);
 console.log(`Mabang scheduler started. Poll interval: ${scheduler.pollIntervalMs}ms`);
+console.log("Shopee health scheduler started. Daily timezone: Asia/Shanghai");
 
 function shutdown() {
+  clearInterval(shopeeHealthTimer);
   scheduler.stop();
   dataAccess.close();
   process.exit(0);

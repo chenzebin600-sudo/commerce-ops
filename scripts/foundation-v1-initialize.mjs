@@ -156,8 +156,8 @@ async function assertDatabaseGate(provider) {
   const latest = (await provider.query(
     "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
   )).rows[0]?.version;
-  if (latest !== "022_commerce_ops_foundation_v1.sql") {
-    throw new Error(`Foundation initialization requires migration 022, found ${latest}`);
+  if (!["022_commerce_ops_foundation_v1.sql", "023_foundation_operation_plans.sql"].includes(latest)) {
+    throw new Error(`Foundation initialization requires migration 022 or 023, found ${latest}`);
   }
   if ((await provider.query("PRAGMA integrity_check")).rows.some(
     (row) => row.integrity_check !== "ok",

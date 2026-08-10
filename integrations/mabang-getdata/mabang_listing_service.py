@@ -23,11 +23,14 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from http.client import RemoteDisconnected
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, urlparse
+
+import requests
 
 
 def _hydrate_windows_user_environment(name: str) -> None:
@@ -94,13 +97,30 @@ JOB_TTL_SECONDS = 24 * 60 * 60
 # Mabang can acknowledge a save before its detail endpoint reflects the store.
 # Give the user an immediate "accepted" state, verify products concurrently,
 # and retry one idempotent save instead of blocking the whole queue for a minute.
-READBACK_RETRY_DELAYS_SECONDS = (0.0, 1.0, 2.0, 4.0, 6.0)
+# Continuous inventory sync isolates product failures into a repair queue, so
+# do not let a slow platform readback hold every later shop for two minutes.
+# Four checks over roughly seven seconds still absorb ordinary propagation lag;
+# anything slower is recorded for centralized repair and processing continues.
+READBACK_RETRY_DELAYS_SECONDS = (
+    0.0,
+    1.0,
+    2.0,
+    4.0,
+)
 LAZADA_WAREHOUSE_READBACK_DELAYS_SECONDS = (0.0, 1.0, 2.0)
 RETRY_READBACK_DELAYS_SECONDS = (0.0, 2.0, 4.0, 6.0, 8.0)
 # Mabang's own publishing console polls this task endpoint every second.
 BATCH_STATUS_POLL_DELAYS_SECONDS = (0.0,) + (1.0,) * 15
 PREVIEW_READ_WORKERS = 6
 VERIFY_WORKERS = 4
+TRANSIENT_READBACK_ERRORS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    RemoteDisconnected,
+    ConnectionAbortedError,
+    ConnectionResetError,
+    BrokenPipeError,
+)
 SHOP_CACHE_TTL_SECONDS = 5 * 60
 LISTING_CACHE_TTL_SECONDS = 5 * 60
 TARGET_CACHE_TTL_SECONDS = 60
@@ -677,8 +697,17 @@ def _validate_operations(operations: Any) -> list[dict[str, Any]]:
         field = str(operation.get("field") or "").strip()
         spec_name = str(operation.get("spec_name") or "").strip()
         warehouse_key = str(operation.get("warehouse_key") or "").strip()
+        warehouse_distribution = str(
+            operation.get("warehouse_distribution") or "block"
+        ).strip().lower()
         if warehouse_key and field != "stock":
             raise ValueError("A warehouse can only be selected for a stock change.")
+        if warehouse_distribution != "block" and field != "stock":
+            raise ValueError("Warehouse distribution can only be used for stock changes.")
+        if warehouse_distribution not in {"block", "single_largest", "proportional"}:
+            raise ValueError("Unsupported multi-warehouse stock strategy.")
+        if warehouse_key and warehouse_distribution != "block":
+            raise ValueError("A fixed warehouse and a distribution strategy cannot be used together.")
         if field == "variation" and not spec_name:
             raise ValueError("修改规格值时必须填写规格名称，例如 Color 或 Size。")
         field_key = (field, spec_name.casefold())
@@ -696,9 +725,14 @@ def _validate_operations(operations: Any) -> list[dict[str, Any]]:
                     operation.get("mode")
                     or ("replace" if field in TEXT_FIELD_SPECS else "set")
                 ).strip().lower(),
-                "value": str(operation.get("value") or "").strip(),
+                "value": (
+                    ""
+                    if operation.get("value") is None
+                    else str(operation.get("value")).strip()
+                ),
                 "spec_name": spec_name,
                 "warehouse_key": warehouse_key,
+                "warehouse_distribution": warehouse_distribution,
             }
         )
     return normalized
@@ -1517,19 +1551,28 @@ def _variation_sku_match(
     return None
 
 
-def _matched_variations(detail: Mapping[str, Any], match_sku: str) -> list[dict[str, Any]]:
+def _matched_variations(
+    detail: Mapping[str, Any],
+    match_sku: str,
+    match_variation_id: str = "",
+) -> list[dict[str, Any]]:
     variations = detail.get("variations")
     if not isinstance(variations, list):
         raise MabangProtocolError("在线商品详情缺少 variations 列表。")
     valid = [item for item in variations if isinstance(item, dict)]
     needle = match_sku.strip().casefold()
-    if not needle:
-        return valid
-    return [
+    matched = valid if not needle else [
         item
         for item in valid
         if _variation_sku_match(item, match_sku) is not None
     ]
+    variation_id = str(match_variation_id or "").strip()
+    if variation_id:
+        matched = [
+            item for item in matched
+            if _variation_key(item) == variation_id
+        ]
+    return matched
 
 
 def _storage_field(platform: str, field: str) -> str:
@@ -1801,7 +1844,12 @@ def _fetch_details_for_targets(
         return [future.result() for future in futures]
 
 
-def create_preview(payload: Mapping[str, Any]) -> dict[str, Any]:
+def create_preview(
+    payload: Mapping[str, Any],
+    *,
+    _detail_overrides: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
+    _stock_details_prepared: bool = False,
+) -> dict[str, Any]:
     client = require_client()
     if payload.get("targets"):
         targets = _validate_targets(payload.get("targets"))
@@ -1822,6 +1870,7 @@ def create_preview(payload: Mapping[str, Any]) -> dict[str, Any]:
                     f"{_field_label(field, operation.get('spec_name', ''), platform)}写入。"
                 )
     match_sku = str(payload.get("match_sku") or "").strip()
+    match_variation_id = str(payload.get("match_variation_id") or "").strip()
     changes: list[dict[str, Any]] = []
     warnings: list[str] = []
     matched_targets: list[dict[str, str]] = []
@@ -1833,7 +1882,20 @@ def create_preview(payload: Mapping[str, Any]) -> dict[str, Any]:
         operation["field"] in {"price", "special_price"}
         for operation in operations
     )
-    for target, detail in _fetch_details_for_targets(client, targets):
+    if _detail_overrides is None:
+        target_details = _fetch_details_for_targets(client, targets)
+    else:
+        target_details = []
+        for target in targets:
+            key = (target["platform"], target["internal_id"])
+            detail = _detail_overrides.get(key)
+            if not isinstance(detail, Mapping):
+                raise MabangProtocolError(
+                    "库存同步预读取缺少在线商品详情，已停止预检。"
+                )
+            target_details.append((target, copy.deepcopy(dict(detail))))
+
+    for target, detail in target_details:
         if target["platform"] == "shopee" and has_price_operation:
             # Shopee's ordinary editor detail can lag behind the batch editor
             # and may expose a different selling-price field. Preview against
@@ -1845,7 +1907,11 @@ def create_preview(payload: Mapping[str, Any]) -> dict[str, Any]:
                     internal_id=target["internal_id"],
                     product_id=target["product_id"],
                 )
-        if target["platform"] == "shopee" and has_stock_operation:
+        if (
+            target["platform"] == "shopee"
+            and has_stock_operation
+            and not _stock_details_prepared
+        ):
             try:
                 detail = _shopee_warehouse_detail_for_listing(
                     client=client,
@@ -1864,7 +1930,7 @@ def create_preview(payload: Mapping[str, Any]) -> dict[str, Any]:
                     product_id=target["product_id"],
                     detail=detail,
                 )
-        matched = _matched_variations(detail, match_sku)
+        matched = _matched_variations(detail, match_sku, match_variation_id)
         if not matched:
             log(
                 f"预览跳过 {target['shop_name'] or target['internal_id']}："
@@ -2016,6 +2082,45 @@ def create_preview(payload: Mapping[str, Any]) -> dict[str, Any]:
                     continue
                 old_value = variation.get(storage_field)
                 warehouse_key = str(operation.get("warehouse_key") or "")
+                warehouse_distribution = str(
+                    operation.get("warehouse_distribution") or "block"
+                )
+                if field == "stock" and warehouse_distribution != "block":
+                    target_stock = int(_calculate_new_value(old_value, operation))
+                    distributed = _distributed_warehouse_stocks(
+                        variation,
+                        target_stock,
+                        warehouse_distribution,
+                    )
+                    if distributed:
+                        for warehouse, warehouse_index, warehouse_target in distributed:
+                            effective_operation = {
+                                **operation,
+                                "mode": "set",
+                                "value": str(warehouse_target),
+                                "warehouse_key": _warehouse_identity(
+                                    warehouse,
+                                    warehouse_index,
+                                ),
+                                "warehouse_label": _warehouse_label(
+                                    warehouse,
+                                    warehouse_index,
+                                ),
+                            }
+                            detail_changes.append(
+                                build_change(
+                                    variation,
+                                    sku_match,
+                                    effective_operation,
+                                    warehouse.get("stock"),
+                                    warehouse_target,
+                                    warehouse_managed=True,
+                                    warehouse_options=_warehouse_options_for_variation(
+                                        variation
+                                    ),
+                                )
+                            )
+                        continue
                 effective_operation = operation
                 if field == "stock" and warehouse_key:
                     warehouse, warehouse_index = _find_warehouse(
@@ -2125,6 +2230,290 @@ def create_preview(payload: Mapping[str, Any]) -> dict[str, Any]:
         "changes": changes,
         "warnings": warnings,
         "job_id": "",
+    }
+    with STATE_LOCK:
+        _cleanup_state_locked()
+        PREVIEWS[token] = preview
+    return public_preview(preview)
+
+
+def _prefetch_inventory_details(
+    targets: Sequence[Mapping[str, str]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Read each product detail once for a multi-variant inventory preview."""
+
+    client = require_client()
+    details: dict[tuple[str, str], dict[str, Any]] = {}
+    for target, raw_detail in _fetch_details_for_targets(client, targets):
+        detail = copy.deepcopy(dict(raw_detail))
+        if target["platform"] == "shopee":
+            try:
+                detail = _shopee_warehouse_detail_for_listing(
+                    client=client,
+                    internal_id=target["internal_id"],
+                    product_id=target["product_id"],
+                    detail=detail,
+                )
+            except MabangListingError:
+                # A normal single-warehouse Shopee listing remains editable.
+                pass
+        details[(target["platform"], target["internal_id"])] = detail
+    return details
+
+
+def create_inventory_sync_preview(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Build one executable preview from exact per-variant stock targets.
+
+    The ordinary batch endpoint intentionally applies one operation to one SKU
+    selector. Inventory synchronization needs different target quantities for
+    many exact SKUs, but it must still reuse the same fresh-detail checks,
+    single-use preview token, execution lock and post-write readback.
+    """
+
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise ValueError("库存同步至少需要一个待写变体。")
+    if len(raw_items) > 500:
+        raise ValueError("库存同步单批最多支持500个变体。")
+
+    normalized_items: list[dict[str, Any]] = []
+    product_keys: set[tuple[str, str]] = set()
+    item_keys: set[tuple[str, str, str, str]] = set()
+    for index, raw in enumerate(raw_items, start=1):
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"第 {index} 个库存同步项格式不正确。")
+        platform = str(raw.get("platform") or "shopee").strip().lower()
+        if platform not in {"shopee", "lazada"}:
+            raise ValueError("库存同步只支持Shopee或Lazada。")
+        seller_sku = str(raw.get("seller_sku") or "").strip()
+        internal_id = str(raw.get("internal_id") or "").strip()
+        product_id = str(raw.get("product_id") or "").strip()
+        variation_id = str(raw.get("variation_id") or "").strip()
+        multi_warehouse_mode = str(
+            raw.get("multi_warehouse_mode") or "block"
+        ).strip().lower()
+        if multi_warehouse_mode not in {"block", "single_largest", "proportional"}:
+            raise ValueError(f"第 {index} 个库存同步项的多仓策略不受支持。")
+        if not seller_sku or not internal_id:
+            raise ValueError(f"第 {index} 个库存同步项缺少在线商品ID或Seller SKU。")
+        target_stock = int(raw.get("target_stock") or 0)
+        if target_stock < 0 or target_stock > int(FIELD_SPECS["stock"]["maximum"]):
+            raise ValueError(f"第 {index} 个库存同步目标库存超出允许范围。")
+        item_key = (
+            str(raw.get("shop_id") or ""),
+            internal_id,
+            variation_id,
+            seller_sku.casefold(),
+        )
+        if item_key in item_keys:
+            raise ValueError(f"库存同步项重复：{seller_sku}。")
+        item_keys.add(item_key)
+        product_keys.add((item_key[0], internal_id))
+        normalized_items.append({
+            "target": {
+                "platform": platform,
+                "internal_id": internal_id,
+                "product_id": product_id,
+                "shop_name": str(raw.get("shop_name") or "").strip(),
+                "title": str(raw.get("title") or "").strip(),
+            },
+            "seller_sku": seller_sku,
+            "variation_id": variation_id,
+            "target_stock": target_stock,
+            "multi_warehouse_mode": multi_warehouse_mode,
+        })
+    if len(product_keys) > MAX_BATCH_TARGETS:
+        raise ValueError(f"库存同步单批最多支持{MAX_BATCH_TARGETS}个在线商品。")
+
+    unique_targets = list({
+        (item["target"]["platform"], item["target"]["internal_id"]): item["target"]
+        for item in normalized_items
+    }.values())
+    detail_overrides = _prefetch_inventory_details(unique_targets)
+
+    merged_targets: dict[tuple[str, str], dict[str, str]] = {}
+    merged_changes: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    child_tokens: list[str] = []
+    try:
+        for item in normalized_items:
+            child = create_preview(
+                {
+                    "targets": [item["target"]],
+                    "match_sku": item["seller_sku"],
+                    "match_variation_id": item["variation_id"],
+                    "operations": [{
+                        "field": "stock",
+                        "mode": "set",
+                        "value": item["target_stock"],
+                        "spec_name": "",
+                        "warehouse_key": "",
+                        "warehouse_distribution": item["multi_warehouse_mode"],
+                    }],
+                },
+                _detail_overrides=detail_overrides,
+                _stock_details_prepared=True,
+            )
+            child_tokens.append(str(child["preview_token"]))
+            with STATE_LOCK:
+                private = copy.deepcopy(PREVIEWS.get(str(child["preview_token"])))
+            changes = private.get("changes") if isinstance(private, Mapping) else None
+            if not isinstance(changes, list) or not changes:
+                raise MabangListingError(
+                    f"Seller SKU {item['seller_sku']} 未唯一匹配一个在线变体。"
+                )
+            if any(
+                str(change.get("sku_match_type") or "") != "exact"
+                or str(change.get("matched_sku") or "").casefold()
+                != item["seller_sku"].casefold()
+                or str(change.get("variation_key") or "")
+                != str(changes[0].get("variation_key") or "")
+                for change in changes
+            ):
+                raise MabangListingError(
+                    f"Seller SKU {item['seller_sku']} 未通过精确匹配，已停止库存同步。"
+                )
+            merged_changes.extend(changes)
+            for target in private.get("targets") or []:
+                key = (str(target.get("platform") or ""), str(target.get("internal_id") or ""))
+                merged_targets[key] = copy.deepcopy(target)
+            warnings.extend(str(value) for value in private.get("warnings") or [])
+    finally:
+        with STATE_LOCK:
+            for child_token in child_tokens:
+                PREVIEWS.pop(child_token, None)
+
+    token = secrets.token_urlsafe(24)
+    preview = {
+        "preview_token": token,
+        "created_ts": time.time(),
+        "created_at": now_text(),
+        "expires_at_ts": time.time() + PREVIEW_TTL_SECONDS,
+        "targets": list(merged_targets.values()),
+        "operations": [],
+        "match_sku": "",
+        "changes": merged_changes,
+        "warnings": list(dict.fromkeys(warnings)),
+        "job_id": "",
+        "command_count": len(normalized_items),
+    }
+    with STATE_LOCK:
+        _cleanup_state_locked()
+        PREVIEWS[token] = preview
+    return public_preview(preview)
+
+
+def create_sku_rebind_preview(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Build one executable preview from exact per-variant Seller SKU replacements."""
+
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise ValueError("SKU 换绑至少需要一个待写变体。")
+    if len(raw_items) > 500:
+        raise ValueError("SKU 换绑单批最多支持500个变体。")
+
+    normalized_items: list[dict[str, Any]] = []
+    product_keys: set[tuple[str, str]] = set()
+    source_keys: set[tuple[str, str, str]] = set()
+    target_keys: set[tuple[str, str, str]] = set()
+    for index, raw in enumerate(raw_items, start=1):
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"第 {index} 个 SKU 换绑项格式不正确。")
+        platform = str(raw.get("platform") or "shopee").strip().lower()
+        if platform != "shopee":
+            raise ValueError("SKU 换绑首期只支持Shopee。")
+        shop_id = str(raw.get("shop_id") or "").strip()
+        internal_id = str(raw.get("internal_id") or "").strip()
+        product_id = str(raw.get("product_id") or "").strip()
+        from_sku = str(raw.get("from_sku") or "").strip()
+        to_sku = _validate_text_value("sku", raw.get("to_sku"))
+        if not internal_id or not from_sku:
+            raise ValueError(f"第 {index} 个 SKU 换绑项缺少在线商品ID或原 Seller SKU。")
+        if from_sku.casefold() == to_sku.casefold():
+            raise ValueError(f"第 {index} 个 SKU 换绑目标与当前 SKU 相同。")
+        source_key = (shop_id, internal_id, from_sku.casefold())
+        target_key = (shop_id, internal_id, to_sku.casefold())
+        if source_key in source_keys:
+            raise ValueError(f"SKU 换绑项重复：{from_sku}。")
+        if target_key in target_keys:
+            raise ValueError(f"同一商品存在重复目标 SKU：{to_sku}。")
+        source_keys.add(source_key)
+        target_keys.add(target_key)
+        product_keys.add((shop_id, internal_id))
+        normalized_items.append({
+            "target": {
+                "platform": "shopee",
+                "internal_id": internal_id,
+                "product_id": product_id,
+                "shop_name": str(raw.get("shop_name") or "").strip(),
+                "title": str(raw.get("title") or "").strip(),
+            },
+            "from_sku": from_sku,
+            "to_sku": to_sku,
+        })
+    if len(product_keys) > MAX_BATCH_TARGETS:
+        raise ValueError(f"SKU 换绑单批最多支持{MAX_BATCH_TARGETS}个在线商品。")
+
+    merged_targets: dict[tuple[str, str], dict[str, str]] = {}
+    merged_changes: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    child_tokens: list[str] = []
+    try:
+        for item in normalized_items:
+            child = create_preview({
+                "targets": [item["target"]],
+                "match_sku": item["from_sku"],
+                "operations": [{
+                    "field": "sku",
+                    "mode": "replace",
+                    "value": item["to_sku"],
+                    "spec_name": "",
+                    "warehouse_key": "",
+                }],
+            })
+            child_tokens.append(str(child["preview_token"]))
+            with STATE_LOCK:
+                private = copy.deepcopy(PREVIEWS.get(str(child["preview_token"])))
+            changes = private.get("changes") if isinstance(private, Mapping) else None
+            if not isinstance(changes, list) or len(changes) != 1:
+                raise MabangListingError(
+                    f"Seller SKU {item['from_sku']} 未唯一匹配一个在线变体。"
+                )
+            change = changes[0]
+            if (
+                str(change.get("field") or "") != "sku"
+                or str(change.get("sku_match_type") or "") != "exact"
+                or str(change.get("matched_sku") or "").casefold()
+                != item["from_sku"].casefold()
+                or str(change.get("new_value") or "").casefold()
+                != item["to_sku"].casefold()
+            ):
+                raise MabangListingError(
+                    f"Seller SKU {item['from_sku']} 未通过精确换绑预检。"
+                )
+            merged_changes.append(change)
+            for target in private.get("targets") or []:
+                key = (str(target.get("platform") or ""), str(target.get("internal_id") or ""))
+                merged_targets[key] = copy.deepcopy(target)
+            warnings.extend(str(value) for value in private.get("warnings") or [])
+    finally:
+        with STATE_LOCK:
+            for child_token in child_tokens:
+                PREVIEWS.pop(child_token, None)
+
+    token = secrets.token_urlsafe(24)
+    preview = {
+        "preview_token": token,
+        "created_ts": time.time(),
+        "created_at": now_text(),
+        "expires_at_ts": time.time() + PREVIEW_TTL_SECONDS,
+        "targets": list(merged_targets.values()),
+        "operations": [],
+        "match_sku": "",
+        "changes": merged_changes,
+        "warnings": list(dict.fromkeys(warnings)),
+        "job_id": "",
+        "command_count": len(normalized_items),
     }
     with STATE_LOCK:
         _cleanup_state_locked()
@@ -2926,6 +3315,64 @@ def _warehouse_options_for_variation(
     ]
 
 
+def _distributed_warehouse_stocks(
+    variation: Mapping[str, Any],
+    target_stock: int,
+    strategy: str,
+) -> list[tuple[dict[str, Any], int, int]]:
+    """Return deterministic per-warehouse targets whose sum is target_stock."""
+
+    warehouses = variation.get("warehouse_stock")
+    if not isinstance(warehouses, list):
+        return []
+    valid = [
+        (warehouse, index, max(0, int(str(warehouse.get("stock") or "0"))))
+        for index, warehouse in enumerate(warehouses)
+        if isinstance(warehouse, dict)
+    ]
+    if len(valid) <= 1:
+        return []
+    if target_stock == 0:
+        return [(warehouse, index, 0) for warehouse, index, _ in valid]
+
+    if strategy == "single_largest":
+        selected_index = max(
+            range(len(valid)),
+            key=lambda position: (valid[position][2], -valid[position][1]),
+        )
+        return [
+            (warehouse, index, target_stock if position == selected_index else 0)
+            for position, (warehouse, index, _) in enumerate(valid)
+        ]
+
+    if strategy != "proportional":
+        return []
+    current_total = sum(stock for _, _, stock in valid)
+    if current_total <= 0:
+        raise MabangListingError(
+            f"{variation.get('sku') or _variation_key(variation)} 的所有仓库库存均为 0，"
+            "无法计算占比分配；请选择“集中到一个仓库”。"
+        )
+
+    base_targets: list[int] = []
+    remainders: list[tuple[int, int]] = []
+    for position, (_, index, stock) in enumerate(valid):
+        numerator = target_stock * stock
+        base_targets.append(numerator // current_total)
+        remainders.append((numerator % current_total, -index))
+    remaining = target_stock - sum(base_targets)
+    for position in sorted(
+        range(len(valid)),
+        key=lambda value: remainders[value],
+        reverse=True,
+    )[:remaining]:
+        base_targets[position] += 1
+    return [
+        (warehouse, index, base_targets[position])
+        for position, (warehouse, index, _) in enumerate(valid)
+    ]
+
+
 def _summarize_warehouse_options(
     option_sets: Sequence[Sequence[Mapping[str, Any]]],
     *,
@@ -3128,22 +3575,52 @@ def _verify_platform_refresh(
         if retry_delays is not None
         else READBACK_RETRY_DELAYS_SECONDS
     )
-    try:
-        client.sync_online_product(
-            platform,
-            product_id=product_id,
-            shop_id=shop_id,
-        )
-    except Exception as exc:
-        if allow_stale_lazada_warehouse_cache and platform == "lazada":
-            return (
-                0,
-                False,
-                f"platform refresh request was unavailable: {exc}",
+    refresh_attempt_limit = max(1, min(3, len(delays)))
+    for refresh_attempt in range(1, refresh_attempt_limit + 1):
+        try:
+            client.sync_online_product(
+                platform,
+                product_id=product_id,
+                shop_id=shop_id,
             )
-        raise
+            break
+        except TRANSIENT_READBACK_ERRORS as exc:
+            try:
+                client.session.close()
+            except Exception:
+                pass
+            if refresh_attempt >= refresh_attempt_limit:
+                if allow_stale_lazada_warehouse_cache and platform == "lazada":
+                    return (
+                        0,
+                        False,
+                        f"platform refresh request was unavailable: {exc}",
+                    )
+                raise MabangListingError(
+                    "触发平台刷新时连接连续中断 "
+                    f"{refresh_attempt_limit} 次：{exc}"
+                ) from exc
+            _update_job(
+                job_id,
+                message=(
+                    f"{label} 触发平台刷新时连接中断，"
+                    f"正在进行第 {refresh_attempt + 1} 次尝试"
+                ),
+            )
+            retry_delay = float(delays[refresh_attempt])
+            if retry_delay:
+                time.sleep(retry_delay)
+        except Exception as exc:
+            if allow_stale_lazada_warehouse_cache and platform == "lazada":
+                return (
+                    0,
+                    False,
+                    f"platform refresh request was unavailable: {exc}",
+                )
+            raise
     last_value_mismatches: list[tuple[Mapping[str, Any], Any]] = []
     last_warehouse_mismatches: list[str] = []
+    last_connection_error: BaseException | None = None
     has_shopee_price_changes = platform == "shopee" and any(
         str(change.get("field") or "") in {"price", "special_price"}
         for change in changes
@@ -3158,29 +3635,51 @@ def _verify_platform_refresh(
                 ),
             )
             time.sleep(delay)
-        if platform == "lazada" and expected_warehouses:
-            verified = _lazada_warehouse_detail_for_listing(
-                client=client,
-                internal_id=internal_id,
-                product_id=product_id,
-            )
-        elif platform == "shopee" and (
-            shopee_global or bool(expected_warehouses)
-        ):
-            verified = _shopee_warehouse_detail_for_listing(
-                client=client,
-                internal_id=internal_id,
-                product_id=product_id,
-            )
-        elif has_shopee_price_changes:
-            verified = _batch_detail_for_listing(
-                client=client,
-                platform=platform,
-                internal_id=internal_id,
-                product_id=product_id,
-            )
-        else:
-            verified = client.get_online_detail(platform, internal_id)
+        try:
+            if platform == "lazada" and expected_warehouses:
+                verified = _lazada_warehouse_detail_for_listing(
+                    client=client,
+                    internal_id=internal_id,
+                    product_id=product_id,
+                )
+            elif platform == "shopee" and (
+                shopee_global or bool(expected_warehouses)
+            ):
+                verified = _shopee_warehouse_detail_for_listing(
+                    client=client,
+                    internal_id=internal_id,
+                    product_id=product_id,
+                )
+            elif has_shopee_price_changes:
+                verified = _batch_detail_for_listing(
+                    client=client,
+                    platform=platform,
+                    internal_id=internal_id,
+                    product_id=product_id,
+                )
+            else:
+                verified = client.get_online_detail(platform, internal_id)
+        except TRANSIENT_READBACK_ERRORS as exc:
+            last_connection_error = exc
+            try:
+                # Drop a potentially stale keep-alive pool while preserving the
+                # authenticated cookies and publishing context on the client.
+                client.session.close()
+            except Exception:
+                pass
+            if attempt < len(delays):
+                _update_job(
+                    job_id,
+                    message=(
+                        f"{label} 平台回读连接中断，"
+                        f"将在第 {attempt + 1} 次核验时重试"
+                    ),
+                )
+                continue
+            raise MabangListingError(
+                f"平台回读连接连续中断 {attempt} 次：{exc}"
+            ) from exc
+        last_connection_error = None
         last_value_mismatches = _readback_mismatches(verified, changes)
         last_warehouse_mismatches = _warehouse_readback_mismatches(
             verified,
@@ -3190,6 +3689,10 @@ def _verify_platform_refresh(
         if not last_value_mismatches and not last_warehouse_mismatches:
             return attempt, True, ""
 
+    if last_connection_error is not None:
+        raise MabangListingError(
+            f"平台回读连接在最后一次核验时中断：{last_connection_error}"
+        ) from last_connection_error
     waited_seconds = int(sum(delays))
     if last_warehouse_mismatches:
         detail = last_warehouse_mismatches[0]
@@ -4537,6 +5040,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(
                     HTTPStatus.OK,
                     {"success": True, **create_preview(payload)},
+                )
+                return
+            if path == "/api/inventory-sync/preview":
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"success": True, **create_inventory_sync_preview(payload)},
+                )
+                return
+            if path == "/api/sku-rebind/preview":
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"success": True, **create_sku_rebind_preview(payload)},
                 )
                 return
             if path == "/api/batch/warehouse-options":

@@ -4,8 +4,11 @@ import copy
 import tempfile
 import time
 import unittest
+from http.client import RemoteDisconnected
 from pathlib import Path
 from unittest.mock import patch
+
+import requests
 
 import mabang_listing_service as service
 from mabang_listing_client import MabangListingClient
@@ -268,6 +271,38 @@ class DelayedReadbackListingClient(FakeListingClient):
         self.pending_detail = copy.deepcopy(detail)
         self.save_calls += 1
         return {"code": 200}
+
+
+class TransientDisconnectReadbackListingClient(FakeListingClient):
+    def __init__(self):
+        super().__init__()
+        self.readback_started = False
+        self.refresh_disconnects_remaining = 2
+        self.disconnects_remaining = 2
+
+    def sync_online_product(self, platform, *, product_id, shop_id, ean=""):
+        if self.refresh_disconnects_remaining > 0:
+            self.refresh_disconnects_remaining -= 1
+            raise requests.exceptions.ConnectionError(
+                "Connection aborted.",
+                RemoteDisconnected("Remote end closed connection"),
+            )
+        self.readback_started = True
+        return super().sync_online_product(
+            platform,
+            product_id=product_id,
+            shop_id=shop_id,
+            ean=ean,
+        )
+
+    def get_online_detail(self, platform, internal_id):
+        if self.readback_started and self.disconnects_remaining > 0:
+            self.disconnects_remaining -= 1
+            raise requests.exceptions.ConnectionError(
+                "Connection aborted.",
+                RemoteDisconnected("Remote end closed connection"),
+            )
+        return super().get_online_detail(platform, internal_id)
 
 
 class ManyListingClient(FakeListingClient):
@@ -3010,6 +3045,37 @@ class DelayedReadbackTests(unittest.TestCase):
             self.client.detail["variations"][0]["special_price"],
             "1729.00",
         )
+
+    def test_transient_remote_disconnect_is_retried_during_readback(self):
+        self.client = TransientDisconnectReadbackListingClient()
+        change = {
+            "variation_key": "127430020150",
+            "sku": "T3CC1270045",
+            "field": "special_price",
+            "storage_field": "special_price",
+            "field_label": "促销价",
+            "new_value": "1729.00",
+        }
+        self.client.detail["variations"][0]["special_price"] = "1729.00"
+
+        attempts, verified, note = service._verify_platform_refresh(
+            client=self.client,
+            platform="lazada",
+            internal_id="6480099",
+            product_id="16222622566",
+            shop_id="shop-3c",
+            changes=[change],
+            job_id="readback-test",
+            label="3C pilot",
+            shopee_global=False,
+            expected_warehouses={},
+        )
+
+        self.assertEqual(self.client.refresh_disconnects_remaining, 0)
+        self.assertEqual(self.client.disconnects_remaining, 0)
+        self.assertEqual(attempts, 3)
+        self.assertTrue(verified)
+        self.assertEqual(note, "")
 
 
 if __name__ == "__main__":

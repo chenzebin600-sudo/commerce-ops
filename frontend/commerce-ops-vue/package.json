@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "npm run check && vite build && node ../../scripts/normalize-vue-build.mjs",
+    "build:shopee-portable": "npm run check && vite build --config vite.shopee-portable.config.ts --configLoader runner",
     "check": "vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
     "preview": "vite preview --host 127.0.0.1"
   },

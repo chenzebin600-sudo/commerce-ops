@@ -7,6 +7,38 @@ function safeEqual(left, right) {
 }
 function bounded(value, length = 180) { return String(value ?? "").replace(/[\r\n\t]+/g, " ").trim().slice(0, length); }
 function firstDefined(...values) { return values.find((value) => value !== undefined && value !== null); }
+const GIFT_SKU_WAREHOUSE = "赠品sku仓";
+const PRODUCT_PREFIX_WAREHOUSE_SHOPS = new Set([
+  "69345928", // Impressive MALL
+  "2021245862", // Vigor Mall
+  "2021537019", // Majestic Manor Furniture Outlet
+]);
+const PRODUCT_PREFIX_WAREHOUSE_RULES = Object.freeze([
+  { prefixes: Object.freeze(["5E", "5G"]), warehouses: Object.freeze(["泰国TZ-AG仓-1308", "泰国壹慧-A仓-1308"]) },
+  { prefixes: Object.freeze(["5F"]), warehouses: Object.freeze(["泰国日达顺-A仓-1308"]) },
+  { prefixes: Object.freeze(["5J", "5B", "5Y"]), warehouses: Object.freeze(["泰国TLS-A仓-1308"]) },
+]);
+function isGiftSkuWarehouse(value) {
+  return bounded(value, 160).replace(/\s+/g, "").toLocaleLowerCase() === GIFT_SKU_WAREHOUSE;
+}
+function productPrefixWarehouseState(raw, shopId, warehouse) {
+  if (!PRODUCT_PREFIX_WAREHOUSE_SHOPS.has(String(shopId || ""))) return null;
+  const productName = bounded(firstDefined(raw.productName, raw["商品中文名称"], raw["订单商品名称"]), 500)
+    .normalize("NFKC").toLocaleUpperCase();
+  const rule = PRODUCT_PREFIX_WAREHOUSE_RULES.find((item) => item.prefixes.some((prefix) => productName.startsWith(prefix)));
+  if (!rule) return null;
+  const prefix = rule.prefixes.find((value) => productName.startsWith(value));
+  return { prefix, expectedWarehouses: [...rule.warehouses], warehouse,
+    matched: rule.warehouses.includes(warehouse) };
+}
+function warehouseState(order) {
+  const warehouses = [...new Set((order?.warehouses || order?.snapshot?.warehouses || [order?.warehouse])
+    .map((value) => bounded(value, 160)).filter(Boolean))].sort();
+  const giftWarehouses = warehouses.filter(isGiftSkuWarehouse);
+  const fulfillmentWarehouses = warehouses.filter((warehouse) => !isGiftSkuWarehouse(warehouse));
+  return { warehouses, giftWarehouses, fulfillmentWarehouses,
+    singleFulfillmentWarehouseVerified: fulfillmentWarehouses.length === 1 };
+}
 function inventoryState(rawValue, requiredQuantity) {
   const text = bounded(rawValue, 80);
   if (!text) return { stockStatus: "unknown", isOutOfStock: null, availableQuantity: null };
@@ -43,10 +75,41 @@ function paidTimestamp(order) {
   const timestamp = Date.parse(text.includes("T") ? text : text.replace(" ", "T"));
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
+function orderAgeState(order, nowMs, minimumMinutes) {
+  if (!Number.isFinite(Number(minimumMinutes)) || Number(minimumMinutes) <= 0) return null;
+  const paidAt = paidTimestamp(order);
+  if (!paidAt) return { code: "ORDER_AGE_UNKNOWN", ageMinutes: null, retryAt: null };
+  const ageMinutes = (nowMs - paidAt) / 60000;
+  if (ageMinutes < Number(minimumMinutes)) {
+    return { code: "ORDER_NOT_MATURE", ageMinutes: Math.max(0, ageMinutes),
+      retryAt: new Date(paidAt + Number(minimumMinutes) * 60000).toISOString() };
+  }
+  return null;
+}
 function preflightPassed(checked) {
   return Boolean(checked?.ready) && !checked?.wouldSubmit && checked.stockStatus === "in_stock"
     && !checked.hasTrackingNumber && Boolean(checked.channelMatched) && Boolean(checked.reportingSuccess)
     && !checked.hasDeclarationRows && Number(checked.missingRequiredPropertyCount || 0) === 0;
+}
+const isolatedOrderFailureCodes = new Set([
+  "OUT_OF_STOCK_BEFORE_SUBMIT", "INVENTORY_UNKNOWN_BEFORE_SUBMIT", "MULTI_WAREHOUSE_REQUIRES_REVIEW",
+  "GIFT_ONLY_ORDER_NOT_ALLOWED",
+  "PRODUCT_PREFIX_WAREHOUSE_MISMATCH_BEFORE_SUBMIT",
+  "ALREADY_HAS_TRACKING_NUMBER", "DISTRIBUTION_PENDING", "TRACKING_NUMBER_PENDING",
+  "EXISTING_TRACKING_NOT_READABLE", "EXISTING_TRACKING_RECOVERY_FAILED",
+  "ORDER_NOT_AVAILABLE_FOR_DELIVERY", "CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT", "WAREHOUSE_NOT_ALLOWED_BEFORE_SUBMIT",
+]);
+const manualAttentionFailureCodes = new Set([
+  "OUT_OF_STOCK_BEFORE_SUBMIT", "INVENTORY_UNKNOWN_BEFORE_SUBMIT", "MULTI_WAREHOUSE_REQUIRES_REVIEW",
+  "GIFT_ONLY_ORDER_NOT_ALLOWED",
+  "PRODUCT_PREFIX_WAREHOUSE_MISMATCH_BEFORE_SUBMIT",
+  "EXISTING_TRACKING_NOT_READABLE", "TRACKING_MISMATCH_BEFORE_DISTRIBUTION",
+  "TRACKING_CHANNEL_MISMATCH_BEFORE_DISTRIBUTION", "TRACKING_CHANNEL_UNKNOWN_BEFORE_DISTRIBUTION",
+  "TRACKING_MISMATCH_BEFORE_RESET", "TRACKING_CHANNEL_UNKNOWN_BEFORE_RESET", "TRACKING_CHANNEL_CHANGED_BEFORE_RESET",
+  "ORDER_STATUS_NOT_PENDING_BEFORE_DISTRIBUTION", "ORDER_NOT_AVAILABLE_FOR_DELIVERY",
+]);
+function mustStopLaterOrders(patch) {
+  return patch.status !== "success" && !isolatedOrderFailureCodes.has(String(patch.errorCode || ""));
 }
 
 export class FulfillmentError extends Error {
@@ -63,11 +126,19 @@ export class FulfillmentService {
     this.activeJobs = new Set();
   }
 
-  normalizeOrder(raw) {
+  normalizeOrder(raw, activeDispatchOrderKeys = null) {
     const sourceOrderId = bounded(raw.sourceOrderId || raw.orderId || raw["订单编号"]);
     const tradeNumber = bounded(raw.tradeNumber || raw["交易编号"]);
-    const displayOrderId = tradeNumber || sourceOrderId;
-    const orderKey = `${this.config.shopId}:${sourceOrderId || tradeNumber}`;
+    const rawPlatform = bounded(raw.platform || raw["平台"] || this.config.platform).toLocaleLowerCase();
+    const isLazada = rawPlatform.includes("lazada");
+    // Lazada 的“订单编号”是马帮内部店铺 ID 与平台订单号的组合展示；
+    // “交易编号”才是与 Lazada 店铺后台一致的平台订单号，必须作为业务主键。
+    const platformOrderId = tradeNumber || sourceOrderId;
+    const businessOrderId = isLazada ? platformOrderId : sourceOrderId || tradeNumber;
+    const displayOrderId = platformOrderId;
+    const orderKey = `${this.config.shopId}:${businessOrderId}`;
+    const legacyOrderKey = isLazada && sourceOrderId && sourceOrderId !== businessOrderId
+      ? `${this.config.shopId}:${sourceOrderId}` : "";
     const shopName = bounded(raw.shopName || raw["店铺名"]);
     const countryCode = bounded(raw.countryCode || raw["国家代码"] || this.config.countryCode);
     const orderStatus = bounded(raw.orderStatus || raw["订单状态"]);
@@ -77,26 +148,37 @@ export class FulfillmentService {
     const inventoryRaw = firstDefined(raw.availableQuantity, raw.inventoryQuantity, raw.stock, raw["商品库存"]);
     const paidAt = bounded(raw.paidAt || raw["付款时间"], 80);
     const inventory = inventoryState(inventoryRaw, quantity);
+    const warehouseRouting = productPrefixWarehouseState(raw, this.config.shopId, warehouse);
     const exclusions = [];
     if (!sourceOrderId && !tradeNumber) exclusions.push("MISSING_ORDER_ID");
     if (shopName !== this.config.shopName) exclusions.push("SHOP_MISMATCH");
     if (countryCode && countryCode !== this.config.countryCode) exclusions.push("COUNTRY_MISMATCH");
     if (orderStatus !== this.config.pendingStatus) exclusions.push("STATUS_NOT_PENDING");
     if (!warehouse) exclusions.push("MISSING_WAREHOUSE");
-    if (warehouse && Array.isArray(this.config.allowedWarehouses) && this.config.allowedWarehouses.length
+    if (warehouse && !isGiftSkuWarehouse(warehouse)
+      && Array.isArray(this.config.allowedWarehouses) && this.config.allowedWarehouses.length
       && !this.config.allowedWarehouses.includes(warehouse)) exclusions.push("WAREHOUSE_NOT_ALLOWED");
+    if (warehouseRouting && !warehouseRouting.matched) exclusions.push("PRODUCT_PREFIX_WAREHOUSE_MISMATCH");
     if (!sku) exclusions.push("MISSING_SKU");
     if (!Number.isFinite(quantity) || quantity <= 0) exclusions.push("INVALID_QUANTITY");
     if (inventory.stockStatus === "out_of_stock") exclusions.push("OUT_OF_STOCK");
     if (inventory.stockStatus === "unknown") exclusions.push("INVENTORY_UNKNOWN");
-    if (this.repository.isCompleted(orderKey)) exclusions.push("ALREADY_FULFILLED");
+    if (this.repository.isCompleted(orderKey) || (legacyOrderKey && this.repository.isCompleted(legacyOrderKey))) {
+      exclusions.push("ALREADY_FULFILLED");
+    }
+    if (activeDispatchOrderKeys?.has(orderKey) || (legacyOrderKey && activeDispatchOrderKeys?.has(legacyOrderKey))) {
+      exclusions.push("QUEUED_FOR_FULFILLMENT");
+    }
     return {
-      orderKey, displayOrderId, tradeNumber, warehouse, skuCount: sku ? 1 : 0,
+      orderKey, displayOrderId, tradeNumber, platformOrderId, warehouse, skuCount: sku ? 1 : 0,
       stockStatus: inventory.stockStatus, isOutOfStock: inventory.isOutOfStock,
       requiredQuantity: Number.isFinite(quantity) ? quantity : null, availableQuantity: inventory.availableQuantity,
       eligible: exclusions.length === 0, exclusions,
-      snapshot: { sourceOrderId, tradeNumber, shopName, countryCode, orderStatus, warehouse, sku, quantity,
-        inventoryRaw: bounded(inventoryRaw, 80), paidAt },
+      snapshot: { sourceOrderId, tradeNumber, platformOrderId, shopName, countryCode, orderStatus, warehouse, sku, quantity,
+        inventoryRaw: bounded(inventoryRaw, 80), paidAt,
+        warehouseRouting: warehouseRouting ? { prefix: warehouseRouting.prefix,
+          expectedWarehouses: warehouseRouting.expectedWarehouses, warehouse: warehouseRouting.warehouse,
+          matched: warehouseRouting.matched } : null },
     };
   }
 
@@ -131,24 +213,35 @@ export class FulfillmentService {
           ...inventoryState(inventoryRaw, item.requiredQuantity) };
       });
       const warehouses = [...new Set(group.map((row) => row.snapshot.warehouse).filter(Boolean))].sort();
+      const giftWarehouses = warehouses.filter(isGiftSkuWarehouse);
+      const fulfillmentWarehouses = warehouses.filter((warehouse) => !isGiftSkuWarehouse(warehouse));
+      const hasGiftItems = items.some((item) => item.warehouses.some(isGiftSkuWarehouse));
+      const hasSellableItems = items.some((item) => item.warehouses.some((warehouse) => !isGiftSkuWarehouse(warehouse)));
       const outOfStockItemCount = items.filter((item) => item.stockStatus === "out_of_stock").length;
       const unknownStockItemCount = items.filter((item) => item.stockStatus === "unknown").length;
       const exclusions = [...new Set(group.flatMap((row) => row.exclusions)
         .filter((code) => code !== "OUT_OF_STOCK" && code !== "INVENTORY_UNKNOWN"))];
       if (outOfStockItemCount) exclusions.push("OUT_OF_STOCK");
       if (unknownStockItemCount) exclusions.push("INVENTORY_UNKNOWN");
-      if (warehouses.length > 1) exclusions.push("MULTI_WAREHOUSE_REQUIRES_REVIEW");
+      const warehouseRoutingIssues = group.map((row) => row.snapshot.warehouseRouting)
+        .filter((routing) => routing && !routing.matched)
+        .filter((routing, index, all) => all.findIndex((item) => item.prefix === routing.prefix
+          && item.warehouse === routing.warehouse) === index);
+      if (!hasSellableItems && hasGiftItems) exclusions.push("GIFT_ONLY_ORDER_NOT_ALLOWED");
+      if (fulfillmentWarehouses.length > 1) exclusions.push("MULTI_WAREHOUSE_REQUIRES_REVIEW");
       const totalItemQuantity = items.reduce((sum, item) => sum + item.requiredQuantity, 0);
       const stockStatus = outOfStockItemCount ? "out_of_stock" : unknownStockItemCount ? "unknown" : "in_stock";
       return {
-        ...first, warehouse: warehouses.join(" / ") || first.warehouse, warehouses,
+        ...first, warehouse: warehouses.join(" / ") || first.warehouse, warehouses, giftWarehouses, fulfillmentWarehouses,
         skuCount: new Set(items.map((item) => item.sku).filter(Boolean)).size,
         stockStatus, isOutOfStock: outOfStockItemCount ? true : unknownStockItemCount ? null : false,
         requiredQuantity: totalItemQuantity, totalItemQuantity,
         availableQuantity: items.length === 1 ? items[0].availableQuantity : null,
         outOfStockItemCount, unknownStockItemCount, eligible: exclusions.length === 0, exclusions,
         snapshot: { ...first.snapshot, warehouse: warehouses.join(" / ") || first.snapshot.warehouse,
-          warehouses, sku: undefined, quantity: undefined, inventoryRaw: undefined, items },
+          warehouses, giftWarehouses, fulfillmentWarehouses,
+          warehouseRoutingIssues,
+          sku: undefined, quantity: undefined, inventoryRaw: undefined, items },
       };
     });
   }
@@ -184,13 +277,24 @@ export class FulfillmentService {
     return this.createPreviewFromRaw(records, request);
   }
 
-  createPreviewFromRaw(raw, { hasOrderIds, requestedOrderIds, requested }) {
-    let normalized = this.aggregateOrders(raw.map((order) => this.normalizeOrder(order)));
-    if (!hasOrderIds) normalized.sort((left, right) => paidTimestamp(right) - paidTimestamp(left));
+  preparePreviewOrders(raw, { hasOrderIds, requestedOrderIds }) {
+    const activeDispatchOrderKeys = new Set(this.repository.listActiveDispatchOrderKeys(this.config.shopId));
+    let normalized = this.aggregateOrders(raw.map((order) => this.normalizeOrder(order, activeDispatchOrderKeys)));
+    const nowMs = this.now().getTime();
+    normalized = normalized.map((order) => {
+      const ageState = orderAgeState(order, nowMs, this.config.minOrderAgeMinutes);
+      if (!ageState) return order;
+      const exclusions = [...new Set([...order.exclusions, ageState.code])];
+      return { ...order, eligible: false, exclusions,
+        snapshot: { ...order.snapshot, ageMinutes: ageState.ageMinutes, retryAt: ageState.retryAt } };
+    });
+    if (!hasOrderIds) normalized.sort((left, right) => paidTimestamp(left) - paidTimestamp(right));
     if (hasOrderIds) {
       const wanted = new Set(requestedOrderIds);
-      normalized = normalized.filter((order) => wanted.has(order.snapshot.sourceOrderId) || wanted.has(order.tradeNumber));
-      const found = new Set(normalized.flatMap((order) => [order.snapshot.sourceOrderId, order.tradeNumber]).filter(Boolean));
+      normalized = normalized.filter((order) => wanted.has(order.snapshot.platformOrderId)
+        || wanted.has(order.snapshot.sourceOrderId) || wanted.has(order.tradeNumber));
+      const found = new Set(normalized.flatMap((order) => [order.snapshot.platformOrderId,
+        order.snapshot.sourceOrderId, order.tradeNumber]).filter(Boolean));
       for (const requestedOrderId of requestedOrderIds.filter((id) => !found.has(id))) {
         normalized.push({
           orderKey: `${this.config.shopId}:requested:${requestedOrderId}`, displayOrderId: requestedOrderId,
@@ -202,16 +306,41 @@ export class FulfillmentService {
         });
       }
     }
-    const eligible = normalized.filter((order) => order.eligible).slice(0, requested);
-    const excluded = normalized.filter((order) => !order.eligible);
+    return normalized;
+  }
+
+  persistPreviewOrders(orders) {
     const confirmationToken = randomBytes(24).toString("base64url");
     const createdAt = this.now();
     const preview = this.repository.createPreview({
       id: randomUUID(), status: "pending", shopId: this.config.shopId, shopName: this.config.shopName,
       channelId: this.config.channelId, channelName: this.config.channelName, confirmationHash: hash(confirmationToken),
       createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + this.config.previewTtlSeconds * 1000).toISOString(),
-    }, [...eligible, ...excluded]);
+    }, orders);
     return this.presentPreview(preview, confirmationToken);
+  }
+
+  createPreviewFromRaw(raw, { hasOrderIds, requestedOrderIds, requested }) {
+    const normalized = this.preparePreviewOrders(raw, { hasOrderIds, requestedOrderIds });
+    const eligible = normalized.filter((order) => order.eligible).slice(0, requested);
+    const excluded = normalized.filter((order) => !order.eligible);
+    return this.persistPreviewOrders([...eligible, ...excluded]);
+  }
+
+  createBacklogPreviewsFromRecords(records, { limit = this.config.maxBatchSize, maxPreviews = 5 } = {}) {
+    if (!Array.isArray(records)) throw new FulfillmentError("INVALID_SCAN_RECORDS", "共享扫描结果格式无效", 500);
+    const request = this.previewRequest({ limit });
+    const rounds = Math.max(1, Math.min(Number(maxPreviews) || 1, 10));
+    const normalized = this.preparePreviewOrders(records, request);
+    const eligible = normalized.filter((order) => order.eligible).slice(0, request.requested * rounds);
+    const excluded = normalized.filter((order) => !order.eligible);
+    if (!eligible.length) return [this.persistPreviewOrders(excluded)];
+    const previews = [];
+    for (let offset = 0; offset < eligible.length; offset += request.requested) {
+      const chunk = eligible.slice(offset, offset + request.requested);
+      previews.push(this.persistPreviewOrders(previews.length ? chunk : [...chunk, ...excluded]));
+    }
+    return previews;
   }
 
   presentPreview(preview, confirmationToken = undefined) {
@@ -223,7 +352,9 @@ export class FulfillmentService {
       const totalItemQuantity = inventoryItems.reduce((sum, item) => sum + (Number.isFinite(Number(item.requiredQuantity)) ? Number(item.requiredQuantity) : 0), 0);
       const stockStatus = outOfStockItemCount ? "out_of_stock" : (unknownStockItemCount || inventoryItems.length === 0) ? "unknown" : "in_stock";
       const warehouses = [...new Set((snapshot.warehouses || [snapshot.warehouse]).map((value) => bounded(value, 160)).filter(Boolean))].sort();
+      const warehouseRoutingIssues = Array.isArray(snapshot.warehouseRoutingIssues) ? snapshot.warehouseRoutingIssues : [];
       return { ...order, warehouse: warehouses.join(" / ") || order.warehouse, warehouses,
+        ...(warehouseRoutingIssues.length ? { warehouseRoutingIssues } : {}),
         requiredQuantity: totalItemQuantity, totalItemQuantity,
         availableQuantity: inventoryItems.length === 1 ? inventoryItems[0].availableQuantity : null,
         outOfStockItemCount, unknownStockItemCount,
@@ -232,6 +363,9 @@ export class FulfillmentService {
     const response = {
       previewId: preview.id, status: preview.status, expiresAt: preview.expiresAt,
       shop: { id: preview.shopId, name: preview.shopName }, channel: { id: preview.channelId, name: preview.channelName },
+      oldestEligiblePaidAt: preview.orders.filter((order) => order.eligible)
+        .map((order) => order.snapshot?.paidAt).filter(Boolean)
+        .sort((left, right) => Date.parse(left) - Date.parse(right))[0] || null,
       eligibleOrders: preview.orders.filter((order) => order.eligible).map(presentOrder),
       excludedOrders: preview.orders.filter((order) => !order.eligible).map(presentOrder),
       requiresConfirmation: true,
@@ -265,7 +399,9 @@ export class FulfillmentService {
       { orderId: reference, exclusions: blockers, warehouses: current.warehouses || [] });
     }
     if (!preflight?.run) throw new FulfillmentError("PREFLIGHT_UNAVAILABLE", "深度预检服务不可用", 503);
-    const checked = await preflight.run(reference, { singleWarehouseVerified: (current.warehouses || []).length === 1 });
+    const checked = await preflight.run(reference, {
+      singleWarehouseVerified: warehouseState(current).singleFulfillmentWarehouseVerified,
+    });
     if (!preflightPassed(checked)) {
       throw new FulfillmentError("MANUAL_REVIEW_PREFLIGHT_FAILED", "订单深度预检仍未通过，人工处理锁未解除", 409);
     }
@@ -304,7 +440,7 @@ export class FulfillmentService {
       result.checked += 1;
       const current = currentById.get(review.displayOrderId);
       const blockers = current?.exclusions?.filter((code) => code !== "ALREADY_FULFILLED") || ["ORDER_NOT_FOUND_OR_NOT_PENDING"];
-      if (!current || blockers.length || (current.warehouses || []).length !== 1) {
+      if (!current || blockers.length || !warehouseState(current).singleFulfillmentWarehouseVerified) {
         this.repository.resetManualRecovery(review);
         result.retained.push({ orderId: review.displayOrderId, code: blockers[0] || "MULTI_WAREHOUSE_REQUIRES_REVIEW" });
         continue;
@@ -348,7 +484,9 @@ export class FulfillmentService {
         ? "订单中的 SKU 仍属于不同仓库" : "订单未通过待处理、库存、仓库或信息完整性检查", 409,
       { orderId: reference, exclusions: blockers, warehouses: current.warehouses || [] });
     }
-    const checked = await preflight.run(reference, { singleWarehouseVerified: (current.warehouses || []).length === 1 });
+    const checked = await preflight.run(reference, {
+      singleWarehouseVerified: warehouseState(current).singleFulfillmentWarehouseVerified,
+    });
     return { ...checked, warehouse: current.warehouse,
       warehouses: current.warehouses || [current.warehouse].filter(Boolean), skuCount: current.skuCount };
   }
@@ -356,19 +494,76 @@ export class FulfillmentService {
   currentMap(rawOrders) {
     const map = new Map();
     for (const order of this.aggregateOrders(rawOrders.map((raw) => this.normalizeOrder(raw)))) {
-      for (const key of [order.snapshot.sourceOrderId, order.tradeNumber].filter(Boolean)) map.set(key, order);
+      for (const key of [order.snapshot.platformOrderId, order.tradeNumber, order.snapshot.sourceOrderId].filter(Boolean)) map.set(key, order);
     }
     return map;
   }
 
+  async reconcileInterruptedOrders({ limit = 5 } = {}) {
+    const reviews = this.repository.listInterruptedManualReviews?.(this.config.shopId, limit) || [];
+    const result = { shop: { id: this.config.shopId, name: this.config.shopName }, checked: 0,
+      completed: [], trackingRecovery: [], safeToRecheck: [], retained: [] };
+    if (!reviews.length || typeof this.trackingRecovery?.inspectState !== "function") return result;
+    const completedStatus = /(配货中|已发货|待揽收|已妥投|已完成)/;
+    const pendingStatus = /(待处理|^2$)/;
+    for (const review of reviews) {
+      result.checked += 1;
+      try {
+        const state = await this.trackingRecovery.inspectState(review.displayOrderId);
+        if ((state.shopId && String(state.shopId) !== String(this.config.shopId))
+          || (state.platformId && String(state.platformId) !== String(this.config.platformId))) {
+          result.retained.push({ orderId: review.displayOrderId, code: "RESTART_RECONCILIATION_SCOPE_MISMATCH" });
+          continue;
+        }
+        if (completedStatus.test(state.orderStatus) && state.trackingNumber) {
+          const completedAt = this.now().toISOString();
+          if (this.repository.resolveInterruptedReviewAsSuccess(review, { completedAt,
+            trackingNumberMasked: maskTracking(state.trackingNumber), afterStatus: state.orderStatus })) {
+            result.completed.push({ orderId: review.displayOrderId, status: state.orderStatus });
+          }
+          continue;
+        }
+        if (pendingStatus.test(state.orderStatus) && (state.trackingNumber || state.shippingRecordPending)) {
+          const submittedAt = this.now().toISOString();
+          const nextCheckAt = new Date(this.now().getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString();
+          const deadlineAt = new Date(this.now().getTime() + this.config.trackingRecoveryDeadlineHours * 3600000).toISOString();
+          if (this.repository.moveInterruptedReviewToTrackingRecovery(review, { submittedAt, nextCheckAt, deadlineAt,
+            trackingNumberMasked: maskTracking(state.trackingNumber) })) {
+            result.trackingRecovery.push({ orderId: review.displayOrderId,
+              status: state.trackingNumber ? "tracking_found" : "tracking_pending" });
+          }
+          continue;
+        }
+        if (pendingStatus.test(state.orderStatus) && !state.trackingNumber && !state.shippingRecordPending) {
+          result.safeToRecheck.push({ orderId: review.displayOrderId, status: state.orderStatus });
+          continue;
+        }
+        result.retained.push({ orderId: review.displayOrderId, code: "RESTART_RECONCILIATION_UNCERTAIN_STATE",
+          status: state.orderStatus || "unknown" });
+      } catch (error) {
+        result.retained.push({ orderId: review.displayOrderId,
+          code: bounded(error?.code || "RESTART_RECONCILIATION_FAILED", 80) });
+      }
+    }
+    if (result.completed.length || result.trackingRecovery.length) {
+      this.notifier.notify({ title: `${this.config.shopName} 宕机订单已完成对账`,
+        message: `${result.completed.length} 单确认已发货，${result.trackingRecovery.length} 单转入运单恢复，未执行重复交运。` });
+    }
+    return result;
+  }
+
   currentOrderFor(previewOrder, map) {
-    return map.get(previewOrder.snapshot.sourceOrderId) || map.get(previewOrder.tradeNumber);
+    return map.get(previewOrder.snapshot.platformOrderId) || map.get(previewOrder.tradeNumber)
+      || map.get(previewOrder.snapshot.sourceOrderId);
   }
 
   revalidationIssue(previewOrder, currentOrder) {
     if (!currentOrder) return { code: "ORDER_NOT_FOUND_BEFORE_SUBMIT", message: "订单已无法读取" };
     if (currentOrder.stockStatus === "out_of_stock") return { code: "OUT_OF_STOCK_BEFORE_SUBMIT", message: "提交前库存不足" };
     if (currentOrder.stockStatus === "unknown") return { code: "INVENTORY_UNKNOWN_BEFORE_SUBMIT", message: "提交前库存无法确认" };
+    if (currentOrder.exclusions.includes("PRODUCT_PREFIX_WAREHOUSE_MISMATCH")) {
+      return { code: "PRODUCT_PREFIX_WAREHOUSE_MISMATCH_BEFORE_SUBMIT", message: "商品名称前缀与分配仓库不匹配，请先人工换仓" };
+    }
     if (!currentOrder.eligible) return { code: "ORDER_CHANGED_BEFORE_SUBMIT", message: "订单状态或信息已变化" };
     if (orderShape(previewOrder.snapshot) !== orderShape(currentOrder.snapshot)
       || itemShape(previewOrder.snapshot) !== itemShape(currentOrder.snapshot)) {
@@ -415,6 +610,30 @@ export class FulfillmentService {
     return { batch, selected };
   }
 
+  createQueuedDispatchBatch(id) {
+    const dispatch = this.repository.getDispatchByPreview(id);
+    if (!dispatch || dispatch.status !== "queued") {
+      throw new FulfillmentError("DISPATCH_NOT_QUEUED", "自动发货候选不在待执行队列中", 409);
+    }
+    const preview = this.repository.getPreview(id);
+    if (!preview) throw new FulfillmentError("PREVIEW_NOT_FOUND", "预览不存在", 404);
+    if (preview.status !== "pending") throw new FulfillmentError("PREVIEW_ALREADY_USED", "预览已经确认或失效", 409);
+    if (!this.config.realSubmitEnabled) throw new FulfillmentError("REAL_SUBMIT_DISABLED", "真实发货开关尚未启用", 409);
+    const selected = preview.orders.filter((order) => order.eligible);
+    if (!selected.length) throw new FulfillmentError("NO_ELIGIBLE_ORDERS", "预览中没有可发货订单", 409);
+    const createdAt = this.now().toISOString();
+    let batch;
+    try {
+      batch = this.repository.createBatch({ id: randomUUID(), previewId: preview.id, status: "queued", createdAt }, selected);
+    } catch (error) {
+      if (["BATCH_ALREADY_RUNNING", "PREVIEW_ALREADY_USED", "IDEMPOTENCY_CONFLICT"].includes(error.code)) {
+        throw new FulfillmentError(error.code, error.message, 409);
+      }
+      throw error;
+    }
+    return { batch, selected, dispatch };
+  }
+
   failBatchBeforeSubmit(batch, selected, error, timings = null) {
     for (const order of selected) this.repository.updateBatchOrder(batch.id, order.orderKey, {
       status: "failed", errorCode: bounded(error.code || "PRE_SUBMIT_CHECK_FAILED", 80),
@@ -430,6 +649,7 @@ export class FulfillmentService {
     const batchStartedMs = Date.now();
     this.repository.startBatch(batch.id);
     let currentById;
+    let executable = selected;
     let revalidationMs = 0;
     try {
       const revalidationStartedMs = Date.now();
@@ -437,8 +657,21 @@ export class FulfillmentService {
       currentById = this.currentMap(current);
       const preflightIssues = selected.map((order) => ({ displayOrderId: order.displayOrderId,
         ...this.revalidationIssue(order, this.currentOrderFor(order, currentById)) })).filter((issue) => issue.code);
-      this.throwBatchRevalidation(preflightIssues);
       revalidationMs = Date.now() - revalidationStartedMs;
+      if (preflightIssues.length) {
+        const issuesByOrderId = new Map(preflightIssues.map((issue) => [issue.displayOrderId, issue]));
+        const updatedAt = this.now().toISOString();
+        for (const order of selected) {
+          const issue = issuesByOrderId.get(order.displayOrderId);
+          if (!issue) continue;
+          this.repository.updateBatchOrder(batch.id, order.orderKey, {
+            status: manualAttentionFailureCodes.has(issue.code) ? "needs_attention" : "failed",
+            errorCode: issue.code, errorMessage: issue.message,
+            timings: { preSubmitRevalidation: revalidationMs }, updatedAt,
+          });
+        }
+        executable = selected.filter((order) => !issuesByOrderId.has(order.displayOrderId));
+      }
       this.repository.updateBatchTimings(batch.id, { preSubmitRevalidation: revalidationMs,
         orderConcurrency: Math.min(2, Math.max(1, Number(this.config.orderConcurrency || 1))), total: null });
     } catch (error) {
@@ -462,30 +695,62 @@ export class FulfillmentService {
           timings: { ...(result.timings || {}), executorTotal: Date.now() - orderStartedMs } };
       } catch (error) {
         const errorCode = bounded(error.code || "FULFILLMENT_FAILED", 80);
-        const status = ["INVENTORY_UNKNOWN_BEFORE_SUBMIT", "MULTI_WAREHOUSE_REQUIRES_REVIEW"].includes(errorCode)
-          ? "needs_attention" : "failed";
+        if (errorCode === "ALREADY_HAS_TRACKING_NUMBER" && this.trackingRecovery) {
+          try {
+            const reference = order.tradeNumber || order.snapshot.sourceOrderId;
+            const inspection = await this.trackingRecovery.inspect(reference);
+            if (!inspection?.trackingNumber) {
+              return { status: "needs_attention", errorCode: "EXISTING_TRACKING_NOT_READABLE",
+                errorMessage: "马帮显示订单已有运单号，但无法安全读取运单号，已转人工核查。",
+                timings: { executorTotal: Date.now() - orderStartedMs } };
+            }
+            if (String(inspection.orderStatus || "").includes("配货中")) {
+              return { status: "success", trackingNumberMasked: maskTracking(inspection.trackingNumber),
+                afterStatus: inspection.orderStatus, errorCode: null, errorMessage: null,
+                timings: { executorTotal: Date.now() - orderStartedMs, existingTrackingReused: true } };
+            }
+            const distributed = await this.trackingRecovery.distribute(reference, inspection.trackingNumber);
+            if (distributed?.verified && String(distributed.afterStatus || "").includes("配货中")) {
+              return { status: "success", trackingNumberMasked: maskTracking(distributed.trackingNumber || inspection.trackingNumber),
+                afterStatus: distributed.afterStatus, errorCode: null, errorMessage: null,
+                timings: { executorTotal: Date.now() - orderStartedMs, existingTrackingReused: true } };
+            }
+            return { status: "needs_attention", trackingNumberMasked: maskTracking(inspection.trackingNumber),
+              afterStatus: distributed?.afterStatus || inspection.orderStatus || null,
+              errorCode: "DISTRIBUTION_PENDING", errorMessage: distributed?.message || "已有运单号，等待转入配货中。",
+              timings: { executorTotal: Date.now() - orderStartedMs, existingTrackingReused: true } };
+          } catch (recoveryError) {
+            const recoveryErrorCode = bounded(recoveryError.code || "EXISTING_TRACKING_RECOVERY_FAILED", 80);
+            return { status: manualAttentionFailureCodes.has(recoveryErrorCode) ? "needs_attention" : "failed",
+              errorCode: recoveryErrorCode, errorMessage: bounded(recoveryError.message),
+              timings: { executorTotal: Date.now() - orderStartedMs } };
+          }
+        }
+        const status = manualAttentionFailureCodes.has(errorCode) ? "needs_attention" : "failed";
         return { status, errorCode, errorMessage: bounded(error.message),
           timings: { executorTotal: Date.now() - orderStartedMs } };
       }
     };
-    for (let index = 0; index < selected.length; index += orderConcurrency) {
-      const wave = selected.slice(index, index + orderConcurrency);
+    for (let index = 0; index < executable.length; index += orderConcurrency) {
+      const wave = executable.slice(index, index + orderConcurrency);
       const patches = await Promise.all(wave.map((order) => executeOrder(order)));
       patches.forEach((patch, patchIndex) => {
         const order = wave[patchIndex];
         if (patch.status === "success") successes += 1;
         const updatedAt = this.now().toISOString();
         this.repository.updateBatchOrder(batch.id, order.orderKey, { ...patch, updatedAt });
-        if (patch.errorCode === "TRACKING_NUMBER_PENDING") {
+        if (["TRACKING_NUMBER_PENDING", "DISTRIBUTION_PENDING"].includes(patch.errorCode)) {
           const submittedAt = updatedAt;
+          const firstRecoveryDelaySeconds = Math.min(60,
+            Math.max(1, Number(this.config.trackingRecoveryCheckSeconds || 300)));
           this.repository.registerTrackingRecovery({ orderKey: order.orderKey, batchId: batch.id,
             displayOrderId: order.displayOrderId, shopId: this.config.shopId, submittedAt,
-            nextCheckAt: new Date(this.now().getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString(),
+            nextCheckAt: new Date(this.now().getTime() + firstRecoveryDelaySeconds * 1000).toISOString(),
             deadlineAt: new Date(this.now().getTime() + this.config.trackingRecoveryDeadlineHours * 3600000).toISOString() });
         }
       });
-      if (patches.some((patch) => patch.status !== "success")) {
-        for (const order of selected.slice(index + wave.length)) {
+      if (patches.some((patch) => mustStopLaterOrders(patch))) {
+        for (const order of executable.slice(index + wave.length)) {
           this.repository.updateBatchOrder(batch.id, order.orderKey, {
             status: "skipped", errorCode: "SKIPPED_AFTER_BATCH_FAILURE",
             errorMessage: "当前并发波次出现失败，后续订单已停止", timings: { executorTotal: 0 },
@@ -511,6 +776,16 @@ export class FulfillmentService {
 
   enqueuePreview(id, confirmationToken) {
     const { batch, selected } = this.createConfirmedBatch(id, confirmationToken);
+    const job = new Promise((resolve) => setImmediate(resolve))
+      .then(() => this.processBatch(batch, selected))
+      .catch((error) => this.failBatchBeforeSubmit(batch, selected, error));
+    this.activeJobs.add(job);
+    job.finally(() => this.activeJobs.delete(job));
+    return batch;
+  }
+
+  enqueueQueuedPreview(id) {
+    const { batch, selected } = this.createQueuedDispatchBatch(id);
     const job = new Promise((resolve) => setImmediate(resolve))
       .then(() => this.processBatch(batch, selected))
       .catch((error) => this.failBatchBeforeSubmit(batch, selected, error));
@@ -684,6 +959,23 @@ export class FulfillmentService {
 
   getActiveBatch() {
     return this.repository.getActiveBatch();
+  }
+
+  queuePreviewDispatch(previewId) {
+    return this.repository.queuePreviewDispatch(previewId, this.config.shopId, this.now().toISOString());
+  }
+
+  getNextQueuedDispatch() { return this.repository.getNextQueuedDispatch(); }
+  getDispatchByPreview(previewId) { return this.repository.getDispatchByPreview(previewId); }
+  markDispatchRunning(id, batchId) {
+    return this.repository.markDispatchRunning(id, batchId, this.now().toISOString());
+  }
+  finishDispatch(id, status, errorCode = null, errorMessage = null) {
+    return this.repository.finishDispatch(id, status, this.now().toISOString(), errorCode,
+      errorMessage == null ? null : bounded(errorMessage));
+  }
+  getDispatchQueueStatus(limit = 20) {
+    return this.repository.getDispatchQueueStatus(this.now().toISOString(), limit);
   }
 
   getLatestPendingPreview() {

@@ -42,6 +42,7 @@
     "check:frontend": "node scripts/check-frontend-framework.mjs",
     "build": "npm run check:paths && npm run check:frontend && npm run build:vue && node scripts/check-build.mjs",
     "test:mabang-getdata": "node scripts/test-mabang-getdata.mjs",
+    "sync:lazada-inventory": "node --disable-warning=ExperimentalWarning scripts/lazada-inventory-sync.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs"
   },
   "dependencies": {

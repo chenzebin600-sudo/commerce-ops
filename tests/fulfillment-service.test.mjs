@@ -7,16 +7,55 @@ import { Readable } from "node:stream";
 import { FulfillmentRepository } from "../fulfillment-service/repository.mjs";
 import { FulfillmentService } from "../fulfillment-service/service.mjs";
 import { createApiDocsHtml } from "../fulfillment-service/api-docs.mjs";
-import { createMabangFulfillmentExecutor, createMabangFulfillmentPreflight, createMabangFulfillmentScanSource, createMabangFulfillmentSource } from "../fulfillment-service/mabang-source.mjs";
+import { createMabangFulfillmentCatalogSource, createMabangFulfillmentExecutor, createMabangFulfillmentPreflight, createMabangFulfillmentScanSource, createMabangFulfillmentSource, createMabangMessageReviewRecovery, createMabangPolicySuggestionSource, inferFulfillmentPolicySuggestions, planFulfillmentPolicySuggestionConfirmations } from "../fulfillment-service/mabang-source.mjs";
 import { FulfillmentPreviewScheduler } from "../fulfillment-service/scheduler.mjs";
 import { createWindowsNotifier } from "../fulfillment-service/notifier.mjs";
-import { resolveFulfillmentConfig } from "../fulfillment-service/config.mjs";
+import { isShopAutoFulfillAuthorized, resolveFulfillmentConfig } from "../fulfillment-service/config.mjs";
 import { createFulfillmentDashboardProxy } from "../lib/fulfillment-dashboard-proxy.mjs";
+import { buildFulfillmentPolicyImportPreview, parseFulfillmentPolicyWorkbook } from "../fulfillment-service/policy-import.mjs";
+import { authorizationSettingsForIdentity, authorizedShopIdsForIdentity,
+  fulfillmentAccountIdentityKey } from "../fulfillment-service/account-authorization.mjs";
 
 const config = Object.freeze({ shopName:"JOJO Mall",shopId:"2021485965",platform:"Shopee",platformId:"17",countryCode:"ID",
   pendingStatus:"待处理",pendingStatusId:"2",channelId:"1143663",channelProviderId:"1023359",channelName:"ID J&T",maxBatchSize:10,
   previewTtlSeconds:600,realSubmitEnabled:false });
 const order = { 订单编号:"M-1",交易编号:"S-1",店铺名:"JOJO Mall",订单状态:"待处理",仓库:"印尼泗水环亚-AD仓-1308",SKU:"SKU-1",商品数量:1,商品库存:10 };
+
+test("account authorization is isolated by profile id and normalized username fingerprint", () => {
+  const first = { id:"PROFILE-1",username:"Manager-A",source:"account_profile" };
+  const renamed = { id:"PROFILE-1",username:"Manager-B",source:"account_profile" };
+  const settings = authorizationSettingsForIdentity({}, first, ["2021621760"]);
+  assert.notEqual(fulfillmentAccountIdentityKey(first), fulfillmentAccountIdentityKey(renamed));
+  assert.deepEqual([...authorizedShopIdsForIdentity(settings, first)], ["2021621760"]);
+  assert.deepEqual([...authorizedShopIdsForIdentity(settings, renamed)], []);
+});
+
+test("environment account authorization survives restart under its username fingerprint", () => {
+  const account = { id:"",username:"env-manager",source:"environment" };
+  const initial = authorizedShopIdsForIdentity({}, account, ["STATIC-SHOP"]);
+  assert.deepEqual([...initial], ["STATIC-SHOP"]);
+  const settings = authorizationSettingsForIdentity({}, account, ["SYNCED-SHOP"]);
+  assert.deepEqual([...authorizedShopIdsForIdentity(settings, account, ["STATIC-SHOP"])], ["SYNCED-SHOP"]);
+});
+
+test("Lazada uses the seller-center platform order number instead of Mabang's concatenated id", async () => {
+  const repository = new FulfillmentRepository();
+  const lazadaOrder = { ...order, 平台:"Lazada", 店铺名:"Lazada Shop",
+    订单编号:"2021390750531159323305217", 交易编号:"531159323305217" };
+  const lazadaConfig = { ...config, shopId:"2021390750", shopName:"Lazada Shop", platform:"Lazada", platformId:"7" };
+  const service = new FulfillmentService({ config:lazadaConfig, repository,
+    source:{ listPending:async()=>[lazadaOrder], getByIds:async()=>[lazadaOrder] }, executor:{ fulfill:async()=>{} } });
+
+  const preview = await service.createPreview();
+  const storedOrder = repository.getPreview(preview.previewId).orders[0];
+
+  assert.equal(storedOrder.displayOrderId, "531159323305217");
+  assert.equal(storedOrder.tradeNumber, "531159323305217");
+  assert.equal(storedOrder.orderKey, "2021390750:531159323305217");
+  assert.equal(storedOrder.snapshot.sourceOrderId, "2021390750531159323305217");
+  assert.equal(storedOrder.snapshot.platformOrderId, "531159323305217");
+  repository.close();
+});
 
 function proxyResponse() {
   return {
@@ -112,6 +151,72 @@ test("fulfillment dashboard proxy forwards only validated manual review fields",
   assert.equal(calls.length, 1);
 });
 
+test("fulfillment dashboard and activity lists can be scoped to the selected account shops", async () => {
+  const repository = new FulfillmentRepository();
+  const now = "2026-08-08T08:00:00.000Z";
+  for (const [shopId, shopName, suffix] of [["shop-current","Current Shop","CURRENT"],["shop-old","Old Shop","OLD"]]) {
+    const service = new FulfillmentService({ config:{ ...config,shopId,shopName,realSubmitEnabled:true },repository,
+      now:()=>new Date(now),
+      source:{ listPending:async()=>[{ ...order,订单编号:`M-${suffix}`,交易编号:`S-${suffix}`,店铺名:shopName }] },
+      executor:{ fulfill:async()=>({ trackingNumberMasked:"***1234",afterStatus:"配货中" }) } });
+    const preview = await service.createPreview({ limit:1 });
+    await service.confirmPreview(preview.previewId, preview.confirmationToken);
+  }
+  const windows = { todayStartIso:"2026-08-08T00:00:00.000Z",trendStartIso:"2026-08-08T00:00:00.000Z",
+    endIso:"2026-08-09T00:00:00.000Z",dayWindows:[{ date:"2026-08-08",fromIso:"2026-08-08T00:00:00.000Z",toIso:"2026-08-09T00:00:00.000Z" }] };
+  const scoped = repository.getDashboardSummary(windows,["shop-current"]);
+  assert.deepEqual(scoped.shops.map((shop)=>shop.shopId),["shop-current"]);
+  assert.equal(scoped.trend[0].total,1);
+  assert.deepEqual(repository.listRecentBatches(20,["shop-current"]).map((batch)=>batch.shop.id),["shop-current"]);
+  assert.deepEqual(repository.listRecentBatches(20,[]),[]);
+  assert.deepEqual(repository.listTrackingRecoveries(20,null,[]),[]);
+  repository.close();
+});
+
+test("fulfillment dashboard proxy bounds message review reads and requires exact recovery confirmation", async () => {
+  const calls = [];
+  const proxy = createFulfillmentDashboardProxy({ fetchImpl:async(url,options)=>{
+    calls.push({ url:String(url),options });
+    return new Response(JSON.stringify({ success:true,data:[] }), { status:200 });
+  } });
+
+  const getReq = Readable.from([]);
+  getReq.method = "GET";
+  const getResponse = proxyResponse();
+  assert.equal(await proxy(getReq,getResponse,new URL("http://localhost/api/fulfillment-dashboard/message-review-recoveries/candidates?limit=999")), true);
+  assert.equal(calls[0].url, "http://127.0.0.1:3112/api/fulfillment/message-review-recoveries/candidates?limit=10");
+
+  const postReq = Readable.from([JSON.stringify({
+    orderId:"260804ABC_123",confirmation:"MESSAGE_REVIEW_RECOVERY_CONFIRMED",unexpected:"drop-me",
+  })]);
+  postReq.method = "POST";
+  const postResponse = proxyResponse();
+  assert.equal(await proxy(postReq,postResponse,new URL("http://localhost/api/fulfillment-dashboard/message-review-recoveries")), true);
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    orderId:"260804ABC_123",confirmation:"MESSAGE_REVIEW_RECOVERY_CONFIRMED",
+  });
+
+  const invalidReq = Readable.from([JSON.stringify({ orderId:"260804ABC_123",confirmation:"yes" })]);
+  invalidReq.method = "POST";
+  const invalidResponse = proxyResponse();
+  assert.equal(await proxy(invalidReq,invalidResponse,new URL("http://localhost/api/fulfillment-dashboard/message-review-recoveries")), true);
+  assert.equal(invalidResponse.status, 400);
+  assert.equal(calls.length, 2);
+
+  const modeReq = Readable.from([JSON.stringify({ mode:"manual",unexpected:"drop-me" })]);
+  modeReq.method = "PUT";
+  assert.equal(await proxy(modeReq,proxyResponse(),new URL("http://localhost/api/fulfillment-dashboard/message-review-recoveries/mode")), true);
+  assert.equal(calls[2].url, "http://127.0.0.1:3112/api/fulfillment/message-review-recoveries/mode");
+  assert.deepEqual(JSON.parse(calls[2].options.body), { mode:"manual" });
+
+  const invalidModeReq = Readable.from([JSON.stringify({ mode:"always" })]);
+  invalidModeReq.method = "PUT";
+  const invalidModeResponse = proxyResponse();
+  assert.equal(await proxy(invalidModeReq,invalidModeResponse,new URL("http://localhost/api/fulfillment-dashboard/message-review-recoveries/mode")), true);
+  assert.equal(invalidModeResponse.status, 400);
+  assert.equal(calls.length, 3);
+});
+
 test("production fulfillment configuration contains all five Indonesian Shopee shops", () => {
   const resolved = resolveFulfillmentConfig({ rootDir:process.cwd(),env:{} });
   assert.deepEqual(resolved.shops.map((shop) => shop.shopId), ["2021578358","2021640336","2021485965","2021621760","2021557966"]);
@@ -127,6 +232,7 @@ test("automatic fulfillment is opt-in and limited to explicitly configured shops
   const resolved = resolveFulfillmentConfig({ rootDir:process.cwd(),env:{
     FULFILLMENT_AUTO_FULFILL_ENABLED:"true",
     FULFILLMENT_AUTO_FULFILL_SHOP_IDS:"2021578358,2021485965,2021557966",
+    FULFILLMENT_AUTO_FULFILL_SHOP_CONFIG_PATH:path.join(os.tmpdir(), "missing-auto-fulfill-authorization.json"),
     FULFILLMENT_ORDER_CONCURRENCY:"2",
   }});
   assert.deepEqual(resolved.shops.filter((shop) => shop.autoFulfillEnabled).map((shop) => shop.shopId),
@@ -388,7 +494,7 @@ test("preview can be locked to explicit order ids without substituting other ord
   repository.close();
 });
 
-test("automatic preview prioritizes newest eligible orders without letting shortages consume the limit", async () => {
+test("automatic preview prioritizes oldest eligible orders without letting shortages consume the limit", async () => {
   const repository = new FulfillmentRepository();
   const source = { listPending:async()=>[
     { ...order,订单编号:"M-OLD",交易编号:"S-OLD",付款时间:"2026-07-25 10:00:00" },
@@ -398,8 +504,388 @@ test("automatic preview prioritizes newest eligible orders without letting short
   ] };
   const service = new FulfillmentService({ config,repository,source,executor:{} });
   const preview = await service.createPreview({ limit:2 });
-  assert.deepEqual(preview.eligibleOrders.map((item)=>item.displayOrderId), ["S-NEW", "S-MIDDLE"]);
+  assert.deepEqual(preview.eligibleOrders.map((item)=>item.displayOrderId), ["S-OLD", "S-MIDDLE"]);
   assert.equal(preview.excludedOrders[0].displayOrderId, "S-NEW-OOS");
+  repository.close();
+});
+
+test("active dispatch orders are excluded while a later shop preview can still collect new orders", () => {
+  const repository = new FulfillmentRepository();
+  const service = new FulfillmentService({ config:{ ...config,realSubmitEnabled:true,autoFulfillEnabled:true },repository,
+    source:{},executor:{} });
+  const first = service.createPreviewFromRecords([order],{ limit:2 });
+  const dispatch = service.queuePreviewDispatch(first.previewId);
+  assert.equal(dispatch.status,"queued");
+  const secondOrder = { ...order,订单编号:"M-2",交易编号:"S-2" };
+  const next = service.createPreviewFromRecords([order,secondOrder],{ limit:2 });
+  assert.deepEqual(next.eligibleOrders.map((item)=>item.displayOrderId),["S-2"]);
+  assert.equal(next.excludedOrders.find((item)=>item.displayOrderId === "S-1")
+    .exclusions.includes("QUEUED_FOR_FULFILLMENT"),true);
+  assert.equal(service.queuePreviewDispatch(next.previewId).status,"queued");
+  assert.deepEqual(repository.listActiveDispatchOrderKeys(config.shopId).sort(),
+    [`${config.shopId}:M-1`,`${config.shopId}:M-2`]);
+  repository.close();
+});
+
+test("account scope reset cancels queued dispatches and removes the previous channel catalog", () => {
+  const repository = new FulfillmentRepository();
+  repository.replaceChannelCatalog([{ channelId:"OLD",channelProviderId:"P",channelLogisticsId:"L",
+    channelSource:"1",channelName:"Old channel",channelValue:"old" }]);
+  const service = new FulfillmentService({ config:{ ...config,realSubmitEnabled:true,autoFulfillEnabled:true },repository,
+    source:{},executor:{} });
+  const preview = service.createPreviewFromRecords([order],{ limit:1 });
+  assert.equal(service.queuePreviewDispatch(preview.previewId).status,"queued");
+  assert.equal(repository.cancelQueuedDispatches("2026-08-08T00:00:00.000Z"),1);
+  assert.equal(repository.getDispatchByPreview(preview.previewId).status,"failed");
+  assert.equal(repository.clearChannelCatalog(),1);
+  assert.deepEqual(repository.listChannelCatalog(),[]);
+  repository.close();
+});
+
+test("backlog preview creation splits the oldest eligible orders into bounded batches", () => {
+  const repository = new FulfillmentRepository();
+  const records = [
+    { ...order,订单编号:"M-BLOCKED",交易编号:"S-BLOCKED",商品库存:0,付款时间:"2026-07-20 08:00:00" },
+    ...Array.from({ length:7 },(_,index)=>({ ...order,订单编号:`M-${index + 1}`,交易编号:`S-${index + 1}`,
+      付款时间:`2026-07-${String(21 + index).padStart(2,"0")} 08:00:00` })),
+  ];
+  const service = new FulfillmentService({ config,repository,source:{},executor:{} });
+  const previews = service.createBacklogPreviewsFromRecords(records,{ limit:2,maxPreviews:3 });
+  assert.equal(previews.length,3);
+  assert.deepEqual(previews.map((preview)=>preview.eligibleOrders.map((item)=>item.displayOrderId)),
+    [["S-1","S-2"],["S-3","S-4"],["S-5","S-6"]]);
+  assert.equal(previews[0].excludedOrders.some((item)=>item.displayOrderId === "S-BLOCKED"),true);
+  assert.equal(previews.slice(1).every((preview)=>preview.excludedOrders.length === 0),true);
+  repository.close();
+});
+
+test("Thai routed shops require product-name prefixes to use their assigned warehouses", async () => {
+  const repository = new FulfillmentRepository();
+  const routedConfig = { ...config, shopId:"69345928", shopName:"Impressive MALL", countryCode:"TH",
+    allowedWarehouses:["泰国TZ-AG仓-1308", "泰国壹慧-A仓-1308", "泰国日达顺-A仓-1308", "泰国TLS-A仓-1308"] };
+  const base = { ...order, 店铺名:routedConfig.shopName, 国家代码:"TH" };
+  const rows = [
+    { ...base, 订单编号:"M-5E", 交易编号:"S-5E", 商品中文名称:"5e 床架", 仓库:"泰国壹慧-A仓-1308" },
+    { ...base, 订单编号:"M-5F", 交易编号:"S-5F", 商品中文名称:"5F 床垫", 仓库:"泰国日达顺-A仓-1308" },
+    { ...base, 订单编号:"M-5J", 交易编号:"S-5J", 商品中文名称:"５ｊ 沙发", 仓库:"泰国TZ-AG仓-1308" },
+    { ...base, 订单编号:"M-OTHER", 交易编号:"S-OTHER", 商品中文名称:"普通商品", 仓库:"泰国TZ-AG仓-1308" },
+  ];
+  const service = new FulfillmentService({ config:routedConfig, repository, source:{ listPending:async()=>rows }, executor:{} });
+  const preview = await service.createPreview({ limit:10 });
+  assert.deepEqual(preview.eligibleOrders.map((item) => item.displayOrderId).sort(), ["S-5E", "S-5F", "S-OTHER"]);
+  const blocked = preview.excludedOrders.find((item) => item.displayOrderId === "S-5J");
+  assert.equal(blocked.exclusions.includes("PRODUCT_PREFIX_WAREHOUSE_MISMATCH"), true);
+  assert.deepEqual(blocked.warehouseRoutingIssues, [{ prefix:"5J", expectedWarehouses:["泰国TLS-A仓-1308"],
+    warehouse:"泰国TZ-AG仓-1308", matched:false }]);
+  repository.close();
+});
+
+test("product-prefix warehouse routing is limited to the three configured Thai shops", async () => {
+  const repository = new FulfillmentRepository();
+  const unrestricted = { ...order, 商品中文名称:"5F 床垫", 仓库:"印尼泗水环亚-AD仓-1308" };
+  const service = new FulfillmentService({ config, repository, source:{ listPending:async()=>[unrestricted] }, executor:{} });
+  const preview = await service.createPreview();
+  assert.equal(preview.eligibleOrders.length, 1);
+  assert.equal(preview.eligibleOrders[0].warehouseRoutingIssues, undefined);
+  repository.close();
+});
+
+test("gift SKU warehouse can accompany one in-stock fulfillment warehouse", async () => {
+  const repository = new FulfillmentRepository();
+  const normalWarehouse = "马来SN-A仓-1308";
+  const rows = [
+    { ...order,SKU:"SKU-NORMAL",仓库:normalWarehouse,商品库存:10 },
+    { ...order,SKU:"SKU-GIFT",仓库:"赠品SKU仓",商品库存:5 },
+  ];
+  const service = new FulfillmentService({ config:{ ...config,allowedWarehouses:[normalWarehouse] },repository,
+    source:{ listPending:async()=>rows },executor:{} });
+  const preview = await service.createPreview();
+  assert.equal(preview.eligibleOrders.length, 1);
+  assert.equal(preview.eligibleOrders[0].exclusions.length, 0);
+  assert.deepEqual(preview.eligibleOrders[0].warehouses, ["赠品SKU仓",normalWarehouse]);
+  repository.close();
+});
+
+test("gift-only order is blocked because gifts cannot be sold alone", async () => {
+  const repository = new FulfillmentRepository();
+  const giftOnly = { ...order,SKU:"SKU-GIFT",仓库:"赠品SKU仓",商品库存:5 };
+  const service = new FulfillmentService({ config,repository,source:{ listPending:async()=>[giftOnly] },executor:{} });
+  const preview = await service.createPreview();
+  assert.equal(preview.eligibleOrders.length, 0);
+  assert.equal(preview.excludedOrders[0].exclusions.includes("GIFT_ONLY_ORDER_NOT_ALLOWED"), true);
+  assert.equal(preview.excludedOrders[0].exclusions.includes("MULTI_WAREHOUSE_REQUIRES_REVIEW"), false);
+  repository.close();
+});
+
+test("gift warehouse does not hide a real multi-warehouse order", async () => {
+  const repository = new FulfillmentRepository();
+  const rows = [
+    { ...order,SKU:"SKU-A",仓库:"仓库A",商品库存:10 },
+    { ...order,SKU:"SKU-B",仓库:"仓库B",商品库存:10 },
+    { ...order,SKU:"SKU-GIFT",仓库:"赠品SKU仓",商品库存:5 },
+  ];
+  const service = new FulfillmentService({ config,repository,source:{ listPending:async()=>rows },executor:{} });
+  const preview = await service.createPreview();
+  assert.equal(preview.eligibleOrders.length, 0);
+  assert.equal(preview.excludedOrders[0].exclusions.includes("MULTI_WAREHOUSE_REQUIRES_REVIEW"), true);
+  repository.close();
+});
+
+test("web policies cannot authorize automatic fulfillment outside the static shop allowlist", () => {
+  const resolved = resolveFulfillmentConfig({ rootDir:process.cwd(),env:{
+    FULFILLMENT_AUTO_FULFILL_ENABLED:"true",
+    FULFILLMENT_AUTO_FULFILL_SHOP_IDS:"2021485965",
+    FULFILLMENT_AUTO_FULFILL_SHOP_CONFIG_PATH:path.join(os.tmpdir(), "missing-auto-fulfill-authorization.json"),
+  } });
+  assert.equal(isShopAutoFulfillAuthorized(resolved,"2021485965"), true);
+  assert.equal(isShopAutoFulfillAuthorized(resolved,"2021578358"), false);
+  assert.equal(isShopAutoFulfillAuthorized(resolved,"unconfigured-shop"), false);
+});
+
+test("static authorization file can authorize synchronized shops outside the legacy execution catalog", () => {
+  const resolved = resolveFulfillmentConfig({ rootDir:process.cwd(),env:{ FULFILLMENT_AUTO_FULFILL_ENABLED:"true" } });
+  assert.equal(isShopAutoFulfillAuthorized(resolved,"2021555509"), true);
+  assert.equal(resolved.autoFulfillShopIds.includes("2021555509"), true);
+  assert.match(resolved.autoFulfillAuthorizationPath, /fulfillment-auto-fulfill-shops\.json$/);
+});
+
+test("fulfillment dashboard proxy sanitizes account and shop policy writes", async () => {
+  const calls = [];
+  const proxy = createFulfillmentDashboardProxy({ fetchImpl: async (url, options) => {
+    calls.push({ url:String(url),options });
+    return new Response(JSON.stringify({ success:true,data:{} }), { status:200 });
+  }});
+  const accountReq = Readable.from([JSON.stringify({ accountProfileId:"profile_1", password:"must-not-forward" })]);
+  accountReq.method = "POST";
+  assert.equal(await proxy(accountReq, proxyResponse(), new URL("http://localhost/api/fulfillment-dashboard/settings/account")), true);
+  assert.deepEqual(JSON.parse(calls[0].options.body), { accountProfileId:"profile_1" });
+  const policyReq = Readable.from([JSON.stringify({ mode:"manual",channelId:"c1",warehousePolicy:"allowlist",
+    allowedWarehouses:["环亚","云雀"],minOrderAgeMinutes:10,maxBatchSize:2,unexpected:"drop-me" })]);
+  policyReq.method = "PUT";
+  assert.equal(await proxy(policyReq, proxyResponse(), new URL("http://localhost/api/fulfillment-dashboard/shops/2021485965/policy")), true);
+  assert.equal(calls[1].url, "http://127.0.0.1:3112/api/fulfillment/shops/2021485965/policy");
+  assert.deepEqual(JSON.parse(calls[1].options.body), { mode:"manual",channelId:"c1",warehousePolicy:"allowlist",
+    allowedWarehouses:["环亚","云雀"],minOrderAgeMinutes:10,maxBatchSize:2 });
+});
+
+test("operational policies and synchronized channels persist in the fulfillment database", () => {
+  const repository = new FulfillmentRepository();
+  repository.initializeOperationalConfig([{ ...config, allowedWarehouses:["环亚"], minOrderAgeMinutes:10,
+    configuredAutoFulfillEnabled:false }], "2026-08-03T01:00:00.000Z");
+  const saved = repository.saveShopPolicy({ shopId:config.shopId,mode:"manual",channelId:config.channelId,
+    warehousePolicy:"allowlist",allowedWarehouses:["环亚","云雀"],minOrderAgeMinutes:15,maxBatchSize:2 });
+  assert.deepEqual(saved.allowedWarehouses, ["环亚","云雀"]);
+  assert.equal(saved.version, 2);
+  repository.replaceChannelCatalog([{ channelId:"new-channel",channelProviderId:"p2",channelLogisticsId:"l2",
+    channelName:"J&T Indonesia",channelValue:"v2",platformId:"17",countryCode:"ID" }], "2026-08-03T02:00:00.000Z");
+  assert.equal(repository.listChannelCatalog().find((channel) => channel.channelId === config.channelId).active, false);
+  assert.equal(repository.listChannelCatalog({ activeOnly:true })[0].channelId, "new-channel");
+  repository.initializeSyncedShops([{ shopId:"global-shop-1",shopName:"Thailand Shop",countryCode:"TH" }], "2026-08-03T03:00:00.000Z");
+  const syncedPolicy = repository.getShopPolicy("global-shop-1");
+  assert.equal(syncedPolicy.mode, "paused");
+  assert.equal(syncedPolicy.maxBatchSize, 2);
+  repository.initializeSyncedShops([{ shopId:"still-assigned",shopName:"Still Assigned" }], "2026-08-03T03:01:00.000Z");
+  repository.saveShopPolicy({ shopId:"still-assigned",mode:"manual",channelId:"",warehousePolicy:"any_single_warehouse",
+    allowedWarehouses:[],minOrderAgeMinutes:10,maxBatchSize:2 });
+  assert.equal(repository.pauseShopPoliciesOutside(new Set(["still-assigned"]), { updatedAt:"2026-08-03T04:00:00.000Z" }), 1);
+  assert.equal(repository.getShopPolicy(config.shopId).mode, "paused");
+  assert.equal(repository.getShopPolicy("global-shop-1").mode, "paused");
+  assert.equal(repository.getShopPolicy("still-assigned").mode, "manual");
+  repository.close();
+});
+
+test("catalog discovery uses the live account shop scope instead of the old static whitelist", async () => {
+  const workerPayloads = []; const fetchCalls = [];
+  const source = createMabangFulfillmentCatalogSource({ rootDir:process.cwd(), config:{
+    mabangUsername:"user",mabangPassword:"password",shops:[{ shopId:"old-shop" }],
+  }, runWorker:async(payload)=>{ workerPayloads.push(payload); return payload.action === "inventory-warehouse-catalog"
+    ? { catalog:{ options:[{ id:"warehouse-2",name:"ID Warehouse B" },{ id:"warehouse-1",name:"ID Warehouse A" }] } }
+    : { shops:[{ shopId:"new-shop",shopName:"New from order page",platformId:"17",countryCode:"ID" }],channels:[] }; }, fetchImpl:async(url,options={})=>{
+    fetchCalls.push({ url,options });
+    if (url.endsWith("/session/login")) return new Response(JSON.stringify({ success:true }), { status:200 });
+    if (url.includes("platform=shopee")) return new Response(JSON.stringify({ success:true,shops:[
+      { id:"new-shop",name:"New",site:"ID" }, { id:"visible-but-unassigned",name:"Old Company Shop",site:"ID" },
+    ] }), { status:200 });
+    return new Response(JSON.stringify({ success:true,shops:[{ id:"lazada-unassigned",name:"Old Lazada Shop",site:"MY" }] }), { status:200 });
+  } });
+  const catalog = await source.sync();
+  assert.equal(fetchCalls.length,3);
+  const catalogPayload = workerPayloads.find((payload)=>payload.action === "fulfillment-catalog");
+  assert.deepEqual(catalogPayload.shopIds,["new-shop","visible-but-unassigned","lazada-unassigned"]);
+  assert.deepEqual(workerPayloads.map((payload)=>payload.action).sort(),["fulfillment-catalog","inventory-warehouse-catalog"]);
+  assert.deepEqual(catalog.shops.map((shop)=>shop.shopId), ["new-shop"]);
+  assert.equal(catalog.shops[0].shopName,"New");
+  assert.deepEqual(catalog.warehouses,[{ id:"warehouse-1",name:"ID Warehouse A" },{ id:"warehouse-2",name:"ID Warehouse B" }]);
+});
+
+test("historical policy suggestions count orders once and keep shop platforms isolated", () => {
+  const suggestions = inferFulfillmentPolicySuggestions([
+    { 订单编号:"A-1",店铺名:"MY Shop",平台:"Shopee",物流渠道:"MY J&T",仓库:"MY-A",付款时间:"2026-08-01 10:00:00",SKU:"1" },
+    { 订单编号:"A-1",店铺名:"MY Shop",平台:"Shopee",物流渠道:"MY J&T",仓库:"MY-A",付款时间:"2026-08-01 10:00:00",SKU:"2" },
+    { 订单编号:"A-2",店铺名:"MY Shop",平台:"Shopee",物流渠道:"MY J&T",仓库:"MY-B",付款时间:"2026-08-02 10:00:00" },
+    { 订单编号:"A-3",店铺名:"MY Shop",平台:"Lazada",物流渠道:"wrong",仓库:"wrong" },
+    { 订单编号:"B-1",店铺名:"Lazada Shop",平台:"Lazada",物流渠道:"Lazada Express",仓库:"LAZ-A" },
+  ], [
+    { shopId:"shop-my",shopName:"MY Shop",platform:"Shopee" },
+    { shopId:"shop-laz",shopName:"Lazada Shop",platform:"Lazada" },
+  ], { scannedAt:"2026-08-06T00:00:00.000Z",lookbackDays:30 });
+  const shopee = suggestions.find((item) => item.shopId === "shop-my");
+  assert.equal(shopee.orderCount,2);
+  assert.equal(shopee.channel.name,"MY J&T");
+  assert.equal(shopee.channel.confidence,1);
+  assert.deepEqual(shopee.warehouses.map((item) => item.name),["MY-B","MY-A"]);
+  assert.equal(suggestions.find((item) => item.shopId === "shop-laz").channel.name,"Lazada Express");
+});
+
+test("policy suggestion scan reads order history and the complete inventory warehouse directory without saving policies", async () => {
+  const actions = [];
+  const source = createMabangPolicySuggestionSource({ rootDir:process.cwd(), config:{ mabangUsername:"user",mabangPassword:"password" },
+    shops:[],runWorker:async(payload)=>{
+      actions.push(payload.action);
+      if (payload.action === "inventory") return { records:[{ 仓库:"Global Warehouse" }] };
+      return { records:[{ 订单编号:"A-1",店铺名:"New Shop",平台:"Shopee",物流渠道:"MY J&T",仓库:"Order Warehouse" }] };
+    } });
+  const result = await source.scan({ lookbackDays:30,selectedShops:[
+    { shopId:"new-shop",shopName:"New Shop",platform:"Shopee" },
+  ] });
+  assert.deepEqual(actions.sort(),["inventory","orders"]);
+  assert.deepEqual(result.warehouses,["Global Warehouse","Order Warehouse"]);
+  assert.equal(result.suggestions[0].status,"ready_for_review");
+  assert.equal(result.warehouseCatalogComplete,true);
+});
+
+test("dashboard proxy exposes the bounded policy suggestion scan route", async () => {
+  const calls = [];
+  const proxy = createFulfillmentDashboardProxy({ fetchImpl:async(url,options)=>{
+    calls.push({ url:String(url),options });
+    return new Response(JSON.stringify({ success:true,data:{} }), { status:200 });
+  } });
+  const request = Readable.from([JSON.stringify({ lookbackDays:999,unexpected:"drop" })]); request.method = "POST";
+  assert.equal(await proxy(request,proxyResponse(),new URL("http://localhost/api/fulfillment-dashboard/policy-suggestions/scan")),true);
+  assert.equal(calls[0].url,"http://127.0.0.1:3112/api/fulfillment/policy-suggestions/scan");
+  assert.equal(calls[0].options.body,"{}");
+  const confirmRequest = Readable.from([JSON.stringify({ shopIds:["2021555509","2021555509"],mode:"auto",unexpected:"drop" })]);
+  confirmRequest.method = "POST";
+  assert.equal(await proxy(confirmRequest,proxyResponse(),new URL("http://localhost/api/fulfillment-dashboard/policy-suggestions/confirm")),true);
+  assert.equal(calls[1].url,"http://127.0.0.1:3112/api/fulfillment/policy-suggestions/confirm");
+  assert.deepEqual(JSON.parse(calls[1].options.body),{ shopIds:["2021555509"] });
+  const importRequest = Readable.from([JSON.stringify({ filename:"config.xlsx",fileBase64:"YWJj",allowOverwrite:true,unexpected:"drop" })]);
+  importRequest.method = "POST";
+  assert.equal(await proxy(importRequest,proxyResponse(),new URL("http://localhost/api/fulfillment-dashboard/policy-imports/preview")),true);
+  assert.equal(calls[2].url,"http://127.0.0.1:3112/api/fulfillment/policy-imports/preview");
+  assert.deepEqual(JSON.parse(calls[2].options.body),{ filename:"config.xlsx",fileBase64:"YWJj",allowOverwrite:true });
+  const importConfirm = Readable.from([JSON.stringify({ previewId:"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",rowIds:["1","1","2"],unexpected:"drop" })]);
+  importConfirm.method = "POST";
+  assert.equal(await proxy(importConfirm,proxyResponse(),new URL("http://localhost/api/fulfillment-dashboard/policy-imports/confirm")),true);
+  assert.deepEqual(JSON.parse(calls[3].options.body),{ previewId:"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",rowIds:["1","2"] });
+  const batchPolicy = Readable.from([JSON.stringify({ shopIds:["2021555509","2021555509","2021557615"],
+    patch:{ mode:"manual",minOrderAgeMinutes:2,maxBatchSize:5,channelId:"should-drop" },unexpected:"drop" })]);
+  batchPolicy.method = "POST";
+  assert.equal(await proxy(batchPolicy,proxyResponse(),new URL("http://localhost/api/fulfillment-dashboard/shop-policies/batch")),true);
+  assert.equal(calls[4].url,"http://127.0.0.1:3112/api/fulfillment/shop-policies/batch");
+  assert.deepEqual(JSON.parse(calls[4].options.body),{ shopIds:["2021555509","2021557615"],patch:{ mode:"manual",minOrderAgeMinutes:2,maxBatchSize:5 } });
+  const invalidWait = Readable.from([JSON.stringify({ shopIds:["2021555509"],patch:{ minOrderAgeMinutes:1 } })]);
+  invalidWait.method = "POST"; const invalidWaitResponse = proxyResponse();
+  assert.equal(await proxy(invalidWait,invalidWaitResponse,new URL("http://localhost/api/fulfillment-dashboard/shop-policies/batch")),true);
+  assert.equal(invalidWaitResponse.status,400);
+  assert.equal(calls.length,5);
+});
+
+test("spreadsheet policy import parses required columns and only marks exact current catalog matches ready", () => {
+  const csv = Buffer.from(`店编,马帮店名,平台,国家,对应物流渠道,对应仓库\nMS0561,Sunfay.MY,Shopee,马来,马来鲸速家具仓-1308[shopeeV2线上发货(新)],马来腾展-A仓-1308\nMS0000,Missing,Shopee,马来,,`);
+  const parsed = parseFulfillmentPolicyWorkbook({ filename:"config.csv",buffer:csv });
+  assert.equal(parsed.rows.length,2);
+  assert.equal(parsed.rows[0].shopCode,"MS0561");
+  const rows = buildFulfillmentPolicyImportPreview({ rows:parsed.rows,
+    shops:new Map([["2021555509",{ shopId:"2021555509",shopName:"Sunfay.MY",platform:"Shopee",platformId:"17",countryCode:"MY" }]]),
+    channels:[{ channelId:"1131396",channelName:"马来鲸速家具仓-1308",logisticsName:"shopeeV2线上发货(新)",platformId:"",countryCode:"MY",active:true }],
+    warehouseOptions:["马来腾展-A仓-1308"], policies:new Map([["2021555509",{ shopId:"2021555509",mode:"paused",channelId:"",warehousePolicy:"allowlist",allowedWarehouses:[],minOrderAgeMinutes:10,maxBatchSize:2,version:1,updatedBy:"catalog_sync" }]]),
+    hasAccess:()=>true });
+  assert.equal(rows[0].ready,true);
+  assert.equal(rows[0].shopId,"2021555509");
+  assert.equal(rows[0].channelId,"1131396");
+  assert.deepEqual(rows[0].warehouses,["马来腾展-A仓-1308"]);
+  assert.equal(rows[1].ready,false);
+  assert.match(rows[1].issues.join(" "),/未找到对应店铺/);
+});
+
+test("spreadsheet policy import keeps Best Express and BEST Express as different channels", () => {
+  const imported = buildFulfillmentPolicyImportPreview({ rows:[
+    { sourceRow:2,shopCode:"A",shopName:"Shop A",platform:"Shopee",country:"TH",
+      channel:"Best Express[shopee线上发货]",warehouses:"泰国KJ-A仓-1308" },
+    { sourceRow:3,shopCode:"B",shopName:"Shop B",platform:"Shopee",country:"TH",
+      channel:"BEST Express [shopee线上发货]",warehouses:"泰国KJ-A仓-1308" },
+    { sourceRow:4,shopCode:"C",shopName:"Shop C",platform:"Shopee",country:"TH",
+      channel:"best express[shopee线上发货]",warehouses:"泰国KJ-A仓-1308" },
+  ],shops:[
+    { shopId:"A",shopName:"Shop A",platform:"Shopee",platformId:"17",countryCode:"TH" },
+    { shopId:"B",shopName:"Shop B",platform:"Shopee",platformId:"17",countryCode:"TH" },
+    { shopId:"C",shopName:"Shop C",platform:"Shopee",platformId:"17",countryCode:"TH" },
+  ],channels:[
+    { channelId:"1027036",channelName:"Best Express",logisticsName:"shopee线上发货",platformId:"",countryCode:"TH",active:true },
+    { channelId:"1056705",channelName:"BEST Express",logisticsName:"shopee线上发货",platformId:"",countryCode:"TH",active:true },
+  ],warehouseOptions:["泰国KJ-A仓-1308"],policies:[
+    { shopId:"A",version:1,updatedBy:"catalog_sync" },
+    { shopId:"B",version:1,updatedBy:"catalog_sync" },
+    { shopId:"C",version:1,updatedBy:"catalog_sync" },
+  ],hasAccess:()=>true });
+  assert.equal(imported[0].channelId,"1027036");
+  assert.equal(imported[1].channelId,"1056705");
+  assert.equal(imported[2].ready,false);
+  assert.match(imported[2].issues.join(" "),/未匹配到有效物流渠道/);
+});
+
+test("batch suggestion confirmation plans only unreviewed complete and accessible shop configs", () => {
+  const basePolicy = { mode:"paused",channelId:"",warehousePolicy:"any_single_warehouse",allowedWarehouses:[],
+    minOrderAgeMinutes:10,maxBatchSize:2 };
+  const plan = planFulfillmentPolicySuggestionConfirmations({ shopIds:["1","2","3","4"],
+    shops:[
+      { shopId:"1",platformId:"17",countryCode:"MY" }, { shopId:"2",platformId:"17",countryCode:"MY" },
+      { shopId:"3",platformId:"17",countryCode:"MY" }, { shopId:"4",platformId:"17",countryCode:"MY" },
+    ],policies:[
+      { ...basePolicy,shopId:"1",updatedBy:"catalog_sync" }, { ...basePolicy,shopId:"2",updatedBy:"operator" },
+      { ...basePolicy,shopId:"3",updatedBy:"catalog_sync" }, { ...basePolicy,shopId:"4",updatedBy:"catalog_sync" },
+    ],suggestions:[
+      { shopId:"1",channel:{ name:"Best Express" },warehouses:[{ name:"MY-A" }] },
+      { shopId:"2",channel:{ name:"Best Express" },warehouses:[{ name:"MY-A" }] },
+      { shopId:"3",channel:{ name:"Unknown" },warehouses:[{ name:"MY-A" }] },
+      { shopId:"4",channel:{ name:"Best Express" },warehouses:[{ name:"MY-A" }] },
+    ],channels:[{ channelId:"1056705",channelName:"Best Express",logisticsName:"",platformId:"17",countryCode:"MY",active:true }],
+    hasAccess:(shopId)=>shopId !== "4" });
+  assert.deepEqual(plan.changes.map((item)=>item.shopId),["1"]);
+  assert.equal(plan.changes[0].channelId,"1056705");
+  assert.deepEqual(plan.changes[0].allowedWarehouses,["MY-A"]);
+  assert.deepEqual(plan.skipped,[
+    { shopId:"2",reason:"ALREADY_REVIEWED" }, { shopId:"3",reason:"SUGGESTION_INCOMPLETE" },
+    { shopId:"4",reason:"SHOP_ACCESS_REVOKED" },
+  ]);
+});
+
+test("historical policy suggestions preserve channel-name casing", () => {
+  const basePolicy = { shopId:"1",mode:"paused",channelId:"",warehousePolicy:"any_single_warehouse",
+    allowedWarehouses:[],minOrderAgeMinutes:10,maxBatchSize:2,updatedBy:"catalog_sync" };
+  const plan = planFulfillmentPolicySuggestionConfirmations({ shopIds:["1"],
+    shops:[{ shopId:"1",platformId:"17",countryCode:"TH" }],policies:[basePolicy],
+    suggestions:[{ shopId:"1",channel:{ name:"BEST Express" },warehouses:[{ name:"TH-A" }] }],
+    channels:[
+      { channelId:"1027036",channelName:"Best Express",logisticsName:"shopee线上发货",platformId:"17",countryCode:"TH",active:true },
+      { channelId:"1056705",channelName:"BEST Express",logisticsName:"shopee线上发货",platformId:"17",countryCode:"TH",active:true },
+    ],hasAccess:()=>true });
+  assert.equal(plan.changes[0].channelId,"1056705");
+});
+
+test("automatic preview defers immature orders and fails closed when payment time is missing", async () => {
+  const repository = new FulfillmentRepository();
+  const service = new FulfillmentService({ config:{ ...config,minOrderAgeMinutes:10 },repository,
+    source:{ listPending:async()=>[
+      { ...order,订单编号:"M-MATURE",交易编号:"S-MATURE",付款时间:"2026-07-29 09:30:00" },
+      { ...order,订单编号:"M-NEW",交易编号:"S-NEW",付款时间:"2026-07-29 09:55:00" },
+      { ...order,订单编号:"M-UNKNOWN",交易编号:"S-UNKNOWN" },
+    ] },executor:{},now:()=>new Date("2026-07-29T02:00:00.000Z") });
+  const preview = await service.createPreview({ limit:10 });
+  assert.deepEqual(preview.eligibleOrders.map((item) => item.displayOrderId), ["S-MATURE"]);
+  assert.equal(preview.excludedOrders.find((item) => item.displayOrderId === "S-NEW").exclusions.includes("ORDER_NOT_MATURE"), true);
+  assert.equal(preview.excludedOrders.find((item) => item.displayOrderId === "S-UNKNOWN").exclusions.includes("ORDER_AGE_UNKNOWN"), true);
   repository.close();
 });
 
@@ -423,7 +909,8 @@ test("interactive API documentation always contains valid browser JavaScript", (
 test("real executor pins shop, channel and final confirmation in its worker request", async () => {
   let workerPayload;
   const executorConfig = { ...config, mabangUsername:"local-user", mabangPassword:"local-password",
-    channelValue:"1143663_1023359_fixed_1591", channelSource:"1", verificationTimeoutSeconds:30 };
+    channelValue:"1143663_1023359_fixed_1591", channelSource:"1", verificationTimeoutSeconds:90,
+    trackingWaitTimeoutSeconds:30, distributionVerifyTimeoutSeconds:12 };
   const executor = createMabangFulfillmentExecutor({ config:executorConfig, rootDir:process.cwd(), runWorker:async (payload) => {
     workerPayload = payload;
     return { verified:true, trackingNumber:"TRACK-123", afterStatus:"配货中", channelVerified:true,
@@ -441,6 +928,8 @@ test("real executor pins shop, channel and final confirmation in its worker requ
   assert.equal(workerPayload.shopId, "2021485965");
   assert.equal(workerPayload.channelValue, "1143663_1023359_fixed_1591");
   assert.equal(workerPayload.singleWarehouseVerified, true);
+  assert.equal(workerPayload.trackingWaitTimeoutSeconds, 30);
+  assert.equal(workerPayload.distributionVerifyTimeoutSeconds, 12);
   assert.equal(result.verified, true);
   assert.equal(result.trackingNumber, "TRACK-123");
   assert.equal(result.timings.trackingWait, 3000);
@@ -455,6 +944,34 @@ test("real executor rechecks the configured warehouse allowlist before worker su
       snapshot:{ shopName:config.shopName,orderStatus:config.pendingStatus,sourceOrderId:"M-1",warehouses:["其他仓库"] } },
     channel:{ id:config.channelId,providerId:config.channelProviderId },
   }), { code:"WAREHOUSE_NOT_ALLOWED_BEFORE_SUBMIT" });
+});
+
+test("real executor treats gift warehouse plus one fulfillment warehouse as safe single-warehouse", async () => {
+  let workerPayload;
+  const normalWarehouse = "马来SN-A仓-1308";
+  const executor = createMabangFulfillmentExecutor({ config:{ ...config,channelValue:"fixed",channelSource:"1",
+    allowedWarehouses:[normalWarehouse],verificationTimeoutSeconds:15 },rootDir:process.cwd(),runWorker:async(payload)=>{
+      workerPayload = payload;
+      return { verified:true,trackingNumber:"TRACK-GIFT",afterStatus:"配货中" };
+    } });
+  const result = await executor.fulfill({
+    order:{ tradeNumber:"S-GIFT",warehouse:`${normalWarehouse} / 赠品SKU仓`,warehouses:[normalWarehouse,"赠品SKU仓"],
+      stockStatus:"in_stock",eligible:true,snapshot:{ shopName:config.shopName,orderStatus:config.pendingStatus,
+        sourceOrderId:"M-GIFT",warehouses:[normalWarehouse,"赠品SKU仓"] } },
+    channel:{ id:config.channelId,providerId:config.channelProviderId },
+  });
+  assert.equal(workerPayload.singleWarehouseVerified, true);
+  assert.equal(result.verified, true);
+});
+
+test("real executor blocks a gift-only order before worker submission", async () => {
+  const executor = createMabangFulfillmentExecutor({ config:{ ...config,channelValue:"fixed",channelSource:"1",
+    verificationTimeoutSeconds:15 },rootDir:process.cwd(),runWorker:async()=>assert.fail("gift-only order must not reach worker") });
+  await assert.rejects(executor.fulfill({
+    order:{ tradeNumber:"S-GIFT-ONLY",warehouse:"赠品SKU仓",warehouses:["赠品SKU仓"],stockStatus:"in_stock",eligible:true,
+      snapshot:{ shopName:config.shopName,orderStatus:config.pendingStatus,sourceOrderId:"M-GIFT-ONLY",warehouses:["赠品SKU仓"] } },
+    channel:{ id:config.channelId,providerId:config.channelProviderId },
+  }), { code:"GIFT_ONLY_ORDER_NOT_ALLOWED" });
 });
 
 test("deep preflight uses a non-submit worker action and never sends a commit marker", async () => {
@@ -498,18 +1015,32 @@ test("real executor exposes unavailable Mabang channel as a safety error", async
   }), { code:"CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT" });
 });
 
-test("confirmation stops the entire batch before submission when any order is out of stock", async () => {
+test("real executor preserves the existing-tracking safety code", async () => {
+  const executorConfig = { ...config,channelValue:"fixed",channelSource:"1",verificationTimeoutSeconds:30 };
+  const executor = createMabangFulfillmentExecutor({ config:executorConfig,rootDir:process.cwd(),runWorker:async()=>{
+    throw new Error("ALREADY_HAS_TRACKING_NUMBER: 订单已经存在运单号");
+  } });
+  await assert.rejects(executor.fulfill({
+    order:{ tradeNumber:"S-1",warehouse:"印尼泗水云雀-A仓-1308",warehouses:["印尼泗水云雀-A仓-1308"],
+      stockStatus:"in_stock",eligible:true,
+      snapshot:{ sourceOrderId:"M-1",shopName:"JOJO Mall",orderStatus:"待处理",warehouses:["印尼泗水云雀-A仓-1308"] } },
+    channel:{ id:"1143663",providerId:"1023359" },
+  }), { code:"ALREADY_HAS_TRACKING_NUMBER" });
+});
+
+test("confirmation isolates an out-of-stock order found during batch revalidation", async () => {
   const repository = new FulfillmentRepository();
   const initial = [order, { ...order, 订单编号:"M-2",交易编号:"S-2" }];
   let executorCalls = 0;
   const source = { listPending:async()=>initial, getByIds:async()=>[initial[0], { ...initial[1], 商品库存:0 }] };
   const service = new FulfillmentService({ config:{ ...config, realSubmitEnabled:true }, repository, source,
-    executor:{ fulfill:async()=>{ executorCalls += 1; } } });
+    executor:{ fulfill:async()=>{ executorCalls += 1; return { verified:true,trackingNumber:"TRACK-OK",afterStatus:"配货中" }; } } });
   const preview = await service.createPreview({ limit:2 });
   const batch = await service.confirmPreview(preview.previewId, preview.confirmationToken);
-  assert.equal(batch.status, "failed");
-  assert.equal(batch.orders.every((item) => item.errorCode === "OUT_OF_STOCK_BEFORE_SUBMIT"), true);
-  assert.equal(executorCalls, 0);
+  assert.equal(batch.status, "partial_success");
+  assert.equal(batch.orders.find((item) => item.displayOrderId === "S-1").status, "success");
+  assert.equal(batch.orders.find((item) => item.displayOrderId === "S-2").errorCode, "OUT_OF_STOCK_BEFORE_SUBMIT");
+  assert.equal(executorCalls, 1);
   repository.close();
 });
 
@@ -594,6 +1125,37 @@ test("order concurrency two stops later waves when either in-flight order fails"
   assert.equal(batch.orders.find((item) => item.displayOrderId === "S-W1").status, "success");
   assert.equal(batch.orders.find((item) => item.displayOrderId === "S-W2").errorCode, "WAVE_FAILED");
   assert.equal(batch.orders.filter((item) => item.errorCode === "SKIPPED_AFTER_BATCH_FAILURE").length, 2);
+  repository.close();
+});
+
+test("an existing tracking number is distributed without resubmission and does not stop later orders", async () => {
+  const repository = new FulfillmentRepository();
+  const initial = [order,{ ...order,订单编号:"M-2",交易编号:"S-2" }];
+  const executorCalls = []; const inspections = []; const distributions = [];
+  const executor = { fulfill:async({ order:current })=>{
+    executorCalls.push(current.tradeNumber);
+    if (current.tradeNumber === "S-1") {
+      throw Object.assign(new Error("已有运单号"),{ code:"ALREADY_HAS_TRACKING_NUMBER" });
+    }
+    return { verified:true,trackingNumber:"TRACK-S-2",afterStatus:"配货中" };
+  } };
+  const trackingRecovery = {
+    inspect:async(reference)=>{ inspections.push(reference); return {
+      trackingNumber:"TRACK-EXISTING",orderStatus:"待处理",shippingRecordPending:false }; },
+    distribute:async(reference,trackingNumber)=>{ distributions.push([reference,trackingNumber]); return {
+      verified:true,trackingNumber,afterStatus:"配货中" }; },
+  };
+  const service = new FulfillmentService({ config:{ ...config,realSubmitEnabled:true,orderConcurrency:1,
+    trackingRecoveryCheckSeconds:60,trackingRecoveryDeadlineHours:24 },repository,
+    source:{ listPending:async()=>initial,getByIds:async()=>initial },executor,trackingRecovery });
+  const preview = await service.createPreview({ limit:2 });
+  const batch = await service.confirmPreview(preview.previewId,preview.confirmationToken);
+  assert.equal(batch.status,"success");
+  assert.deepEqual(executorCalls,["S-1","S-2"]);
+  assert.deepEqual(inspections,["S-1"]);
+  assert.deepEqual(distributions,[["S-1","TRACK-EXISTING"]]);
+  assert.equal(batch.orders.every((item)=>item.status === "success"),true);
+  assert.equal(batch.orders.find((item)=>item.displayOrderId === "S-1").timings.existingTrackingReused,true);
   repository.close();
 });
 
@@ -818,6 +1380,43 @@ test("multi-shop scheduler creates isolated previews for every shop", async () =
   assert.equal(scans[0].eligibleCount, 2);
 });
 
+test("global automatic fulfillment switch blocks new and already queued dispatches", async () => {
+  const finished = []; let enqueued = 0; let nextDispatch = { id:7,previewId:"P-7",shopId:"1" };
+  const service = { config:{ shopId:"1",shopName:"Arca Woods",mode:"auto",autoFulfillEnabled:true },
+    getActiveBatch:()=>null,getNextQueuedDispatch:()=>{ const value = nextDispatch; nextDispatch = null; return value; },
+    finishDispatch:(...args)=>finished.push(args),listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],
+    getDispatchQueueStatus:()=>({ queued:1,running:0 }),
+    enqueueQueuedPreview:()=>{ enqueued += 1; } };
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:false,autoFulfillEnabled:false,
+    schedulerIntervalSeconds:300,maxBatchSize:10 },service,services:[service] });
+  const queued = scheduler.queueAutoPreview({ ...service,queuePreviewDispatch:()=>{ enqueued += 1; } },
+    { previewId:"P-NEW",eligibleOrders:[{}] },"Arca Woods");
+  assert.equal(queued,null);
+  await scheduler.drainDispatchQueue();
+  assert.equal(enqueued,0);
+  assert.equal(finished[0][0],7);
+  assert.equal(finished[0][1],"failed");
+  assert.equal(finished[0][2],"SHOP_AUTO_FULFILL_DISABLED");
+  assert.deepEqual(scheduler.status().autoFulfillShops,[]);
+});
+
+test("scheduler skips paused shops and applies the per-shop batch limit", async () => {
+  const calls = [];
+  const shared = { getActiveBatch:()=>null,listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],recordScanRun:()=>{},
+    getLatestPendingPreview:()=>null,autoRecoverManualReviews:async()=>({ checked:0 }) };
+  const services = [
+    { ...shared,config:{ shopName:"Paused",shopId:"1",mode:"paused",maxBatchSize:10 },
+      createPreview:async()=>{ calls.push(["paused"]); } },
+    { ...shared,config:{ shopName:"Manual",shopId:"2",mode:"manual",maxBatchSize:2 },
+      createPreview:async(options)=>{ calls.push(["manual",options.limit]); return { previewId:"P-2",shop:{ id:"2",name:"Manual" },
+        eligibleOrders:[],excludedOrders:[] }; } },
+  ];
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:false,schedulerIntervalSeconds:300,maxBatchSize:10 },
+    service:services[0],services });
+  await scheduler.scanNow();
+  assert.deepEqual(calls, [["manual",2]]);
+});
+
 test("multi-shop scheduler uses one shared account scan and keeps shop records isolated", async () => {
   const scanCalls = []; const previewCalls = []; const fallbackCalls = [];
   const shared = { getActiveBatch:()=>null,listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],recordScanRun:()=>{},
@@ -836,7 +1435,7 @@ test("multi-shop scheduler uses one shared account scan and keeps shop records i
   const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:false,schedulerIntervalSeconds:300,maxBatchSize:10 },
     service:services[0],services,scanSource });
   const result = await scheduler.scanNow();
-  assert.deepEqual(scanCalls, [{ shopIds:["1","2"],limit:10 }]);
+  assert.deepEqual(scanCalls, [{ shopIds:["1","2"],limit:50 }]);
   assert.deepEqual(previewCalls, [["1","A-1"],["2","T-1"]]);
   assert.deepEqual(fallbackCalls, []);
   assert.equal(result.lastScanStrategy, "shared_account_scan");
@@ -860,7 +1459,7 @@ test("shared scan failure safely falls back to the existing per-shop readers", a
   assert.equal(result.lastOutcome, "no_eligible_orders");
 });
 
-test("scheduler automatically enqueues only an explicitly enabled shop after preview checks", async () => {
+test("scheduler scans every enabled shop instead of waiting five minutes after the first candidate", async () => {
   const calls = []; const batches = [];
   const shared = { getActiveBatch:()=>null,listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],
     recordScanRun:()=>{},getLatestPendingPreview:()=>null };
@@ -878,14 +1477,160 @@ test("scheduler automatically enqueues only an explicitly enabled shop after pre
     schedulerIntervalSeconds:300,maxBatchSize:10 },service:services[0],services,
     now:()=>new Date("2026-07-28T00:00:00.000Z") });
   const result = await scheduler.scanNow();
-  assert.deepEqual(calls, ["Arca Woods"]);
-  assert.deepEqual(batches, [{ previewId:"AUTO-P",token:"AUTO-T" }]);
+  assert.deepEqual(calls, ["Arca Woods","Toko Penguin"]);
+  assert.deepEqual(batches, [{ previewId:"AUTO-P",token:"AUTO-T" },{ previewId:"P-2",token:"T-2" }]);
   assert.equal(result.lastOutcome, "auto_fulfillment_started");
   assert.deepEqual(result.autoBatch, { id:"AUTO-B",shopName:"Arca Woods",orderCount:1,status:"queued" });
-  const second = await scheduler.scanNow();
-  assert.deepEqual(calls, ["Arca Woods","Toko Penguin"]);
-  assert.deepEqual(batches[1], { previewId:"P-2",token:"T-2" });
-  assert.equal(second.autoBatch.shopName, "Toko Penguin");
+  assert.equal(result.queuedAutoBatches.length,2);
+  assert.equal(result.lastMessage,"已扫描全部店铺，2 个店铺的 2 个批次共 2 单已按旧单优先追加到自动发货队列；首批为 Arca Woods。");
+});
+
+test("scheduler queues backlog batches round-robin with the shop holding the oldest order first", async () => {
+  const queued = [];
+  const shared = { getActiveBatch:()=>null,listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],
+    recordScanRun:()=>{},getLatestPendingPreview:()=>null };
+  const makePreview = (shopId,shopName,id,paidAt)=>({ previewId:id,oldestEligiblePaidAt:paidAt,
+    shop:{ id:shopId,name:shopName },eligibleOrders:[{ displayOrderId:id }],excludedOrders:[] });
+  const services = [
+    { ...shared,config:{ shopName:"Arca Woods",shopId:"1",autoFulfillEnabled:true,maxBatchSize:1 },
+      createBacklogPreviewsFromRecords:()=>[
+        makePreview("1","Arca Woods","A-1","2026-07-20 10:00:00"),
+        makePreview("1","Arca Woods","A-2","2026-07-20 10:01:00")],
+      queuePreviewDispatch:(id)=>{ queued.push(id); return { id:queued.length,status:"queued" }; } },
+    { ...shared,config:{ shopName:"Toko Penguin",shopId:"2",autoFulfillEnabled:true,maxBatchSize:1 },
+      createBacklogPreviewsFromRecords:()=>[
+        makePreview("2","Toko Penguin","T-1","2026-07-20 09:00:00"),
+        makePreview("2","Toko Penguin","T-2","2026-07-20 09:01:00")],
+      queuePreviewDispatch:(id)=>{ queued.push(id); return { id:queued.length,status:"queued" }; } },
+  ];
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:false,autoFulfillEnabled:true,
+    schedulerIntervalSeconds:300,maxBatchSize:10,backlogBatchesPerScan:5 },service:services[0],services,
+    scanSource:{ listPendingByShop:async()=>new Map([["1",[]],["2",[]]]) } });
+  const result = await scheduler.scanNow();
+  assert.deepEqual(queued,["T-1","A-1","T-2","A-2"]);
+  assert.equal(result.queuedAutoBatches.length,4);
+  assert.equal(result.autoBatch.shopName,"Toko Penguin");
+});
+
+test("persistent dispatch queue runs shop batches serially and continues immediately", async () => {
+  const repository = new FulfillmentRepository();
+  let executing = 0; let maxExecuting = 0; const completed = [];
+  const makeService = (shopId, shopName, tradeNumber) => {
+    const row = { ...order, 店铺名:shopName, 交易编号:tradeNumber, 订单编号:`M-${tradeNumber}` };
+    return new FulfillmentService({ config:{ ...config,shopId,shopName,realSubmitEnabled:true,
+      autoFulfillEnabled:true,mode:"auto",minOrderAgeMinutes:0 },repository,
+      source:{ listPending:async()=>[row],getByIds:async()=>[row] },executor:{ fulfill:async()=>{
+        executing += 1; maxExecuting = Math.max(maxExecuting,executing);
+        await new Promise((resolve)=>setTimeout(resolve,5));
+        completed.push(shopId); executing -= 1;
+        return { verified:true,trackingNumber:`TRACK-${shopId}`,afterStatus:"配货中" };
+      } } });
+  };
+  const services = [makeService("shop-1","Shop One","S-1"),makeService("shop-2","Shop Two","S-2")];
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:false,autoFulfillEnabled:true,
+    schedulerIntervalSeconds:300,maxBatchSize:10 },service:services[0],services });
+  const result = await scheduler.scanNow();
+  assert.equal(result.createdPreviews.length,2);
+  await scheduler.waitForIdle();
+  const queue = services[0].getDispatchQueueStatus();
+  assert.equal(queue.queued,0);
+  assert.equal(queue.running,0);
+  assert.equal(queue.completed,2);
+  assert.deepEqual(completed,["shop-1","shop-2"]);
+  assert.equal(maxExecuting,1);
+  assert.equal(repository.listRecentBatches().filter((batch)=>batch.status === "success").length,2);
+  repository.close();
+});
+
+test("restart reconciliation marks an already distributed order successful without resubmitting", async () => {
+  const repository = new FulfillmentRepository();
+  const base = new FulfillmentService({ config:{ ...config,realSubmitEnabled:true },repository,
+    source:{ listPending:async()=>[order] },executor:{} });
+  const preview = await base.createPreview();
+  const { batch } = base.createConfirmedBatch(preview.previewId, preview.confirmationToken);
+  repository.recoverInterruptedBatches("2026-07-28T00:00:00.000Z");
+  let inspections = 0;
+  const recovered = new FulfillmentService({ config:{ ...config,realSubmitEnabled:true,
+      trackingRecoveryCheckSeconds:300,trackingRecoveryDeadlineHours:24 },repository,
+    source:{ getByIds:async()=>[] },executor:{ fulfill:async()=>{ throw new Error("must not submit"); } },
+    trackingRecovery:{ inspectState:async()=>{ inspections += 1; return { shopId:config.shopId,
+      platformId:config.platformId,orderStatus:"配货中",trackingNumber:"TRACK-RECOVERED" }; } } });
+  const result = await recovered.reconcileInterruptedOrders();
+  assert.equal(inspections,1);
+  assert.deepEqual(result.completed,[{ orderId:"S-1",status:"配货中" }]);
+  assert.equal(repository.getBatch(batch.id).orders[0].status,"success");
+  assert.equal(repository.getBatch(batch.id).orders[0].trackingNumberMasked,"TRAC****ERED");
+  repository.close();
+});
+
+test("restart reconciliation moves an order with submission evidence to tracking recovery", async () => {
+  const repository = new FulfillmentRepository();
+  const base = new FulfillmentService({ config:{ ...config,realSubmitEnabled:true },repository,
+    source:{ listPending:async()=>[order] },executor:{} });
+  const preview = await base.createPreview();
+  const { batch } = base.createConfirmedBatch(preview.previewId, preview.confirmationToken);
+  repository.recoverInterruptedBatches("2026-07-28T00:00:00.000Z");
+  const recovered = new FulfillmentService({ config:{ ...config,realSubmitEnabled:true,
+      trackingRecoveryCheckSeconds:300,trackingRecoveryDeadlineHours:24 },repository,
+    source:{ getByIds:async()=>[] },executor:{},trackingRecovery:{ inspectState:async()=>({ shopId:config.shopId,
+      platformId:config.platformId,orderStatus:"待处理",trackingNumber:"",shippingRecordPending:true }) } });
+  const result = await recovered.reconcileInterruptedOrders();
+  assert.equal(result.trackingRecovery[0].status,"tracking_pending");
+  assert.equal(repository.getBatch(batch.id).orders[0].errorCode,"TRACKING_NUMBER_PENDING");
+  assert.equal(repository.listTrackingRecoveries(10,config.shopId)[0].status,"waiting_tracking");
+  repository.close();
+});
+
+test("a safely failed shop batch does not block the next dispatch", async () => {
+  const repository = new FulfillmentRepository();
+  const completed = [];
+  const makeService = (shopId, shouldFail) => {
+    const row = { ...order, 店铺名:`Shop ${shopId}`,交易编号:`S-${shopId}`,订单编号:`M-${shopId}` };
+    return new FulfillmentService({ config:{ ...config,shopId,shopName:`Shop ${shopId}`,realSubmitEnabled:true,
+      autoFulfillEnabled:true,mode:"auto",minOrderAgeMinutes:0 },repository,
+      source:{ listPending:async()=>[row],getByIds:async()=>[row] },executor:{ fulfill:async()=>{
+        completed.push(shopId);
+        if (shouldFail) throw Object.assign(new Error("temporary shop failure"),{ code:"SHOP_TEMPORARY_FAILURE" });
+        return { verified:true,trackingNumber:`TRACK-${shopId}`,afterStatus:"配货中" };
+      } } });
+  };
+  const services = [makeService("1",true),makeService("2",false)];
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:false,autoFulfillEnabled:true,
+    schedulerIntervalSeconds:300,maxBatchSize:10 },service:services[0],services });
+  await scheduler.scanNow();
+  await scheduler.waitForIdle();
+  const queue = services[0].getDispatchQueueStatus();
+  assert.deepEqual(completed,["1","2"]);
+  assert.equal(queue.failed,1);
+  assert.equal(queue.completed,1);
+  assert.equal(scheduler.status().dispatchQueue.paused,false);
+  repository.close();
+});
+
+test("catch-up mode starts for a large backlog and exits only after the queue is drained", () => {
+  const notifications = [];
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ catchUpEnabled:true,catchUpThresholdOrders:20,
+      catchUpLowWaterOrders:10,catchUpMaxWaitMinutes:30,dispatchFailureCircuitThreshold:3 },
+    service:{ getActiveBatch:()=>null,listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],getDispatchQueueStatus:()=>({}) },
+    notifier:{ notify:(message)=>notifications.push(message) },now:()=>new Date("2026-08-08T10:00:00.000Z") });
+  scheduler.updateCatchUp({ detectedOrders:20,oldestOrderAt:"2026-08-08T09:50:00.000Z",queueOrders:20 });
+  assert.equal(scheduler.catchUp.active,true);
+  assert.equal(scheduler.finishCatchUpIfDrained({ detectedOrders:0,queueOrders:1 }),false);
+  assert.equal(scheduler.finishCatchUpIfDrained({ detectedOrders:0,queueOrders:0 }),true);
+  assert.equal(scheduler.catchUp.active,false);
+  assert.deepEqual(notifications.map((item)=>item.title),["自动发货进入积压恢复","自动发货积压已清空"]);
+});
+
+test("three consecutive dispatch failures trip the circuit breaker and resume clears it", () => {
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ dispatchFailureCircuitThreshold:3 },
+    service:{ getActiveBatch:()=>null,listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],getDispatchQueueStatus:()=>({}) } });
+  assert.equal(scheduler.recordDispatchFailure("TEMPORARY_FAILURE","one"),false);
+  assert.equal(scheduler.recordDispatchFailure("TEMPORARY_FAILURE","two"),false);
+  assert.equal(scheduler.recordDispatchFailure("TEMPORARY_FAILURE","three"),true);
+  assert.equal(scheduler.dispatchPaused,true);
+  scheduler.resumeDispatch();
+  assert.equal(scheduler.dispatchPaused,false);
+  assert.equal(scheduler.consecutiveDispatchFailures,0);
 });
 
 test("scheduler skips scanning while a batch is active", async () => {
@@ -928,7 +1673,7 @@ test("Windows notifier is opt-in and forwards only bounded notification data", (
   assert.equal(Object.hasOwn(calls[0].options.env, "FULFILLMENT_MABANG_PASSWORD"), false);
 });
 
-test("confirmation performs one batch inventory read and stops after an executor pre-submit stock failure", async () => {
+test("confirmation isolates a deterministic stock failure and continues later orders", async () => {
   const repository = new FulfillmentRepository();
   const initial = [order, { ...order,订单编号:"M-2",交易编号:"S-2" }, { ...order,订单编号:"M-3",交易编号:"S-3" }];
   let reads = 0; let executorCalls = 0;
@@ -943,11 +1688,36 @@ test("confirmation performs one batch inventory read and stops after an executor
   const batch = await service.confirmPreview(preview.previewId, preview.confirmationToken);
   assert.equal(batch.status, "partial_success");
   assert.equal(reads, 1);
-  assert.equal(executorCalls, 2);
+  assert.equal(executorCalls, 3);
   assert.equal(batch.orders.find((item) => item.displayOrderId === "S-1").status, "success");
+  assert.equal(batch.orders.find((item) => item.displayOrderId === "S-2").status, "needs_attention");
   assert.equal(batch.orders.find((item) => item.displayOrderId === "S-2").errorCode, "OUT_OF_STOCK_BEFORE_SUBMIT");
-  assert.equal(batch.orders.find((item) => item.displayOrderId === "S-3").errorCode, "SKIPPED_AFTER_BATCH_FAILURE");
+  assert.equal(batch.orders.find((item) => item.displayOrderId === "S-3").status, "success");
+  const repeatedPreview = await service.createPreview({ limit:3 });
+  assert.equal(repeatedPreview.eligibleOrders.length, 0);
+  assert.equal(repeatedPreview.excludedOrders.every((item) => item.exclusions.includes("ALREADY_FULFILLED")), true);
   repository.close();
+});
+
+test("scheduler performs an independent read-only scan while a batch is active", async () => {
+  const activeBatch = { id:"BATCH-ACTIVE",status:"running",createdAt:"2026-07-28T00:00:00.000Z" };
+  const scans = []; const queued = []; let recoveryCalls = 0;
+  const service = { config:{ shopId:"1",shopName:"Active Shop",autoFulfillEnabled:true },
+    getActiveBatch:()=>activeBatch,getLatestPendingPreview:()=>null,getDispatchByPreview:()=>null,
+    listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],recordScanRun:(run)=>scans.push(run),
+    recoverPendingTrackingNumbers:async()=>{ recoveryCalls += 1; },
+    createPreviewFromRecords:()=>({ previewId:"P-NEW",shop:{ id:"1",name:"Active Shop" },
+      eligibleOrders:[{ displayOrderId:"S-NEW" }],excludedOrders:[] }),
+    queuePreviewDispatch:(previewId)=>{ queued.push(previewId); return { id:1,status:"queued" }; },
+  };
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:true,autoFulfillEnabled:true,
+    schedulerIntervalSeconds:300,maxBatchSize:10 },service,services:[service],
+    scanSource:{ listPendingByShop:async()=>new Map([["1",[{ ...order,店铺名:"Active Shop" }]]]) } });
+  const result = await scheduler.scanNow();
+  assert.equal(result.lastOutcome,"auto_fulfillment_started");
+  assert.deepEqual(queued,["P-NEW"]);
+  assert.equal(recoveryCalls,0);
+  assert.equal(scans[0].message.includes("独立只读扫描"),true);
 });
 
 test("explicit Mabang order reads use the targeted worker instead of scanning the date range", async () => {
@@ -986,16 +1756,16 @@ test("shared Mabang scan logs in once, filters configured shops, and groups comp
   assert.equal([...grouped.values()].flat().some((item)=>item["店铺名"] === "Unknown Shop"), false);
 });
 
-test("unlocked Mabang reads retain complete SKU groups for the newest candidate orders", async () => {
+test("unlocked Mabang reads retain complete SKU groups for the oldest candidate orders", async () => {
   const records = Array.from({ length:22 }, (_, index) => ({ ...order,订单编号:`M-${index}`,交易编号:`S-${index}`,
     付款时间:`2026-07-${String(index + 1).padStart(2,"0")} 10:00:00` }));
-  records.push({ ...records[21],SKU:"SKU-SECOND" });
+  records.push({ ...records[0],SKU:"SKU-SECOND" });
   const sourceConfig = { ...config,mabangUsername:"local-user",mabangPassword:"local-password",lookbackDays:3 };
   const source = createMabangFulfillmentSource({ config:sourceConfig,rootDir:process.cwd(),runWorker:async()=>({ records }) });
   const result = await source.listPending({ limit:1 });
   assert.equal(new Set(result.map((row)=>row["订单编号"])).size, 20);
-  assert.equal(result.filter((row)=>row["订单编号"] === "M-21").length, 2);
-  assert.equal(result.some((row)=>row["订单编号"] === "M-0"), false);
+  assert.equal(result.filter((row)=>row["订单编号"] === "M-0").length, 2);
+  assert.equal(result.some((row)=>row["订单编号"] === "M-21"), false);
 });
 
 test("a failed idempotency reservation can be retried but a success cannot", async () => {
@@ -1037,4 +1807,101 @@ test("a needs-attention order remains locked against duplicate fulfillment", asy
   assert.equal(duplicatePreview.eligibleOrders.length, 0);
   assert.equal(duplicatePreview.excludedOrders[0].exclusions.includes("ALREADY_FULFILLED"), true);
   repository.close();
+});
+
+test("message-review adapter separates read-only candidates from confirmed recovery", async () => {
+  const calls = [];
+  const recovery = createMabangMessageReviewRecovery({
+    config:{ ...config,mabangUsername:"local-user",mabangPassword:"local-password",messageReviewRecoveryLimit:3 },
+    shops:[{ shopId:"2021485965",shopName:"JOJO Mall",platformId:"17",mode:"auto" }],rootDir:process.cwd(),
+    runWorker:async(payload)=>{
+      calls.push(payload);
+      if (payload.action === "fulfillment-message-review-candidates") return { records:[{
+        platformOrderId:"S-REVIEW",shopId:"2021485965",eligible:true,exclusions:[],
+      }] };
+      return { platformOrderId:"S-REVIEW",shopId:"2021485965",movedToPending:true,afterStatus:"待处理" };
+    },
+  });
+
+  const candidates = await recovery.listCandidates({ limit:99 });
+  const recovered = await recovery.recover("S-REVIEW");
+
+  assert.equal(candidates.length,1);
+  assert.equal(calls[0].action,"fulfillment-message-review-candidates");
+  assert.equal(calls[0].limit,10);
+  assert.equal(Object.hasOwn(calls[0],"commit"),false);
+  assert.equal(calls[1].action,"fulfillment-message-review-recover");
+  assert.equal(calls[1].commit,"MESSAGE_REVIEW_RECOVERY_CONFIRMED");
+  assert.equal(recovered.movedToPending,true);
+});
+
+test("message-review automatic recovery is disabled by default", async () => {
+  let recoveryCalls = 0;
+  const service = { config:{ shopId:"1",shopName:"JOJO Mall",mode:"manual",autoFulfillEnabled:false },
+    getActiveBatch:()=>null,getLatestPendingPreview:()=>null,listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],
+    recordScanRun:()=>{},recoverPendingTrackingNumbers:async()=>({ checked:0 }),
+    autoRecoverManualReviews:async()=>({ checked:0 }),
+    createPreview:async()=>({ previewId:"P",shop:{ id:"1",name:"JOJO Mall" },eligibleOrders:[],excludedOrders:[] }) };
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:true,schedulerIntervalSeconds:300,
+    maxBatchSize:10,messageReviewRecoveryEnabled:false,messageReviewRecoveryIntervalMinutes:30 },service,services:[service],
+    messageReviewRecovery:{ run:async()=>{ recoveryCalls += 1; return { checked:0,moved:[],results:[] }; } } });
+
+  await scheduler.scanNow();
+  assert.equal(recoveryCalls,0);
+  assert.equal(scheduler.status().messageReviewRecoveryEnabled,false);
+});
+
+test("message-review automatic recovery honors its independent interval", async () => {
+  let recoveryCalls = 0;
+  let now = new Date("2026-08-04T01:00:00.000Z");
+  const service = { config:{ shopId:"1",shopName:"JOJO Mall",mode:"manual",autoFulfillEnabled:false },
+    getActiveBatch:()=>null,getLatestPendingPreview:()=>null,listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],
+    recordScanRun:()=>{},recoverPendingTrackingNumbers:async()=>({ checked:0 }),autoRecoverManualReviews:async()=>({ checked:0 }),
+    createPreview:async()=>({ previewId:"P",shop:{ id:"1",name:"JOJO Mall" },eligibleOrders:[],excludedOrders:[] }) };
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:true,schedulerIntervalSeconds:300,
+    maxBatchSize:10,messageReviewRecoveryEnabled:true,messageReviewRecoveryLimit:3,messageReviewRecoveryIntervalMinutes:30 },
+    service,services:[service],now:()=>now,
+    messageReviewRecovery:{ run:async()=>{ recoveryCalls += 1; return { checked:0,moved:[],results:[] }; } } });
+
+  await scheduler.scanNow();
+  now = new Date("2026-08-04T01:05:00.000Z");
+  await scheduler.scanNow();
+  assert.equal(recoveryCalls,1);
+  assert.equal(scheduler.status().lastMessageReviewCheckAt,"2026-08-04T01:00:00.000Z");
+  now = new Date("2026-08-04T01:30:00.000Z");
+  await scheduler.scanNow();
+  assert.equal(recoveryCalls,2);
+});
+
+test("message-review recovery waits before a targeted full safety scan", async () => {
+  const timers = [];
+  let previewCalls = 0;
+  let batchCalls = 0;
+  const service = { config:{ shopId:"1",shopName:"JOJO Mall",mode:"auto",autoFulfillEnabled:true },
+    getActiveBatch:()=>null,getLatestPendingPreview:()=>null,listPendingPreviewSummaries:()=>[],listRecentScanRuns:()=>[],
+    recordScanRun:()=>{},recoverPendingTrackingNumbers:async()=>({ checked:0 }),
+    createPreview:async({ orderIds })=>{
+      previewCalls += 1;
+      assert.deepEqual(orderIds,["S-REVIEW"]);
+      return { previewId:"P-REVIEW",confirmationToken:"T-REVIEW",shop:{ id:"1",name:"JOJO Mall" },
+        eligibleOrders:[{ displayOrderId:"S-REVIEW" }],excludedOrders:[] };
+    },
+    enqueuePreview:()=>{ batchCalls += 1; return { id:"B-REVIEW",status:"queued" }; },
+  };
+  const scheduler = new FulfillmentPreviewScheduler({ config:{ schedulerEnabled:true,autoFulfillEnabled:true,
+    schedulerIntervalSeconds:300,maxBatchSize:10,messageReviewRecoveryEnabled:true,messageReviewRecoveryLimit:3,
+    messageReviewRecoveryIntervalMinutes:30,messageReviewFollowUpDelaySeconds:30 },service,services:[service],
+    messageReviewRecovery:{ run:async()=>({ checked:1,moved:[{ shopId:"1",platformOrderId:"S-REVIEW" }],results:[] }) },
+    setTimeoutFn:(callback)=>{ timers.push(callback); return { unref() {} }; },clearTimeoutFn:()=>{} });
+
+  const recovered = await scheduler.scanNow();
+  assert.equal(recovered.lastOutcome,"message_review_recovered");
+  assert.equal(previewCalls,0);
+  assert.equal(batchCalls,0);
+  assert.equal(timers.length,1);
+
+  await timers[0]();
+  assert.equal(previewCalls,1);
+  assert.equal(batchCalls,1);
+  assert.equal(scheduler.status().lastOutcome,"auto_fulfillment_started");
 });

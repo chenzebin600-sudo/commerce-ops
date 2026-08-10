@@ -2,17 +2,22 @@
 import {
   BarChart3,
   Boxes,
+  Braces,
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
+  Database,
   FileSearch,
   LayoutDashboard,
   Megaphone,
   Radar,
+  RefreshCw,
   ScanSearch,
   Send,
+  ShieldCheck,
   ShoppingBag,
   Truck,
+  Warehouse,
 } from "@lucide/vue";
 import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -38,9 +43,16 @@ const groups = [
   { label: "执行", items: [
     { path: "/mabang", label: "马帮数据", icon: ShoppingBag },
     { path: "/mabang-listing", label: "商品刊登", icon: Send },
-    { path: "/fulfillment", label: "履约中心", icon: Truck },
+    { path: "/inventory-sync", label: "库存同步", icon: RefreshCw },
+    { path: "/shopee-api", label: "Shopee API", icon: Braces },
+    { path: "/returns-collection", label: "售后数据采集", icon: Database },
+    { path: "/fulfillment", label: "自动发货", icon: Truck },
+    { path: "/warehouse-transfer", label: "订单换仓", icon: Warehouse },
   ] },
-  { label: "治理", items: [{ path: "/audit", label: "操作记录", icon: ClipboardCheck }] },
+  { label: "治理", items: [
+    { path: "/shop-health", label: "店铺健康", icon: ShieldCheck },
+    { path: "/audit", label: "操作记录", icon: ClipboardCheck },
+  ] },
 ];
 
 const activePath = computed(() => route.path);

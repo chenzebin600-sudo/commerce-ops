@@ -26,12 +26,14 @@ function safePreview(preview) {
 }
 
 export class FulfillmentAgentTools {
-  constructor({ repository, scheduler, serviceForShop, serviceForPreview, dashboardWindows, now = () => new Date() }) {
+  constructor({ repository, scheduler, serviceForShop, serviceForPreview, dashboardWindows, shopScope = () => null,
+    now = () => new Date() }) {
     this.repository = repository;
     this.scheduler = scheduler;
     this.serviceForShop = serviceForShop;
     this.serviceForPreview = serviceForPreview;
     this.dashboardWindows = dashboardWindows;
+    this.shopScope = shopScope;
     this.now = now;
   }
 
@@ -44,11 +46,11 @@ export class FulfillmentAgentTools {
     const args = rawArguments && typeof rawArguments === "object" && !Array.isArray(rawArguments) ? rawArguments : {};
     if (name === "get_dashboard") {
       const days = boundedInteger(args.days, 7, 1, 30);
-      return this.repository.getDashboardSummary(this.dashboardWindows(this.now(), days));
+      return this.repository.getDashboardSummary(this.dashboardWindows(this.now(), days), this.shopScope());
     }
     if (name === "get_scheduler_status") return this.scheduler.status();
     if (name === "list_recent_batches") {
-      return this.serviceForShop().listRecentBatches(boundedInteger(args.limit, 10, 1, 20)).map((batch) => ({
+      return this.repository.listRecentBatches(boundedInteger(args.limit, 10, 1, 20), this.shopScope()).map((batch) => ({
         id: batch.id, previewId: batch.previewId, status: batch.status, createdAt: batch.createdAt,
         finishedAt: batch.finishedAt, orderCount: batch.orders?.length || 0,
         successCount: batch.orders?.filter((order) => order.status === "success").length || 0,

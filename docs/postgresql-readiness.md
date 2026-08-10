@@ -2,7 +2,7 @@
 
 ## Scope and snapshot
 
-This E2 report prepares a future migration; it does not install PostgreSQL, create PostgreSQL tables, connect a driver, dual-write, or modify formal SQLite data. Base row-count evidence was captured from the configured formal database on 2026-07-16 after `PRAGMA integrity_check = ok`; the additive schema inventory was reconciled through formal migration 022 on 2026-07-28. Row counts are planning evidence rather than a live operational dashboard.
+This E2 report prepares a future migration; it does not install PostgreSQL, create PostgreSQL tables, connect a driver, dual-write, or modify formal SQLite data. Base row-count evidence was captured from the configured formal database on 2026-07-16 after `PRAGMA integrity_check = ok`; the additive schema inventory was reconciled through migration 026 on 2026-08-08. Row counts are planning evidence rather than a live operational dashboard.
 
 ## Current tables
 
@@ -92,6 +92,19 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 | `foundation_tasks` | 214 | unified task projection and orchestration | `id` | optional account, owner, store and warehouse references; unique domain reference and idempotency key |
 | `foundation_task_events` | 214 | immutable unified task history | `id` | task `CASCADE`; unique task version and idempotency key |
 | `foundation_task_leases` | 0 | task execution leases | `task_id` | task `CASCADE`; unique lease token and checked expiry |
+| `foundation_operation_plans` | 0 | immutable approved write-operation plans | `id` | optional task `SET NULL`; unique plan hash, optimistic state version and checked expiry |
+| `foundation_operation_plan_events` | 0 | immutable operation-plan state history | `id` | plan `CASCADE`; unique plan version and idempotency key |
+| `advertising_source_batches` | 0 | immutable Shopee advertising import evidence | `id` | unique raw SHA-256; indexed shop, period and import time |
+| `advertising_performance_facts` | 0 | period-grained advertising facts | `id` | batch `CASCADE`; unique batch plus source sequence |
+| `advertising_target_policies` | 0 | versioned read-only target ROAS configuration | `id` | unique shop, target key and effective date |
+| `shopee_health_settings` | 1 | encrypted health-monitor configuration | `id` | singleton; DingTalk config `SET NULL`; token ciphertext only |
+| `shopee_health_thresholds` | 0 | per-metric warning overrides | `metric_id` | one optional warning boundary per official metric |
+| `shopee_health_runs` | 0 | manual and scheduled collection history | `id` | indexed by creation time and bounded run status |
+| `shopee_health_snapshots` | 0 | permanent daily shop-health trend facts | `id` | run `CASCADE`; unique date plus Shopee shop |
+| `shopee_health_issues` | 0 | deduplicated AccountHealth exception lifecycle | `id` | unique stable fingerprint; indexed active severity and shop |
+| `shopee_health_notifications` | 0 | in-app health alerts | `id` | optional issue `SET NULL`; indexed unread time |
+| `shopee_health_appeals` | 0 | local human appeal workflow | `id` | issue `RESTRICT`; one appeal per health issue |
+| `shopee_health_appeal_events` | 0 | immutable appeal collaboration history | `id` | appeal `CASCADE`; indexed chronological timeline |
 
 ## Type conversion details
 
@@ -105,7 +118,11 @@ Listing search keywords, selling points, usage scenarios, platform attributes, v
 
 Growth radar source scope/header/redaction documents, raw row values/types, mapping candidates, quality context, shop category scope, and mapping event snapshots are also JSON text and must become validated `jsonb`. V2 rule parameters, run quality summaries, warehouse mapping evidence, SKU metric evidence, shop metric evidence, shop-SKU metric evidence, signal evidence, focus-item evidence snapshots and focus-event evidence snapshots must also become validated `jsonb`. Preserve the explicit `historical_observed` and reserved `current_online` semantic checks during conversion.
 
-Foundation source, account, capability, owner, warehouse, identity, source-run and task evidence documents are JSON text and must become validated `jsonb`. Credential ownership remains in the original account profile or sidecar; `foundation_integration_accounts` contains only typed references and bounded non-secret metadata. Preserve task idempotency keys, state versions, immutable events, lease uniqueness and the confirmed/excluded identity states.
+Foundation source, account, capability, owner, warehouse, identity, source-run, task and operation-plan evidence documents are JSON text and must become validated `jsonb`. Credential ownership remains in the original account profile or sidecar; `foundation_integration_accounts` contains only typed references and bounded non-secret metadata. Preserve task and plan idempotency keys, content hashes, state versions, immutable events, lease uniqueness and the confirmed/excluded identity states. Operation-plan `UNKNOWN` states must remain non-retryable until official readback evidence reconciles them.
+
+Shopee advertising batch summaries are JSON text and must become validated `jsonb`. Preserve immutable source hashes, period grain, source sequence identity, product/ad fallback keys, and the effective-date history of target ROAS policies. These tables are read-only decision evidence and do not authorize platform writes.
+
+Shopee health metric summaries, issue source detail, appeal evidence links and notification metadata are JSON text and must become validated `jsonb`. Preserve the unique daily shop snapshot and issue fingerprint constraints. `shopee_health_settings.encrypted_token_key` remains ciphertext and must never appear in migration reports, API responses or logs; the local appeal workflow records Seller Center work but does not authorize AccountHealth writes.
 
 Mabang image collection interface profiles are redacted JSON text and must become `jsonb`. The image resource layer stores only metadata and a safe relative path in the database; image bytes remain in the unified file layer. Preserve the unique SHA-256 constraint and the `(asset_id, product_id)` link identity.
 

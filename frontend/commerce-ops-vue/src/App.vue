@@ -5,7 +5,8 @@ import OpsShell from "@/layouts/OpsShell.vue";
 import { getAuthenticationStatus, logout } from "@/services/api";
 
 type AccessState = "checking" | "authenticated" | "required";
-const accessState = ref<AccessState>("checking");
+const standaloneShopee = new URLSearchParams(window.location.search).get("standalone") === "shopee";
+const accessState = ref<AccessState>(standaloneShopee ? "authenticated" : "checking");
 const authenticationEnabled = ref(false);
 
 async function checkAccess() {
@@ -24,7 +25,9 @@ async function signOut() {
   accessState.value = "required";
 }
 
-onMounted(checkAccess);
+onMounted(() => {
+  if (!standaloneShopee) checkAccess();
+});
 </script>
 
 <template>

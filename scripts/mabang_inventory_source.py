@@ -7,6 +7,7 @@ import html
 import zipfile
 import traceback
 import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
 from datetime import date, datetime
 import requests
 import pandas as pd
@@ -35,6 +36,7 @@ STOCK_EXPORT_URL = PRIVATE_URL + '/index.php?mod=warehouse.doexportwarehousestoc
 HEADERS_AJAX = {'Accept': 'application/json, text/javascript, */*; q=0.01', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'X-Requested-With': 'XMLHttpRequest', 'Origin': BASE_URL, 'Referer': ORDER_PAGE_URL}
 HEADERS_PAGE = {'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Referer': INITIAL_URL}
 TARGET_FIELDS = ['库存SKU编号', '商品状态', '活跃度', '是否新款', '一级目录', '二级目录', '三级目录', '一级品牌', '二级品牌', '采购员', '中文名称', '英文名称', '父级仓库', '仓库', '仓位', '销量(7/28/42)', '预测日销量(个)', '仓位库存', '当前可售天数', '在途量', '海外仓预调入量', '分仓调拨预调入量', '警戒量', '警戒天数', '未发货量', '分仓调拨未发货量', '可用库存量', '最后出库时间', '最后入库时间', '商品备注']
+REQUIRED_FIELDS = ['库存SKU编号', '仓库', '可用库存量']
 NUMERIC_FIELDS = ['预测日销量(个)', '仓位库存', '当前可售天数', '在途量', '海外仓预调入量', '分仓调拨预调入量', '警戒量', '警戒天数', '未发货量', '分仓调拨未发货量', '可用库存量']
 
 class WPSLogger:
@@ -53,12 +55,592 @@ class WPSLogger:
         self._print('失败', message)
 logger = WPSLogger()
 
+
+class HtmlTableContractParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tables = []
+        self.table_stack = []
+        self.cell_stack = []
+
+    def handle_starttag(self, tag, attrs):
+        lowered = tag.lower()
+        if lowered == 'table':
+            table = {'rowCount': 0, 'cellCount': 0, 'headerLabels': []}
+            self.tables.append(table)
+            self.table_stack.append(table)
+        elif lowered == 'tr' and self.table_stack:
+            self.table_stack[-1]['rowCount'] += 1
+        elif lowered in {'th', 'td'} and self.table_stack:
+            self.table_stack[-1]['cellCount'] += 1
+            self.cell_stack.append({'tag': lowered, 'parts': [], 'table': self.table_stack[-1]})
+
+    def handle_data(self, data):
+        if self.cell_stack:
+            self.cell_stack[-1]['parts'].append(data)
+
+    def handle_endtag(self, tag):
+        lowered = tag.lower()
+        if lowered in {'th', 'td'} and self.cell_stack:
+            cell = self.cell_stack.pop()
+            if cell['tag'] == 'th':
+                label = re.sub(r'\s+', ' ', ''.join(cell['parts'])).strip()
+                if label and not SENSITIVE_STRUCTURE_KEY.search(label):
+                    cell['table']['headerLabels'].append(label[:80])
+        elif lowered == 'table' and self.table_stack:
+            self.table_stack.pop()
+
+
+def describe_html_table_contracts(document):
+    parser = HtmlTableContractParser()
+    parser.feed(str(document or ''))
+    return [
+        {
+            'index': index,
+            'rowCount': int(table['rowCount']),
+            'cellCount': int(table['cellCount']),
+            'headerLabels': list(dict.fromkeys(table['headerLabels']))[:60],
+        }
+        for index, table in enumerate(parser.tables)
+        if table['rowCount'] or table['cellCount'] or table['headerLabels']
+    ][:60]
+
+
+class HtmlLabelContextParser(HTMLParser):
+    TARGETS = ('库存sku编号', '可用库存量', '库存sku', '可用库存')
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack = []
+        self.contexts = []
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        descriptor = {'tag': tag.lower()}
+        for key in ('id', 'class', 'name'):
+            value = re.sub(r'[^a-zA-Z0-9_\-\s]', '', str(attributes.get(key) or ''))[:120].strip()
+            if value and not SENSITIVE_STRUCTURE_KEY.search(value):
+                descriptor[key] = value
+        self.stack.append(descriptor)
+
+    def handle_startendtag(self, tag, attrs):
+        return
+
+    def handle_endtag(self, tag):
+        lowered = tag.lower()
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index].get('tag') == lowered:
+                del self.stack[index:]
+                break
+
+    def handle_data(self, data):
+        normalized = re.sub(r'\s+', '', str(data or '')).lower()
+        hits = [target for target in self.TARGETS if target in normalized]
+        if not hits:
+            return
+        context = {'labels': hits, 'path': self.stack[-8:]}
+        if context not in self.contexts:
+            self.contexts.append(context)
+
+
+def describe_html_label_contexts(document):
+    parser = HtmlLabelContextParser()
+    parser.feed(str(document or ''))
+    return parser.contexts[:30]
+
+
+class HtmlElementCountParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.counts = {}
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        class_names = [part for part in str(attributes.get('class') or '').split() if re.fullmatch(r'[a-zA-Z0-9_-]+', part)]
+        descriptor = tag.lower() + ('.' + '.'.join(sorted(class_names)) if class_names else '')
+        self.counts[descriptor] = self.counts.get(descriptor, 0) + 1
+
+
+def describe_repeated_html_elements(document):
+    parser = HtmlElementCountParser()
+    parser.feed(str(document or ''))
+    return [
+        {'element': descriptor, 'count': count}
+        for descriptor, count in sorted(parser.counts.items(), key=lambda item: (-item[1], item[0]))
+        if count >= 2
+    ][:80]
+
+
+class HtmlTagSequenceAfterInventoryHeaderParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.capturing = False
+        self.header_hit_count = 0
+        self.sequence = []
+
+    def handle_data(self, data):
+        normalized = re.sub(r'\s+', '', str(data or '')).lower()
+        if not self.capturing and '库存sku编号' in normalized:
+            self.header_hit_count += 1
+            if self.header_hit_count >= 2:
+                self.capturing = True
+
+    def handle_starttag(self, tag, attrs):
+        if not self.capturing or len(self.sequence) >= 180:
+            return
+        attributes = dict(attrs)
+        descriptor = {'tag': tag.lower()}
+        for key in ('id', 'class', 'name'):
+            value = re.sub(r'[^a-zA-Z0-9_\-\s]', '', str(attributes.get(key) or ''))[:120].strip()
+            if value and not SENSITIVE_STRUCTURE_KEY.search(value):
+                descriptor[key] = value
+        self.sequence.append(descriptor)
+
+
+def describe_inventory_header_tag_sequence(document):
+    parser = HtmlTagSequenceAfterInventoryHeaderParser()
+    parser.feed(str(document or ''))
+    return parser.sequence
+
+
+class InventorySearchRowContractParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.ul_depth = 0
+        self.rows = []
+        self.current_row = None
+
+    def handle_starttag(self, tag, attrs):
+        lowered = tag.lower()
+        if lowered == 'ul':
+            self.ul_depth += 1
+            if self.ul_depth == 1:
+                self.current_row = []
+        elif lowered == 'li' and self.ul_depth == 1 and self.current_row is not None:
+            attributes = dict(attrs)
+            classes = [part for part in str(attributes.get('class') or '').split() if re.fullmatch(r'[a-zA-Z0-9_-]+', part)]
+            safe_attribute_names = sorted(
+                key for key in attributes
+                if re.fullmatch(r'[a-zA-Z0-9_:-]+', str(key)) and not SENSITIVE_STRUCTURE_KEY.search(str(key))
+            )
+            self.current_row.append({
+                'classNames': classes,
+                'attributeNames': safe_attribute_names,
+            })
+
+    def handle_endtag(self, tag):
+        if tag.lower() != 'ul' or self.ul_depth <= 0:
+            return
+        if self.ul_depth == 1 and self.current_row is not None:
+            self.rows.append(self.current_row)
+            self.current_row = None
+        self.ul_depth -= 1
+
+
+def describe_inventory_search_rows(document):
+    parser = InventorySearchRowContractParser()
+    parser.feed(str(document or ''))
+    histogram = {}
+    for row in parser.rows:
+        histogram[str(len(row))] = histogram.get(str(len(row)), 0) + 1
+    return {
+        'rowCount': len(parser.rows),
+        'columnCountHistogram': histogram,
+        'firstRowColumns': parser.rows[0] if parser.rows else [],
+    }
+
+
+class InventorySearchHtmlParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.ul_depth = 0
+        self.li_depth = 0
+        self.rows = []
+        self.current_row = None
+        self.current_column = None
+
+    def handle_starttag(self, tag, attrs):
+        lowered = tag.lower()
+        if lowered == 'ul':
+            self.ul_depth += 1
+            if self.ul_depth == 1:
+                self.current_row = []
+            return
+        if lowered == 'li' and self.ul_depth == 1:
+            self.li_depth += 1
+            if self.li_depth == 1 and self.current_row is not None:
+                attributes = dict(attrs)
+                self.current_column = {
+                    'classNames': str(attributes.get('class') or '').split(),
+                    'attributes': {
+                        key: str(value or '')
+                        for key, value in attributes.items()
+                        if key in {'data-id'}
+                    },
+                    'texts': [],
+                }
+                self.current_row.append(self.current_column)
+
+    def handle_data(self, data):
+        if self.current_column is None:
+            return
+        value = re.sub(r'\s+', ' ', html.unescape(str(data or ''))).strip()
+        if value:
+            self.current_column['texts'].append(value)
+
+    def handle_endtag(self, tag):
+        lowered = tag.lower()
+        if lowered == 'li' and self.ul_depth == 1 and self.li_depth > 0:
+            self.li_depth -= 1
+            if self.li_depth == 0:
+                self.current_column = None
+            return
+        if lowered == 'ul' and self.ul_depth > 0:
+            if self.ul_depth == 1 and self.current_row is not None:
+                self.rows.append(self.current_row)
+                self.current_row = None
+                self.current_column = None
+                self.li_depth = 0
+            self.ul_depth -= 1
+
+
+def parse_inventory_search_html_rows(document):
+    parser = InventorySearchHtmlParser()
+    parser.feed(str(document or ''))
+    return parser.rows
+
+
+def classify_inventory_token(value):
+    text = str(value or '').strip()
+    if re.fullmatch(r'-?[\d,]+(?:\.\d+)?', text):
+        return 'number'
+    if re.fullmatch(r'\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2}:\d{2})?', text):
+        return 'datetime'
+    if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]{2,}', text) and re.search(r'[A-Za-z]', text) and re.search(r'\d', text):
+        return 'identifier'
+    return 'text'
+
+
+def parse_inventory_search_records(document):
+    parsed_rows = parse_inventory_search_html_rows(document)
+    records = []
+    for row_index, columns in enumerate(parsed_rows, start=1):
+        if len(columns) != 10:
+            raise Exception(f'库存 HTML 第 {row_index} 行列数异常：预期 10 列，实际 {len(columns)} 列')
+        sku_tokens = columns[1].get('texts') or []
+        warehouse_tokens = columns[3].get('texts') or []
+        stock_tokens = columns[6].get('texts') or []
+        if not sku_tokens or not warehouse_tokens or len(stock_tokens) < 2:
+            raise Exception(f'库存 HTML 第 {row_index} 行缺少 SKU、仓库或可用库存字段')
+        available_text = str(stock_tokens[1]).replace(',', '').strip()
+        if not re.fullmatch(r'-?\d+(?:\.\d+)?', available_text):
+            raise Exception(f'库存 HTML 第 {row_index} 行可用库存不是数字')
+        available_number = float(available_text) if '.' in available_text else int(available_text)
+        records.append({
+            '库存SKU编号': str(sku_tokens[0]).strip(),
+            '仓库': str(warehouse_tokens[0]).strip(),
+            '可用库存量': available_number,
+        })
+    return records
+
+
+def describe_inventory_search_row_tokens(document):
+    rows = parse_inventory_search_html_rows(document)
+    if not rows:
+        return []
+    return [
+        {
+            'index': index,
+            'classNames': column.get('classNames') or [],
+            'tokenTypes': [classify_inventory_token(value) for value in column.get('texts') or []],
+            'tokenLengths': [len(str(value)) for value in column.get('texts') or []],
+            'tokenCount': len(column.get('texts') or []),
+        }
+        for index, column in enumerate(rows[0])
+    ]
+
+
+class InventoryHeaderLabelsParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack = []
+        self.header_rows = []
+        self.current_header = None
+        self.current_cell = None
+
+    def handle_starttag(self, tag, attrs):
+        lowered = tag.lower()
+        attributes = dict(attrs)
+        classes = str(attributes.get('class') or '').split()
+        if lowered == 'ul' and 'list-title' in classes:
+            self.current_header = []
+            self.header_rows.append(self.current_header)
+            self.stack.append('header-ul')
+            return
+        self.stack.append(lowered)
+        if lowered == 'li' and self.current_header is not None and self.stack.count('header-ul') == 1:
+            self.current_cell = []
+
+    def handle_data(self, data):
+        if self.current_cell is not None:
+            self.current_cell.append(data)
+
+    def handle_endtag(self, tag):
+        lowered = tag.lower()
+        if lowered == 'li' and self.current_cell is not None and self.current_header is not None:
+            label = re.sub(r'\s+', ' ', ''.join(self.current_cell)).strip()
+            self.current_header.append(label[:120])
+            self.current_cell = None
+        if self.stack:
+            marker = self.stack.pop()
+            if marker == 'header-ul':
+                self.current_header = None
+
+
+def parse_inventory_header_labels(document):
+    parser = InventoryHeaderLabelsParser()
+    parser.feed(str(document or ''))
+    return [row for row in parser.header_rows if row]
+
+
+class InventoryHeaderRegionParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.in_region = False
+        self.li_stack = []
+        self.labels = []
+
+    def handle_starttag(self, tag, attrs):
+        lowered = tag.lower()
+        attributes = dict(attrs)
+        classes = str(attributes.get('class') or '').split()
+        if lowered == 'ul' and 'list-title' in classes:
+            self.in_region = True
+        if lowered == 'ul' and str(attributes.get('id') or '') == 'warehousestocklist':
+            self.in_region = False
+            return
+        if self.in_region and lowered == 'li':
+            if self.li_stack:
+                self.li_stack[-1]['hasNestedLi'] = True
+            self.li_stack.append({'parts': [], 'hasNestedLi': False})
+
+    def handle_data(self, data):
+        if self.in_region and self.li_stack:
+            self.li_stack[-1]['parts'].append(data)
+
+    def handle_endtag(self, tag):
+        if tag.lower() == 'li' and self.li_stack:
+            cell = self.li_stack.pop()
+            if not cell['hasNestedLi']:
+                label = re.sub(r'\s+', ' ', ''.join(cell['parts'])).strip()
+                if label:
+                    self.labels.append(label[:160])
+
+
+def parse_inventory_header_leaf_labels(document):
+    parser = InventoryHeaderRegionParser()
+    parser.feed(str(document or ''))
+    return parser.labels[:40]
+
+
+class WarehouseCatalogParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.options = []
+        self.field_names = set()
+        self.candidate_elements = []
+        self.candidate_select_count = 0
+        self._select_stack = []
+        self._current_option = None
+
+    @staticmethod
+    def _attrs(attributes):
+        return {str(key or '').strip(): str(value or '').strip() for key, value in attributes}
+
+    @staticmethod
+    def _warehouse_candidate(attributes):
+        searchable = ' '.join([*attributes.keys(), *attributes.values()]).lower()
+        return 'warehouse' in searchable or '仓库' in searchable
+
+    def handle_starttag(self, tag, attributes):
+        attrs = self._attrs(attributes)
+        if tag == 'select':
+            candidate = self._warehouse_candidate(attrs)
+            self._select_stack.append(candidate)
+            if candidate:
+                self.candidate_select_count += 1
+                for key in ('name', 'id'):
+                    if attrs.get(key):
+                        self.field_names.add(attrs[key])
+                self.candidate_elements.append({
+                    'tag': tag,
+                    **{key: attrs[key] for key in ('name', 'id', 'class') if attrs.get(key)},
+                })
+            return
+        if tag == 'input' and self._warehouse_candidate(attrs):
+            for key in ('name', 'id'):
+                if attrs.get(key):
+                    self.field_names.add(attrs[key])
+            self.candidate_elements.append({
+                'tag': tag,
+                **{key: attrs[key] for key in ('type', 'name', 'id', 'class', 'role') if attrs.get(key)},
+                'hasValue': bool(attrs.get('value')),
+            })
+            return
+        if tag == 'option' and self._select_stack and self._select_stack[-1]:
+            self._current_option = {'id': attrs.get('value', ''), 'parts': []}
+
+    def handle_data(self, data):
+        if self._current_option is not None:
+            self._current_option['parts'].append(data)
+
+    def handle_endtag(self, tag):
+        if tag == 'option' and self._current_option is not None:
+            identifier = self._current_option['id'].strip()
+            name = re.sub(r'\s+', ' ', ''.join(self._current_option['parts'])).strip()
+            if identifier and name and name not in ('请选择', '全部', '全部仓库'):
+                self.options.append({'id': identifier, 'name': name})
+            self._current_option = None
+            return
+        if tag == 'select' and self._select_stack:
+            self._select_stack.pop()
+
+
+SAFE_INVENTORY_ENDPOINT = re.compile(
+    r'^(?:https?://[A-Za-z0-9.-]+)?/?index\.php\?mod=[A-Za-z0-9_.-]+'
+    r'(?:&[A-Za-z0-9_.%{}\[\]-]+=[A-Za-z0-9_.%{}\[\]-]*)*$'
+)
+
+
+def extract_inventory_endpoint_candidates(document):
+    candidates = set()
+    for quoted in re.findall(r'''["']([^"']+)["']''', str(document or '')):
+        candidate = html.unescape(quoted).strip().replace('\\/', '/')
+        lowered = candidate.lower()
+        if SAFE_INVENTORY_ENDPOINT.fullmatch(candidate) and not any(
+            secret in lowered for secret in ('token=', 'cmkey=', 'authorization', 'cookie', 'password')
+        ):
+            candidates.add(candidate)
+    return sorted(candidates)
+
+
+def parse_inventory_warehouse_catalog(*html_documents):
+    parser = WarehouseCatalogParser()
+    endpoint_candidates = set()
+    for document in html_documents:
+        source = str(document or '')
+        parser.feed(source)
+        checkbox_pattern = re.compile(r'''<input\b(?P<attrs>[^>]*\bname\s*=\s*["']warehouseIds\[\]["'][^>]*)>''', re.I)
+        checkbox_matches = list(checkbox_pattern.finditer(source))
+        for index, match in enumerate(checkbox_matches):
+            attrs = {
+                key.lower(): html.unescape(value)
+                for key, _quote, value in re.findall(r'''([\w:-]+)\s*=\s*(["'])(.*?)\2''', match.group('attrs'), re.S)
+            }
+            identifier = str(attrs.get('value') or '').strip()
+            if not identifier:
+                continue
+            name = str(attrs.get('data-name') or attrs.get('title') or attrs.get('aria-label') or '').strip()
+            if not name:
+                next_start = checkbox_matches[index + 1].start() if index + 1 < len(checkbox_matches) else min(len(source), match.end() + 600)
+                tail = source[match.end():min(next_start, match.end() + 600)]
+                tail = re.split(r'</(?:label|li|div)>', tail, maxsplit=1, flags=re.I)[0]
+                name = re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', tail))).strip(' :-—|')
+            if identifier.lower() not in ('all', '0', '-1') and name not in ('请选择', '全部', '全部仓库') and name and len(name) <= 160:
+                parser.options.append({'id': identifier, 'name': name})
+        endpoint_candidates.update(extract_inventory_endpoint_candidates(source))
+    deduplicated = {}
+    for option in parser.options:
+        key = (option['id'], option['name'])
+        deduplicated[key] = option
+    options = sorted(deduplicated.values(), key=lambda item: (item['name'], item['id']))
+    return {
+        'options': options,
+        'fieldNames': sorted(parser.field_names),
+        'candidateElements': parser.candidate_elements[:30],
+        'endpointCandidates': sorted(endpoint_candidates)[:30],
+        'candidateSelectCount': parser.candidate_select_count,
+        'supportsWarehouseId': any(name.lower() == 'warehouseid' for name in parser.field_names),
+        'supportsWarehouseIdArr': any(name.lower() == 'warehouseidarr' for name in parser.field_names),
+        'supportsWarehouseIdsArray': any(name.lower() == 'warehouseids[]' for name in parser.field_names),
+    }
+
+
+def resolve_inventory_warehouse_scope(catalog, warehouse_names):
+    requested = [re.sub(r'\s+', ' ', str(name or '')).strip() for name in (warehouse_names or []) if str(name or '').strip()]
+    if not requested:
+        return []
+    ids_by_name = {}
+    for option in catalog.get('options') or []:
+        name = re.sub(r'\s+', ' ', str(option.get('name') or '')).strip()
+        identifier = str(option.get('id') or '').strip()
+        if name and identifier:
+            ids_by_name.setdefault(name, []).append(identifier)
+    missing = [name for name in requested if name not in ids_by_name]
+    ambiguous = [name for name in requested if len(ids_by_name.get(name) or []) != 1]
+    if missing:
+        raise Exception('当前马帮账号看不到已绑定仓库：' + '、'.join(missing))
+    if ambiguous:
+        raise Exception('马帮仓库名称不唯一，无法安全按名称筛选：' + '、'.join(ambiguous))
+    return [ids_by_name[name][0] for name in requested]
+
 def safe_json(response):
     try:
         return response.json()
     except Exception:
         text = response.text or ''
         raise Exception(f'接口返回不是 JSON，前500字符：{text[:500]}')
+
+
+SENSITIVE_STRUCTURE_KEY = re.compile(r'(token|cookie|password|passwd|secret|authorization|cmkey)', re.I)
+
+
+def describe_response_structure(value, depth=0, max_depth=5):
+    """Describe response shape without returning business or authentication values."""
+    if depth >= max_depth:
+        return {'type': type(value).__name__, 'truncated': True}
+    if isinstance(value, dict):
+        children = {}
+        omitted_sensitive_keys = 0
+        for key in sorted(value, key=lambda item: str(item))[:80]:
+            key_text = str(key)
+            if SENSITIVE_STRUCTURE_KEY.search(key_text):
+                omitted_sensitive_keys += 1
+                continue
+            children[key_text] = describe_response_structure(value[key], depth + 1, max_depth)
+        return {
+            'type': 'object',
+            'keyCount': len(value),
+            'children': children,
+            'omittedSensitiveKeyCount': omitted_sensitive_keys,
+        }
+    if isinstance(value, (list, tuple)):
+        return {
+            'type': 'array',
+            'length': len(value),
+            'item': describe_response_structure(value[0], depth + 1, max_depth) if value else None,
+        }
+    if isinstance(value, str):
+        stripped = value.lstrip()
+        lowered = value.lower()
+        return {
+            'type': 'string',
+            'length': len(value),
+            'looksLikeHtml': stripped.startswith('<'),
+            'looksLikeJson': stripped.startswith('{') or stripped.startswith('['),
+            'htmlTableCount': len(re.findall(r'<table\b', lowered)),
+            'htmlRowCount': len(re.findall(r'<tr\b', lowered)),
+            'htmlCellCount': len(re.findall(r'<t[dh]\b', lowered)),
+            'hasInventorySkuLabel': '库存sku' in lowered or '库存sku编号' in lowered,
+            'hasAvailableQuantityLabel': '可用库存' in lowered,
+        }
+    if value is None:
+        return {'type': 'null'}
+    if isinstance(value, bool):
+        return {'type': 'boolean'}
+    if isinstance(value, (int, float)):
+        return {'type': 'number'}
+    return {'type': type(value).__name__}
 
 def clean_value(value):
     if value is None:
@@ -199,18 +781,19 @@ def read_excel_content(content):
 
 def validate_excel_columns(dataframe):
     columns = [str(column).strip() for column in dataframe.columns]
-    missing = [field for field in TARGET_FIELDS if field not in columns]
+    missing = [field for field in REQUIRED_FIELDS if field not in columns]
     if missing:
-        raise Exception('马帮库存导出文件缺少字段：' + '、'.join(missing))
+        raise Exception('马帮库存导出文件缺少库存同步必填字段：' + '、'.join(missing))
 
-def normalize_inventory_dataframe(dataframe):
+def normalize_inventory_dataframe(dataframe, target_fields=None):
     dataframe = dataframe.copy()
     dataframe.columns = [str(column).strip() for column in dataframe.columns]
     validate_excel_columns(dataframe)
+    selected_fields = list(target_fields or TARGET_FIELDS)
     records = []
     for _, item in dataframe.iterrows():
         record = {}
-        for field in TARGET_FIELDS:
+        for field in selected_fields:
             value = clean_value(item.get(field, ''))
             record[field] = to_number(value) if field in NUMERIC_FIELDS else value
         if not str(record.get('库存SKU编号', '')).strip():
@@ -237,6 +820,9 @@ class MabangInventoryClient:
         self.session = requests.Session()
         self.session.trust_env = False
         self.inventory_iframe_url = ''
+        self.inventory_page_html = ''
+        self.inventory_iframe_html = ''
+        self.last_search_response = {}
 
     def cookie_header(self):
         return '; '.join((f'{cookie.name}={cookie.value}' for cookie in self.session.cookies))
@@ -273,32 +859,53 @@ class MabangInventoryClient:
     def open_inventory_page(self):
         logger.info('打开商品 > 库存查询页面')
         response = self.session.get(INVENTORY_PAGE_URL, headers={**HEADERS_PAGE, 'Referer': ORDER_PAGE_URL}, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-        self.inventory_iframe_url = extract_iframe_url(response.text or '')
+        self.inventory_page_html = response.text or ''
+        self.inventory_iframe_url = extract_iframe_url(self.inventory_page_html)
         logger.info('初始化库存查询 iframe 会话')
         response = self.session.get(self.inventory_iframe_url, headers={**HEADERS_PAGE, 'Referer': INVENTORY_PAGE_URL, 'Cookie': self.cookie_header()}, timeout=REQUEST_TIMEOUT, allow_redirects=True)
         if response.status_code != 200:
             raise Exception(f'打开库存查询 iframe 失败，状态码：{response.status_code}')
         if 'warehouse.searchwarehousestock' not in (response.text or ''):
             raise Exception('库存查询 iframe 未正确加载，可能是登录会话已过期。')
+        self.inventory_iframe_html = response.text or ''
 
-    def build_default_search_params(self):
-        return {'search-content-text1': '', 'page': '1', 'rowsPerPage': str(SEARCH_ROWS_PER_PAGE), 'warehouseId': '', 'startTime': '', 'endTime': '', 'isIdn': '1', 'warehouseIdArr': '', 'stockQuantitylt': '', 'stockQuantitygt': '', 'stockWarningQuantitylt': '', 'stockWarningQuantitygt': '', 'saleAvailableDayslt': '', 'saleAvailableDaysgt': ''}
+    def get_warehouse_catalog(self):
+        catalog = parse_inventory_warehouse_catalog(self.inventory_page_html, self.inventory_iframe_html)
+        logger.info(f"库存页仓库目录探测：字段 {catalog['fieldNames']}，仓库选项 {len(catalog['options'])} 个")
+        return catalog
 
-    def initialize_default_search(self):
-        logger.info('执行库存查询默认条件')
-        params = self.build_default_search_params()
+    def build_default_search_params(self, warehouse_ids=None):
+        selected_ids = [str(value).strip() for value in (warehouse_ids or []) if str(value).strip()]
+        params = {'search-content-text1': '', 'page': '1', 'rowsPerPage': str(SEARCH_ROWS_PER_PAGE), 'warehouseId': '', 'startTime': '', 'endTime': '', 'isIdn': '1', 'warehouseIdArr': '', 'stockQuantitylt': '', 'stockQuantitygt': '', 'stockWarningQuantitylt': '', 'stockWarningQuantitygt': '', 'saleAvailableDayslt': '', 'saleAvailableDaysgt': ''}
+        if selected_ids:
+            params['warehouseIds[]'] = selected_ids
+            params['warehouseIdStr'] = ','.join(selected_ids)
+        return params
+
+    def search_inventory_page(self, warehouse_ids=None, page=1, rows_per_page=None):
+        page_number = max(1, int(page or 1))
+        page_size = max(1, min(200, int(rows_per_page or SEARCH_ROWS_PER_PAGE)))
+        params = self.build_default_search_params(warehouse_ids=warehouse_ids)
+        params['page'] = str(page_number)
+        params['rowsPerPage'] = str(page_size)
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 response = self.session.post(STOCK_SEARCH_URL, headers=self.private_ajax_headers(), data=params, timeout=REQUEST_TIMEOUT, allow_redirects=True)
                 result = safe_json(response)
                 if not result.get('success'):
                     raise Exception(result.get('message') or '库存查询接口返回失败')
-                logger.info('库存查询条件初始化成功')
-                return
+                self.last_search_response = result
+                return result
             except (ReadTimeout, RequestException) as error:
-                logger.warning(f'库存查询请求失败，第 {attempt}/{MAX_RETRIES} 次：{error}')
+                logger.warning(f'库存查询第 {page_number} 页请求失败，第 {attempt}/{MAX_RETRIES} 次：{error}')
                 time.sleep(3)
-        raise Exception('库存查询条件初始化失败')
+        raise Exception(f'库存查询第 {page_number} 页失败')
+
+    def initialize_default_search(self, warehouse_ids=None, rows_per_page=None):
+        logger.info('执行库存查询条件')
+        result = self.search_inventory_page(warehouse_ids=warehouse_ids, page=1, rows_per_page=rows_per_page or SEARCH_ROWS_PER_PAGE)
+        logger.info('库存查询条件初始化成功')
+        return result
 
     def get_record_count(self):
         response = self.session.post(STOCK_PAGE_INFO_URL, headers=self.private_ajax_headers(), data={'page': '1', 'rowsPerPage': str(SEARCH_ROWS_PER_PAGE)}, timeout=REQUEST_TIMEOUT, allow_redirects=True)
@@ -308,6 +915,49 @@ class MabangInventoryClient:
         record_count = parse_record_count(result.get('pageHtml', ''))
         logger.info(f'库存查询总记录数：{record_count}')
         return record_count
+
+    def get_page_response_contract(self, page=1, rows_per_page=None):
+        page_number = max(1, int(page or 1))
+        page_size = max(1, min(200, int(rows_per_page or SEARCH_ROWS_PER_PAGE)))
+        response = self.session.post(
+            STOCK_PAGE_INFO_URL,
+            headers=self.private_ajax_headers(),
+            data={'page': str(page_number), 'rowsPerPage': str(page_size)},
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
+        result = safe_json(response)
+        return {
+            'httpStatus': int(response.status_code),
+            'contentType': str(response.headers.get('content-type') or '').split(';', 1)[0].strip().lower(),
+            'bodyBytes': len(response.content or b''),
+            'requestedPage': page_number,
+            'requestedRowsPerPage': page_size,
+            'structure': describe_response_structure(result),
+        }
+
+    def get_inventory_iframe_contract(self):
+        if not self.inventory_iframe_url:
+            raise Exception('库存 iframe 地址尚未初始化')
+        response = self.session.get(
+            self.inventory_iframe_url,
+            headers={**HEADERS_PAGE, 'Referer': INVENTORY_PAGE_URL, 'Cookie': self.cookie_header()},
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+        return {
+            'httpStatus': int(response.status_code),
+            'contentType': str(response.headers.get('content-type') or '').split(';', 1)[0].strip().lower(),
+            'bodyBytes': len(response.content or b''),
+            'structure': describe_response_structure(response.text or ''),
+            'tables': describe_html_table_contracts(response.text or ''),
+            'labelContexts': describe_html_label_contexts(response.text or ''),
+            'repeatedElements': describe_repeated_html_elements(response.text or ''),
+            'endpointCandidates': extract_inventory_endpoint_candidates(response.text or '')[:60],
+            'inventoryHeaderTagSequence': describe_inventory_header_tag_sequence(response.text or ''),
+            'inventoryHeaderLabels': parse_inventory_header_leaf_labels(response.text or ''),
+        }
 
     def get_stock_summary(self):
         response = self.session.post(STOCK_SUMMARY_URL, headers=self.private_ajax_headers(), data={'refreshOrderDataFlag': '0'}, timeout=REQUEST_TIMEOUT, allow_redirects=True)
@@ -333,7 +983,7 @@ class MabangInventoryClient:
             raise Exception(f'库存导出接口未返回 xlsx，前500字符：{text}')
         return content
 
-    def export_inventory_records(self, record_count):
+    def export_inventory_records(self, record_count, target_fields=None):
         if record_count <= 0:
             return []
         if record_count < EXPORT_PAGE_SIZE:
@@ -342,16 +992,41 @@ class MabangInventoryClient:
             page_count = (record_count + EXPORT_PAGE_SIZE - 1) // EXPORT_PAGE_SIZE
             export_pages = list(range(1, page_count + 1))
         all_records = []
+        exported_row_count = 0
         for index, export_page in enumerate(export_pages, start=1):
             content = self.download_export_file(export_page)
             dataframe = read_excel_content(content)
-            records = normalize_inventory_dataframe(dataframe)
-            logger.info(f'第 {index}/{len(export_pages)} 批解析 {len(records)} 行')
+            exported_row_count += len(dataframe.index)
+            records = normalize_inventory_dataframe(dataframe, target_fields=target_fields)
+            skipped = len(dataframe.index) - len(records)
+            logger.info(f'第 {index}/{len(export_pages)} 批解析 {len(records)} 行，跳过无 SKU 或仓库行 {skipped} 条')
             all_records.extend(records)
             if index < len(export_pages):
                 time.sleep(REQUEST_INTERVAL_SECONDS)
+        if exported_row_count != record_count:
+            raise Exception(f'库存导出行数校验失败：页面显示 {record_count} 行，Excel 原始数据 {exported_row_count} 行。已停止写入 WPS。')
+        return all_records
+
+    def read_inventory_html_records(self, record_count, warehouse_ids=None, rows_per_page=200):
+        if record_count <= 0:
+            return []
+        page_size = max(1, min(200, int(rows_per_page or 200)))
+        page_count = (record_count + page_size - 1) // page_size
+        all_records = []
+        for page in range(1, page_count + 1):
+            if page == 1 and self.last_search_response:
+                result = self.last_search_response
+            else:
+                result = self.search_inventory_page(warehouse_ids=warehouse_ids, page=page, rows_per_page=page_size)
+            message = str(result.get('message') or '')
+            records = parse_inventory_search_records(message)
+            expected_rows = min(page_size, record_count - len(all_records))
+            if len(records) != expected_rows:
+                raise Exception(f'库存 HTML 第 {page}/{page_count} 页行数校验失败：预期 {expected_rows}，实际 {len(records)}')
+            all_records.extend(records)
+            logger.info(f'库存 HTML 第 {page}/{page_count} 页解析 {len(records)} 行')
         if len(all_records) != record_count:
-            raise Exception(f'库存导出行数校验失败：页面显示 {record_count} 行，Excel 实际解析 {len(all_records)} 行。已停止写入 WPS。')
+            raise Exception(f'库存 HTML 总行数校验失败：页面显示 {record_count} 行，实际解析 {len(all_records)} 行')
         return all_records
 
 def run_sync():

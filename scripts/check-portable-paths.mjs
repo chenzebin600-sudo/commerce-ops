@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const exceptions = JSON.parse(await fs.readFile(path.join(rootDir, "config", "portable-path-exceptions.json"), "utf8"));
-const excluded = new Set([".git", ".venv", ".venv-mabang", "node_modules", "storage", "data", "backups", "ui-check", "dist", "build", "packaged-skills"]);
+const excluded = new Set([".git", ".venv", ".venv-mabang", ".codex-work", "node_modules", "storage", "data", "backups", "ui-check", "dist", "build", "packaged-skills", "deliverables", "outputs", "tmp"]);
 const extensions = new Set([".js", ".mjs", ".cjs", ".json", ".md", ".py", ".ps1", ".sh"]);
 const patterns = [
   { name: "Windows drive path", regex: /(^|[^A-Za-z])(?:[A-Za-z]:[\\/])/m },
@@ -19,7 +19,7 @@ async function visit(dir) {
     if (entry.isDirectory() && excluded.has(entry.name.toLowerCase())) continue;
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) await visit(fullPath);
-    else if (entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase())) {
+    else if (entry.isFile() && !entry.name.endsWith(".pid.json") && extensions.has(path.extname(entry.name).toLowerCase())) {
       const relative = path.relative(rootDir, fullPath).split(path.sep).join("/");
       if (relative === "config/portable-path-exceptions.json" || relative === "scripts/check-portable-paths.mjs") continue;
       if (exceptions.some((item) => relative.startsWith(item.prefix))) continue;

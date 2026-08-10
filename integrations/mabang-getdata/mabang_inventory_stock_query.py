@@ -93,6 +93,12 @@ TARGET_FIELDS = [
     "商品备注",
 ]
 
+REQUIRED_FIELDS = [
+    "库存SKU编号",
+    "仓库",
+    "可用库存量",
+]
+
 NUMERIC_FIELDS = [
     "预测日销量(个)",
     "仓位库存",
@@ -334,10 +340,10 @@ def read_excel_content(content):
 
 def validate_excel_columns(dataframe):
     columns = [str(column).strip() for column in dataframe.columns]
-    missing = [field for field in TARGET_FIELDS if field not in columns]
+    missing = [field for field in REQUIRED_FIELDS if field not in columns]
 
     if missing:
-        raise Exception("马帮库存导出文件缺少字段：" + "、".join(missing))
+        raise Exception("马帮库存导出文件缺少库存同步必填字段：" + "、".join(missing))
 
 
 def normalize_inventory_dataframe(dataframe):
@@ -620,21 +626,27 @@ class MabangInventoryClient:
             export_pages = list(range(1, page_count + 1))
 
         all_records = []
+        exported_row_count = 0
 
         for index, export_page in enumerate(export_pages, start=1):
             content = self.download_export_file(export_page)
             dataframe = read_excel_content(content)
+            exported_row_count += len(dataframe.index)
             records = normalize_inventory_dataframe(dataframe)
-            logger.info(f"第 {index}/{len(export_pages)} 批解析 {len(records)} 行")
+            skipped = len(dataframe.index) - len(records)
+            logger.info(
+                f"第 {index}/{len(export_pages)} 批解析 {len(records)} 行，"
+                f"跳过无 SKU 或仓库行 {skipped} 条"
+            )
             all_records.extend(records)
 
             if index < len(export_pages):
                 time.sleep(REQUEST_INTERVAL_SECONDS)
 
-        if len(all_records) != record_count:
+        if exported_row_count != record_count:
             raise Exception(
                 f"库存导出行数校验失败：页面显示 {record_count} 行，"
-                f"Excel 实际解析 {len(all_records)} 行。已停止写入 WPS。"
+                f"Excel 原始数据 {exported_row_count} 行。已停止写入 WPS。"
             )
 
         return all_records

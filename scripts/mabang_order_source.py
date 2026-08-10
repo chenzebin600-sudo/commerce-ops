@@ -43,6 +43,9 @@ FULFILLMENT_REPORTING_INFO_URL = BASE_URL + '/index.php?mod=order.getReportingIn
 FULFILLMENT_SUBMIT_URL = BASE_URL + '/index.php?mod=order.doReportingInformation'
 FULFILLMENT_DISTRIBUTION_URL = BASE_URL + '/index.php?mod=order.doBatchDistribution'
 FULFILLMENT_BATCH_EDIT_URL = BASE_URL + '/index.php?mod=order.all'
+FULFILLMENT_PROCESS_ABNORMAL_URL = BASE_URL + '/index.php?mod=order.doProcessAbnormalOrders'
+ORDER_WAREHOUSE_FORM_URL = BASE_URL + '/index.php?mod=order.getOrderItemWarehouse'
+ORDER_WAREHOUSE_CHANGE_URL = BASE_URL + '/index.php?mod=order.doChangeOrderItemWarehouse'
 EXPORT_TEMPLATE_ID = '1049202'
 HEADERS_AJAX = {'Accept': 'application/json, text/javascript, */*; q=0.01', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'X-Requested-With': 'XMLHttpRequest', 'Origin': BASE_URL, 'Referer': ORDER_PAGE_URL}
 HEADERS_PAGE = {'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Referer': INITIAL_URL}
@@ -66,6 +69,30 @@ def extract_fulfillment_stock_flags(page_html, internal_id='', order_reference='
             'orderItemHasGoods': attributes.get('data-orderitemhasgoods'),
         }
     return {}
+
+
+def is_message_only_abnormal(order):
+    info = order.get('exceptionInfo')
+    if not isinstance(info, dict):
+        return False
+    try:
+        count = int(info.get('count') or 0)
+    except (TypeError, ValueError):
+        return False
+    latest = info.get('latest') if isinstance(info.get('latest'), dict) else {}
+    all_items = info.get('all') if isinstance(info.get('all'), list) else []
+    names = [str(latest.get('name') or '').strip()]
+    names.extend(str(item.get('name') or '').strip() for item in all_items if isinstance(item, dict))
+    return count == 1 and any(name == '有留言' for name in names)
+
+
+def fulfillment_poll_delay(completed_polls):
+    """快速确认刚提交的状态，随后逐步退避，兼顾速度与马帮接口压力。"""
+    if completed_polls < 5:
+        return 1
+    if completed_polls < 10:
+        return 2
+    return 3
 
 class WPSLogger:
 
@@ -149,6 +176,38 @@ def normalize_numeric_fields(row):
     for field in NUMERIC_FIELDS:
         row[field] = to_number(row.get(field))
     return row
+
+
+def bind_authoritative_platform_order_ids(records, platform_order_ids):
+    """Bind exported rows to the exact platformOrderId returned by Mabang's order API.
+
+    Lazada's exported 订单编号 can be an internal shop/order prefix concatenated with the
+    platform order number.  The API platformOrderId (the number shown above the order in
+    Mabang and in Lazada Seller Center) is authoritative for fulfillment identity.
+    """
+    references = sorted({str(value or '').strip() for value in platform_order_ids if str(value or '').strip()},
+                        key=len, reverse=True)
+    if not references:
+        return records
+    for row in records:
+        source_order_id = str(row.get('订单编号') or '').strip()
+        trade_number = str(row.get('交易编号') or '').strip()
+        matches = [reference for reference in references if (
+            trade_number == reference or source_order_id == reference or source_order_id.endswith(reference)
+        )]
+        if len(matches) == 1:
+            row['交易编号'] = matches[0]
+            row['_平台订单号'] = matches[0]
+    return records
+
+
+def authoritative_fulfillment_order_id(order, fallback=''):
+    """Return the seller-center order id used for identity comparisons."""
+    platform_id = str(order.get('platformId') or '').strip()
+    platform_name = str(order.get('platformName') or order.get('platform') or '').strip().lower()
+    if platform_id == '7' or 'lazada' in platform_name:
+        return str(order.get('salesRecordNumber') or fallback or order.get('platformOrderId') or '').strip()
+    return str(order.get('platformOrderId') or order.get('salesRecordNumber') or fallback or '').strip()
 
 def validate_amount_values(records):
     bad_rows = []
@@ -549,6 +608,123 @@ class MabangClient:
             raise Exception('MABANG_AUTH_FAILED: 登录接口返回成功，但登录后的页面验证失败。')
         logger.info('马帮登录成功')
 
+    def fulfillment_catalog(self, allowed_shop_ids=None):
+        """Read the account-scoped shop and logistics caches rendered by Mabang's order page."""
+        order_page_html = self.get_text_with_reauth(
+            f'{ORDER_PAGE_URL}&Order_orderStatus=2', headers=HEADERS_PAGE,
+            operation='同步店铺与物流渠道'
+        )
+        assigned_shop_match = re.search(
+            r'(?:var\s+)?shopIdCache\s*=\s*(\{.*?\}|\[.*?\])\s*;',
+            order_page_html, re.I | re.S,
+        )
+        all_shop_match = re.search(
+            r'(?:var\s+)?shopIdAllCache\s*=\s*(\{.*?\})\s*;',
+            order_page_html, re.I | re.S,
+        )
+        channel_match = re.search(
+            r'var\s+highSearch_myLogisticsChannelCache\s*=\s*(\[.*?\])\s*;',
+            order_page_html, re.I | re.S,
+        )
+        try:
+            raw_all_shops = json.loads(all_shop_match.group(1)) if all_shop_match else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_all_shops = {}
+        try:
+            raw_assigned_shops = json.loads(assigned_shop_match.group(1)) if assigned_shop_match else None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_assigned_shops = None
+        try:
+            raw_channels = json.loads(channel_match.group(1)) if channel_match else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_channels = []
+
+        # shopIdAllCache is the company-wide directory visible to the login. Mabang also
+        # renders shopIdCache for the shops assigned to the current employee account.
+        # Only fall back to the all-cache when that narrower variable is absent, so an
+        # employee login cannot accidentally manage thousands of unrelated shops.
+        raw_shops = {}
+        if isinstance(raw_assigned_shops, dict):
+            for shop_id, assigned in raw_assigned_shops.items():
+                details = raw_all_shops.get(str(shop_id), {}) if isinstance(raw_all_shops, dict) else {}
+                if isinstance(assigned, dict):
+                    raw_shops[str(shop_id)] = {**(details if isinstance(details, dict) else {}), **assigned}
+                else:
+                    raw_shops[str(shop_id)] = details if isinstance(details, dict) else {'name': str(assigned or '')}
+        elif isinstance(raw_assigned_shops, list):
+            for assigned in raw_assigned_shops:
+                if isinstance(assigned, dict):
+                    shop_id = str(assigned.get('id') or assigned.get('shopId') or '').strip()
+                    if shop_id:
+                        details = raw_all_shops.get(shop_id, {}) if isinstance(raw_all_shops, dict) else {}
+                        raw_shops[shop_id] = {**(details if isinstance(details, dict) else {}), **assigned}
+                else:
+                    shop_id = str(assigned or '').strip()
+                    if shop_id and isinstance(raw_all_shops, dict) and isinstance(raw_all_shops.get(shop_id), dict):
+                        raw_shops[shop_id] = raw_all_shops[shop_id]
+        elif isinstance(raw_all_shops, dict):
+            raw_shops = raw_all_shops
+
+        shops = []
+        for shop_id, raw in raw_shops.items():
+            if not isinstance(raw, dict):
+                raw = {'name': str(raw or '')}
+            name = str(raw.get('name') or raw.get('shopName') or '').strip()
+            if not str(shop_id).strip() or not name:
+                continue
+            country_code = str(raw.get('countryCode') or raw.get('amazonsite') or raw.get('site') or '').strip().upper()
+            if not country_code:
+                country_match = re.search(r'(?:^|[._\-\s])(ID|MY|PH|SG|TH|VN|TW)(?:$|[._\-\s])', name, re.I)
+                country_code = country_match.group(1).upper() if country_match else ''
+            shops.append({
+                'shopId': str(shop_id).strip(),
+                'shopName': name,
+                'platformId': str(raw.get('platformId') or raw.get('type') or '').strip(),
+                'countryCode': country_code,
+                'status': str(raw.get('status') or '').strip(),
+            })
+        approved_shop_ids = {str(value or '').strip() for value in (allowed_shop_ids or []) if str(value or '').strip()}
+        if approved_shop_ids:
+            shops = [shop for shop in shops if shop['shopId'] in approved_shop_ids]
+
+        country_tokens = {
+            '印度尼西亚': 'ID', '印尼': 'ID', '泰国': 'TH', '菲律宾': 'PH', '马来西亚': 'MY', '马来': 'MY',
+            '新加坡': 'SG', '越南': 'VN', '台湾': 'TW', '墨西哥': 'MX', '巴西': 'BR',
+        }
+        channels = []
+        warehouses = []
+        seen_channel_ids = set()
+        for raw in raw_channels if isinstance(raw_channels, list) else []:
+            if not isinstance(raw, dict):
+                continue
+            channel_id = str(raw.get('id') or '').strip()
+            provider_id = str(raw.get('myLogisticsId') or '').strip()
+            logistics_id = str(raw.get('logisticsId') or '').strip()
+            channel_name = str(raw.get('logisticsChannelName') or '').strip()
+            if not channel_id or not provider_id or not logistics_id or not channel_name or channel_id in seen_channel_ids:
+                continue
+            seen_channel_ids.add(channel_id)
+            country_code = str(raw.get('countryCode') or '').strip().upper()
+            if not country_code:
+                country_code = next((code for token, code in country_tokens.items() if token in channel_name), '')
+            channels.append({
+                'channelId': channel_id,
+                'channelProviderId': provider_id,
+                'channelLogisticsId': logistics_id,
+                'channelSource': '1',
+                'channelName': channel_name,
+                'logisticsName': str(raw.get('logisticsName') or '').strip(),
+                'platformId': str(raw.get('platformId') or '').strip(),
+                'platformName': str(raw.get('platformName') or '').strip(),
+                'countryCode': country_code,
+                'channelValue': f'{channel_id}_{provider_id}_{channel_name}_{logistics_id}',
+            })
+        if not shops:
+            raise Exception('MABANG_CATALOG_SHOPS_EMPTY: 马帮页面未返回可用店铺，请重新登录后再同步。')
+        if not channels:
+            raise Exception('MABANG_CATALOG_CHANNELS_EMPTY: 马帮页面未返回可用物流渠道。')
+        return {'shops': shops, 'channels': channels, 'warehouses': warehouses}
+
     def find_order_for_fulfillment(self, order_reference, pending_status='2'):
         reference = str(order_reference or '').strip()
         if not reference:
@@ -557,34 +733,290 @@ class MabangClient:
         start = end - timedelta(days=92)
         params = build_order_params(1, start.strftime('%Y-%m-%d 00:00:00'), end.strftime('%Y-%m-%d 23:59:59'))
         params['rowsPerPage'] = '100'
-        params['Order.orderStatus'] = str(pending_status)
-        params['OrderSearch.fuzzySearchKey'] = 'Order.platformOrderId'
+        params['Order.orderStatus'] = '' if pending_status is None else str(pending_status)
         params['OrderSearch.fuzzySearchValue'] = reference
+        # Shopee uses platformOrderId. Lazada Seller Center's order number is salesRecordNumber,
+        # while platformOrderId can be Mabang's internal shop/order concatenation. Try the
+        # existing key first, then the seller-visible Lazada key without relaxing status filters.
+        for fuzzy_key in ('Order.platformOrderId', 'Order.salesRecordNumber'):
+            query = dict(params)
+            query['OrderSearch.fuzzySearchKey'] = fuzzy_key
+            data = self.post_json_with_reauth(
+                ORDER_SEARCH_URL, headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+                data=query, operation='查询指定订单',
+            )
+            if not data.get('success'):
+                raise Exception(data.get('message') or '订单查询失败。')
+            page_html = str(data.get('pageHtml') or '')
+            po_data = extract_po_data(page_html)
+            if po_data:
+                self.last_po_data = po_data
+            orders = data.get('orderDataList') or []
+            for order in orders:
+                candidates = [order.get('id'), order.get('orderId'), order.get('platformOrderId'), order.get('salesRecordNumber')]
+                if reference in [str(value or '').strip() for value in candidates]:
+                    matched_order = dict(order)
+                    internal_id = str(order.get('id') or order.get('orderId') or '').strip()
+                    html_flags = extract_fulfillment_stock_flags(data.get('pageHtml'), internal_id, reference)
+                    for name in ('hasGoods', 'orderItemHasGoods'):
+                        if matched_order.get(name) is None and html_flags.get(name) is not None:
+                            matched_order[name] = html_flags[name]
+                    matched_order['_fulfillmentStockFlagSource'] = 'page_html' if html_flags else 'order_json_or_missing'
+                    matched_order['_fulfillmentPageHtmlLength'] = len(page_html)
+                    matched_order['_fulfillmentPageContainsOrder'] = reference in page_html
+                    return matched_order
+        if pending_status is None:
+            raise Exception('指定订单不存在或不在最近93天。')
+        raise Exception('指定订单不存在、不是待处理状态或不在最近93天。')
+
+    def inspect_fulfillment_order_state(self, order_reference, channel_id='', channel_value=''):
+        """Read one order across all statuses without invoking any fulfillment write endpoint."""
+        order = self.find_order_for_fulfillment(order_reference, None)
+        status = str(order.get('showOrderStatusText') or order.get('orderStatusText') or order.get('orderStatus') or '').strip()
+        tracking_number = str(order.get('trackNumber') or '').strip()
+        current_logistics_html = str(order.get('cansend1logisticsHtml') or '')
+        shipping_record_pending = (
+            not tracking_number
+            and (str(order.get('isSLogisticsChannel') or '').strip() == '2'
+                 or (str(order.get('isSyncLogistics') or '').strip() == '1' and '运单号获取中' in current_logistics_html))
+        )
+        return {
+            'internalOrderId': str(order.get('id') or order.get('orderId') or '').strip(),
+            'platformOrderId': str(order.get('platformOrderId') or order.get('salesRecordNumber') or order_reference).strip(),
+            'shopId': str(order.get('shopId') or '').strip(),
+            'platformId': str(order.get('platformId') or '').strip(),
+            'orderStatus': status,
+            'trackNumber': tracking_number,
+            'channelMatched': bool(channel_id and self.fulfillment_order_channel_selected(order, channel_id, channel_value)),
+            'shippingRecordPending': shipping_record_pending,
+        }
+
+    @staticmethod
+    def _warehouse_form_items(response_data, order_id):
+        markup = str(response_data.get('message') or '')
+        stock_data = response_data.get('orderStockSkuData') or {}
+        by_item_id = {}
+        values = stock_data.values() if isinstance(stock_data, dict) else stock_data if isinstance(stock_data, list) else []
+        for item in values:
+            if isinstance(item, dict) and item.get('id') is not None:
+                by_item_id[str(item.get('id'))] = item
+        item_ids = list(dict.fromkeys(re.findall(r'name=["\']orderItem\[(\d+)\]["\']', markup, re.I)))
+        items = []
+        for item_id in item_ids:
+            row_match = re.search(r'<tr\b[^>]*>.*?name=["\']orderItem\[' + re.escape(item_id) + r'\]["\'].*?</tr>', markup, re.I | re.S)
+            row = row_match.group(0) if row_match else markup
+            data = by_item_id.get(item_id, {})
+            select_match = re.search(r'<select\b[^>]*name=["\']stockWarehouseId\[' + re.escape(item_id) + r'\]["\'][^>]*>(.*?)</select>', row, re.I | re.S)
+            options = []
+            if select_match:
+                for attrs_text, label in re.findall(r'<option\b([^>]*)>(.*?)</option>', select_match.group(1), re.I | re.S):
+                    attrs = {name.lower(): html.unescape(value) for name, _, value in re.findall(r'([\w:-]+)\s*=\s*(["\'])(.*?)\2', attrs_text, re.S)}
+                    options.append({
+                        'value': str(attrs.get('value') or '').strip(),
+                        'text': re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', '', label))).strip(),
+                        'selected': bool(re.search(r'\bselected\b', attrs_text, re.I)),
+                        'stockGridId': str(attrs.get('data-defaultstockwarehousedetailid') or '').strip(),
+                        'stockGrid': str(attrs.get('data-defaultgridcode') or '').strip(),
+                        'available': to_number(attrs.get('data-stockwarehouseavailablenum') or attrs.get('data-stockquantity')),
+                    })
+            selected = next((option for option in options if option['selected']), options[0] if options else {})
+            def input_value(name):
+                match = re.search(r'<input\b[^>]*name=["\']' + re.escape(name) + r'["\'][^>]*>', row, re.I | re.S)
+                if not match:
+                    return ''
+                attrs = {key.lower(): html.unescape(value) for key, _, value in re.findall(r'([\w:-]+)\s*=\s*(["\'])(.*?)\2', match.group(0), re.S)}
+                return str(attrs.get('value') or '').strip()
+            sku = str(data.get('stockSku') or '').strip()
+            items.append({
+                'itemId': item_id, 'orderId': str(data.get('orderId') or order_id),
+                'stockSku': sku, 'title': str(data.get('title') or '').strip(),
+                'quantity': int(to_number(input_value(f'quantity[{item_id}]') or data.get('quantity')) or 1),
+                'sellPrice': input_value(f'sellPrice[{item_id}]') or str(data.get('sellPrice') or '0'),
+                'stockWarehouseId': str(selected.get('value') or data.get('stockWarehouseId') or '').strip(),
+                'stockWarehouseName': str(selected.get('text') or '').strip(),
+                'stockGridId': input_value(f'stockGridId[{item_id}]') or str(data.get('stockGridId') or selected.get('stockGridId') or ''),
+                'stockGrid': input_value(f'stockGrid[{item_id}]') or str(data.get('stockGrid') or selected.get('stockGrid') or ''),
+                'warehouseOptions': options,
+            })
+        return items
+
+    def read_order_warehouse_form(self, order_reference):
+        order = self.find_order_for_fulfillment(order_reference, None)
+        order_id = str(order.get('id') or order.get('orderId') or '').strip()
+        if not order_id:
+            raise Exception('WAREHOUSE_ORDER_ID_MISSING: 订单缺少马帮内部 ID。')
+        response = self.post_json_with_reauth(
+            ORDER_WAREHOUSE_FORM_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data={'orderIds': order_id}, operation='读取订单换仓表单',
+        )
+        if not response.get('success'):
+            raise Exception('WAREHOUSE_FORM_UNAVAILABLE: 当前订单不可编辑或马帮未返回换仓表单。')
+        items = self._warehouse_form_items(response, order_id)
+        if not items:
+            raise Exception('WAREHOUSE_ORDER_NOT_EDITABLE: 当前订单阶段不支持换仓。')
+        return {
+            'internalOrderId': order_id,
+            'platformOrderId': str(order.get('platformOrderId') or order_reference).strip(),
+            'shopId': str(order.get('shopId') or '').strip(),
+            'platformId': str(order.get('platformId') or '').strip(),
+            'orderStatus': str(order.get('orderStatus') or order.get('status') or '').strip(),
+            'items': items,
+        }
+
+    def change_order_warehouse(self, order_reference, target_warehouse, expected_items):
+        form = self.read_order_warehouse_form(order_reference)
+        expected = {str(item.get('itemId') or ''): item for item in (expected_items or [])}
+        form_item_ids = {item['itemId'] for item in form['items']}
+        if not expected or not set(expected).issubset(form_item_ids):
+            raise Exception('WAREHOUSE_PLAN_STALE: 订单商品行已变化，请重新预览。')
+        payload = [('changeComboConfirm', '0'), ('process', '0'), ('input_orderId[]', form['internalOrderId'])]
+        selected = []
+        for item in form['items']:
+            payload.extend([
+                (f'sellPrice[{item["itemId"]}]', item['sellPrice']),
+                (f'quantity[{item["itemId"]}]', str(item['quantity'])),
+                (f'stockWarehouseId[{item["itemId"]}]', item['stockWarehouseId']),
+                (f'stockGridId[{item["itemId"]}]', item['stockGridId']),
+                (f'stockGrid[{item["itemId"]}]', item['stockGrid']),
+            ])
+            if item['itemId'] not in expected:
+                continue
+            before = expected[item['itemId']]
+            if str(before.get('stockSku') or '').strip().upper() != item['stockSku'].strip().upper() or int(before.get('quantity') or 0) != item['quantity']:
+                raise Exception('WAREHOUSE_PLAN_STALE: SKU 或数量已变化，请重新预览。')
+            option = next((candidate for candidate in item['warehouseOptions'] if candidate['text'] == target_warehouse or candidate['value'] == target_warehouse), None)
+            if not option:
+                raise Exception(f'WAREHOUSE_TARGET_UNAVAILABLE: 商品 {item["stockSku"]} 不支持目标仓库。')
+            payload = [(key, value) for key, value in payload if key not in {
+                f'stockWarehouseId[{item["itemId"]}]', f'stockGridId[{item["itemId"]}]', f'stockGrid[{item["itemId"]}]'
+            }]
+            payload.extend([(f'stockWarehouseId[{item["itemId"]}]', option['value']),
+                (f'stockGridId[{item["itemId"]}]', option.get('stockGridId') or item['stockGridId']),
+                (f'stockGrid[{item["itemId"]}]', option.get('stockGrid') or item['stockGrid']),
+                (f'orderItem[{item["itemId"]}]', item['itemId'])])
+            selected.append({'itemId': item['itemId'], 'sku': item['stockSku'], 'warehouseId': option['value']})
+        payload.append(('successOrderId', ''))
+        response = self.session.post(ORDER_WAREHOUSE_CHANGE_URL, headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'}, data=payload, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        result = safe_json(response)
+        if response_looks_unauthenticated(response, result):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_WAREHOUSE_CHANGE: 写入结果未知，禁止自动重试。')
+        if not (result.get('success') is True or result.get('success') == 1 or result.get('success') == '1'):
+            raise Exception('WAREHOUSE_CHANGE_REJECTED: 马帮未确认换仓成功。')
+        verified = self.read_order_warehouse_form(order_reference)
+        if any(item['itemId'] in expected and item['stockWarehouseName'] != target_warehouse for item in verified['items']):
+            raise Exception('WAREHOUSE_CHANGE_VERIFY_FAILED: 写入后仓库回读不一致。')
+        return {'changed': True, 'targetWarehouse': target_warehouse, 'items': selected, 'after': verified}
+
+    def search_message_abnormal_orders(self, limit=100):
+        end = datetime.now()
+        start = end - timedelta(days=92)
+        params = build_order_params(1, start.strftime('%Y-%m-%d 00:00:00'), end.strftime('%Y-%m-%d 23:59:59'))
+        params['rowsPerPage'] = str(max(1, min(int(limit or 100), 100)))
+        params['Order.orderStatus'] = '99'
+        params['canSend'] = '2'
+        params['fixCategory[]'] = '3'
         data = self.post_json_with_reauth(
-            ORDER_SEARCH_URL, headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
-            data=params, operation='查询指定订单',
+            ORDER_SEARCH_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data=params,
+            operation='读取待审核留言订单',
         )
         if not data.get('success'):
-            raise Exception(data.get('message') or '订单查询失败。')
+            raise Exception(data.get('message') or '待审核留言订单查询失败。')
         page_html = str(data.get('pageHtml') or '')
         po_data = extract_po_data(page_html)
         if po_data:
             self.last_po_data = po_data
-        orders = data.get('orderDataList') or []
+        return [dict(order) for order in (data.get('orderDataList') or []) if is_message_only_abnormal(order)]
+
+    def inspect_message_review_candidates(self, shop_configs, limit=10):
+        bounded_limit = max(1, min(int(limit or 10), 10))
+        shops_by_id = {str(item.get('shopId') or ''): item for item in (shop_configs or [])}
+        shops_by_name = {str(item.get('shopName') or ''): item for item in (shop_configs or [])}
+        orders = self.search_message_abnormal_orders(100)
+        platform_ids = list(dict.fromkeys(
+            str(order.get('platformOrderId') or '').strip() for order in orders
+            if str(order.get('platformOrderId') or '').strip()
+        ))
+        records = self.export_orders_to_records(platform_ids) if platform_ids else []
+        records_by_order = {}
+        for row in records:
+            reference = str(row.get('订单编号') or row.get('交易编号') or '').strip()
+            if reference:
+                records_by_order.setdefault(reference, []).append(row)
+
+        results = []
         for order in orders:
-            candidates = [order.get('id'), order.get('orderId'), order.get('platformOrderId'), order.get('salesRecordNumber')]
-            if reference in [str(value or '').strip() for value in candidates]:
-                matched_order = dict(order)
-                internal_id = str(order.get('id') or order.get('orderId') or '').strip()
-                html_flags = extract_fulfillment_stock_flags(data.get('pageHtml'), internal_id, reference)
-                for name in ('hasGoods', 'orderItemHasGoods'):
-                    if matched_order.get(name) is None and html_flags.get(name) is not None:
-                        matched_order[name] = html_flags[name]
-                matched_order['_fulfillmentStockFlagSource'] = 'page_html' if html_flags else 'order_json_or_missing'
-                matched_order['_fulfillmentPageHtmlLength'] = len(str(data.get('pageHtml') or ''))
-                matched_order['_fulfillmentPageContainsOrder'] = reference in str(data.get('pageHtml') or '')
-                return matched_order
-        raise Exception('指定订单不存在、不是待处理状态或不在最近93天。')
+            reference = str(order.get('platformOrderId') or '').strip()
+            internal_id = str(order.get('id') or order.get('orderId') or '').strip()
+            shop_id = str(order.get('shopId') or '').strip()
+            rows = records_by_order.get(reference) or []
+            row_shop_name = str((rows[0] if rows else {}).get('店铺名') or '').strip()
+            shop = shops_by_id.get(shop_id) or shops_by_name.get(row_shop_name)
+            exclusions = []
+            if not reference or not internal_id:
+                exclusions.append('MISSING_ORDER_ID')
+            if not shop:
+                exclusions.append('SHOP_NOT_CONFIGURED')
+            if str(order.get('platformId') or '') != str((shop or {}).get('platformId') or ''):
+                exclusions.append('PLATFORM_MISMATCH')
+            if str(order.get('trackNumber') or '').strip():
+                exclusions.append('HAS_TRACKING_NUMBER')
+            if not is_message_only_abnormal(order):
+                exclusions.append('NOT_MESSAGE_ONLY_ABNORMAL')
+            if self.fulfillment_stock_status(order) != 'in_stock':
+                exclusions.append('INVENTORY_FLAG_UNSAFE')
+            if not rows:
+                exclusions.append('ORDER_DETAILS_MISSING')
+            statuses = {str(row.get('订单状态') or '').strip() for row in rows if str(row.get('订单状态') or '').strip()}
+            if statuses and statuses != {'待审核'}:
+                exclusions.append('STATUS_NOT_REVIEW')
+            warehouses = {str(row.get('仓库') or '').strip() for row in rows if str(row.get('仓库') or '').strip()}
+            if len(warehouses) != 1:
+                exclusions.append('MULTI_OR_UNKNOWN_WAREHOUSE')
+            for row in rows:
+                quantity = to_number(row.get('商品数量'))
+                stock = to_number(row.get('商品库存'))
+                if quantity == '' or stock == '' or quantity <= 0 or stock < quantity:
+                    exclusions.append('INVENTORY_INSUFFICIENT_OR_UNKNOWN')
+                    break
+            results.append({
+                'internalOrderId': internal_id, 'platformOrderId': reference,
+                'shopId': str((shop or {}).get('shopId') or shop_id),
+                'shopName': str((shop or {}).get('shopName') or row_shop_name),
+                'platformId': str(order.get('platformId') or ''),
+                'warehouse': next(iter(warehouses), ''), 'skuCount': len(rows),
+                'eligible': not exclusions, 'exclusions': list(dict.fromkeys(exclusions)),
+            })
+        return results[:bounded_limit]
+
+    def recover_message_review_order(self, order_reference, shop_configs):
+        reference = str(order_reference or '').strip()
+        candidates = self.inspect_message_review_candidates(shop_configs, 10)
+        candidate = next((item for item in candidates if item['platformOrderId'] == reference), None)
+        if not candidate:
+            raise Exception('MESSAGE_REVIEW_ORDER_NOT_FOUND: 指定订单不在当前待审核留言列表。')
+        if not candidate['eligible']:
+            raise Exception(f"MESSAGE_REVIEW_NOT_SAFE: 待审核留言订单未通过安全检查：{','.join(candidate['exclusions'])}")
+        response = self.session.post(
+            FULFILLMENT_PROCESS_ABNORMAL_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data={'orderIds': candidate['internalOrderId'], 'tableBase': '1', 'fixCategory': '3', 'isCheckSecondary': '1'},
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
+        if response_looks_unauthenticated(response):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_MESSAGE_REVIEW: 转待处理时登录状态失效，禁止自动重试。')
+        result = safe_json(response)
+        if response_looks_unauthenticated(response, result):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_MESSAGE_REVIEW: 转待处理时登录状态失效，禁止自动重试。')
+        if not result.get('success') or result.get('errors') or result.get('riskOrPlatformCancelsMessage'):
+            raise Exception('MESSAGE_REVIEW_TRANSITION_REJECTED: 马帮未确认订单已安全转回待处理。')
+        verified = self.find_order_for_fulfillment(reference, '2')
+        if str(verified.get('shopId') or '') != candidate['shopId']:
+            raise Exception('MESSAGE_REVIEW_VERIFY_FAILED: 转状态后店铺不一致。')
+        return {**candidate, 'movedToPending': True, 'afterStatus': '待处理'}
 
     def export_order_references_to_records(self, order_references, pending_status='2'):
         """精确查询并只导出指定订单，避免为了最多 10 单扫描整个日期范围。"""
@@ -594,6 +1026,7 @@ class MabangClient:
         if not references or len(references) > 10:
             raise ValueError('指定订单数量必须为1-10单。')
         platform_order_ids = []
+        authoritative_order_ids = []
         missing_references = []
         for reference in references:
             try:
@@ -606,8 +1039,12 @@ class MabangClient:
             platform_order_id = str(order.get('platformOrderId') or '').strip()
             if platform_order_id and platform_order_id not in platform_order_ids:
                 platform_order_ids.append(platform_order_id)
+            authoritative_order_id = authoritative_fulfillment_order_id(order, reference)
+            if authoritative_order_id and authoritative_order_id not in authoritative_order_ids:
+                authoritative_order_ids.append(authoritative_order_id)
         records = self.export_orders_to_records(platform_order_ids) if platform_order_ids else []
-        return records, platform_order_ids, missing_references
+        records = bind_authoritative_platform_order_ids(records, authoritative_order_ids)
+        return records, authoritative_order_ids, missing_references
 
     def get_fulfillment_channel_data(self, internal_id):
         channel_data = self.post_json_with_reauth(
@@ -758,7 +1195,7 @@ class MabangClient:
 
     @staticmethod
     def stale_multi_warehouse_flag_is_safe(order, single_warehouse_verified=False):
-        """马帮人工换仓后可能保留 hasGoods=3；仅在最新 SKU 明细已确认单仓时接受 3/0 组合。"""
+        """马帮可能保留 hasGoods=3；最新 SKU 明细确认仅一个履约仓（赠品仓不计）时接受 3/0。"""
         if not single_warehouse_verified:
             return False
         normalized_order = {
@@ -866,14 +1303,14 @@ class MabangClient:
         if str(order.get('orderStatus') or '') != '2':
             raise Exception('订单已不是待处理状态，已停止发货。')
         if str(order.get('trackNumber') or '').strip():
-            raise Exception('订单已经存在运单号，已停止重复发货。')
+            raise Exception('ALREADY_HAS_TRACKING_NUMBER: 订单已经存在运单号，已停止重复交运并转入现有运单处理。')
         stock_status = self.fulfillment_stock_status(order)
         if stock_status == 'multi_warehouse' and self.stale_multi_warehouse_flag_is_safe(order, single_warehouse_verified):
             stock_status = 'in_stock'
         if stock_status == 'unknown':
             raise Exception('INVENTORY_UNKNOWN_BEFORE_SUBMIT: 马帮订单库存标志缺失或无法识别，已停止发货。')
         if stock_status == 'multi_warehouse':
-            raise Exception('MULTI_WAREHOUSE_REQUIRES_REVIEW: 同一订单中的SKU分属不同仓库，请先在马帮待审核中人工换仓。')
+            raise Exception('MULTI_WAREHOUSE_REQUIRES_REVIEW: 同一订单中的普通SKU分属不同履约仓库，请先在马帮待审核中人工换仓。')
         if stock_status == 'out_of_stock':
             raise Exception('OUT_OF_STOCK_BEFORE_SUBMIT: 马帮订单库存标志显示缺货，已停止发货。')
 
@@ -970,13 +1407,33 @@ class MabangClient:
         if '待处理' not in current_status:
             raise Exception(f'ORDER_STATUS_NOT_PENDING_BEFORE_DISTRIBUTION: 当前订单状态为【{current_status}】，已停止转配货。')
 
+        current_logistics_html = html.unescape(str(order.get('cansend1logisticsHtml') or ''))
+        selected_channel_readable = bool(re.search(
+            r'data-id\s*=\s*["\'][^"\']+["\']', current_logistics_html, re.I
+        ))
+        if not selected_channel_readable:
+            raise Exception('TRACKING_CHANNEL_UNKNOWN_BEFORE_DISTRIBUTION: 已有运单号，但无法识别订单当前物流渠道，已停止自动处理。')
+        if not self.fulfillment_order_channel_selected(order, channel_id, channel_value):
+            reset = self.clear_mismatched_tracking_channel(
+                order_reference, tracking_number, channel_value, channel_id,
+                expected_shop_id, expected_platform_id,
+            )
+            resubmitted = self.submit_fulfillment(
+                order_reference, channel_value, channel_id, '1',
+                expected_shop_id, expected_platform_id, verify_timeout_seconds,
+            )
+            return {
+                **resubmitted,
+                'channelReset': bool(reset.get('cleared')),
+                'previousTrackingNumber': tracking_number,
+                'reenteredNormalFulfillment': True,
+            }
+
         channel_data = self.get_fulfillment_channel_data(internal_id)
         if not channel_data.get('_selectedOrderMatched'):
             raise Exception('ORDER_NOT_AVAILABLE_FOR_DELIVERY: 马帮物流交运列表未返回指定订单，已停止转配货。')
-        if not self.batch_edit_channel_available(channel_data, channel_id, channel_value):
-            raise Exception('CHANNEL_NOT_AVAILABLE_BEFORE_SUBMIT: 固定物流渠道不可用，已停止转配货。')
-        if not self.fulfillment_order_channel_selected(order, channel_id, channel_value):
-            raise Exception('TRACKING_CHANNEL_MISMATCH_BEFORE_DISTRIBUTION: 当前订单实际物流渠道与固定渠道不一致，已停止转配货。')
+
+        # 已存在运单号且实际渠道与店铺配置完全一致时，只转入配货中，不再次交运。
 
         response = self.session.post(
             FULFILLMENT_DISTRIBUTION_URL,
@@ -1015,6 +1472,72 @@ class MabangClient:
             'internalOrderId': internal_id, 'platformOrderId': str(latest.get('platformOrderId') or order_reference),
             'trackingNumber': str(latest.get('trackNumber') or '').strip(), 'afterStatus': latest_status,
             'message': '马帮已接受转配货请求，但状态回查尚未变为配货中。',
+        }
+
+    def clear_mismatched_tracking_channel(self, order_reference, expected_tracking_number, channel_value, channel_id,
+                                           expected_shop_id='', expected_platform_id=''):
+        """仅清空“已有运单号且当前渠道与配置不一致”的待处理订单物流渠道。"""
+        order = self.find_order_for_fulfillment(order_reference, '2')
+        internal_id = str(order.get('id') or order.get('orderId') or '').strip()
+        platform_order_id = str(order.get('platformOrderId') or order_reference).strip()
+        if not internal_id:
+            raise Exception('订单缺少马帮内部ID。')
+        if expected_shop_id and str(order.get('shopId') or '') != str(expected_shop_id):
+            raise Exception('TRACKING_RESET_SHOP_MISMATCH: 订单店铺与固定店铺不一致，已停止清空物流渠道。')
+        if expected_platform_id and str(order.get('platformId') or '') != str(expected_platform_id):
+            raise Exception('TRACKING_RESET_PLATFORM_MISMATCH: 订单平台与固定平台不一致，已停止清空物流渠道。')
+        if str(order.get('orderStatus') or '') != '2':
+            raise Exception('TRACKING_RESET_STATUS_CHANGED: 订单已不是待处理状态，已停止清空物流渠道。')
+        tracking_number = str(order.get('trackNumber') or '').strip()
+        if not tracking_number or tracking_number != str(expected_tracking_number or '').strip():
+            raise Exception('TRACKING_MISMATCH_BEFORE_RESET: 当前运单号与待重置运单号不一致，已停止清空物流渠道。')
+        current_logistics_html = html.unescape(str(order.get('cansend1logisticsHtml') or ''))
+        if not re.search(r'data-id\s*=\s*["\'][^"\']+["\']', current_logistics_html, re.I):
+            raise Exception('TRACKING_CHANNEL_UNKNOWN_BEFORE_RESET: 无法识别订单当前物流渠道，已停止清空物流渠道。')
+        if self.fulfillment_order_channel_selected(order, channel_id, channel_value):
+            raise Exception('TRACKING_CHANNEL_CHANGED_BEFORE_RESET: 订单物流渠道已变为正确渠道，已停止清空物流渠道。')
+
+        latest = self.find_order_for_fulfillment(order_reference, '2')
+        if str(latest.get('id') or latest.get('orderId') or '').strip() != internal_id:
+            raise Exception('TRACKING_RESET_ORDER_CHANGED: 马帮返回的订单已变化，已停止清空物流渠道。')
+        if str(latest.get('orderStatus') or '') != '2' or str(latest.get('trackNumber') or '').strip() != tracking_number:
+            raise Exception('TRACKING_RESET_ORDER_CHANGED: 订单状态或运单号已变化，已停止清空物流渠道。')
+        if self.fulfillment_order_channel_selected(latest, channel_id, channel_value):
+            raise Exception('TRACKING_CHANNEL_CHANGED_BEFORE_RESET: 订单物流渠道已变为正确渠道，已停止清空物流渠道。')
+
+        response = self.session.post(
+            FULFILLMENT_BATCH_EDIT_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data=[
+                ('sourceflag', '1'), ('platformOrderIds', platform_order_id), ('order-edit[]', '2'),
+                ('selChannel', ''), ('myLogisticsChannelId', ''), ('tableBase', '1'),
+                ('isOrderPhz', '1'), ('issecondsyc', '2'), ('confirmActiveFlag', '0'),
+            ], timeout=REQUEST_TIMEOUT, allow_redirects=True,
+        )
+        if response_looks_unauthenticated(response):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_TRACKING_RESET: 清空错误物流渠道时登录状态失效；系统不会自动重试。')
+        result = safe_json(response)
+        if response_looks_unauthenticated(response, result):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_TRACKING_RESET: 清空错误物流渠道时登录状态失效；系统不会自动重试。')
+        if not result.get('success'):
+            raise Exception(result.get('message') or '马帮拒绝清空错误物流渠道。')
+        if result.get('platformOrderIdArr'):
+            raise Exception('TRACKING_RESET_EXTRA_CONFIRMATION_REQUIRED: 马帮要求额外人工确认，已停止自动恢复。')
+        if result.get('notFoundPlatformOrderIds'):
+            raise Exception('TRACKING_RESET_ORDER_NOT_FOUND: 马帮未找到指定订单，已停止自动恢复。')
+
+        verified = self.find_order_for_fulfillment(order_reference, '2')
+        verified_tracking = str(verified.get('trackNumber') or '').strip()
+        verified_html = html.unescape(str(verified.get('cansend1logisticsHtml') or ''))
+        if verified_tracking:
+            raise Exception('TRACKING_RESET_VERIFY_FAILED: 清空物流渠道后原运单号仍然存在，未重新交运。')
+        if re.search(r'data-id\s*=\s*["\'][^"\']+["\']', verified_html, re.I):
+            raise Exception('TRACKING_RESET_VERIFY_FAILED: 清空后订单仍显示物流渠道，未重新交运。')
+        return {
+            'cleared': True, 'trackingNumber': '',
+            'orderStatus': str(verified.get('showOrderStatusText') or verified.get('orderStatus') or ''),
+            'platformOrderId': platform_order_id,
+            'message': str(result.get('message') or '错误物流渠道已清空'),
         }
 
     def clear_pending_tracking_channel(self, order_reference, channel_value, channel_id,
@@ -1094,7 +1617,8 @@ class MabangClient:
                 'platformOrderId': platform_order_id, 'message': str(result.get('message') or '物流渠道已清空')}
 
     def submit_fulfillment(self, order_reference, channel_value, channel_id, channel_source='1', expected_shop_id='', expected_platform_id='',
-                           verify_timeout_seconds=90, single_warehouse_verified=False):
+                           verify_timeout_seconds=90, single_warehouse_verified=False,
+                           tracking_wait_timeout_seconds=30, distribution_verify_timeout_seconds=12):
         total_started = time.monotonic()
         prepare_started = time.monotonic()
         prepared = self.prepare_fulfillment(
@@ -1134,18 +1658,19 @@ class MabangClient:
             raise Exception(submitted.get('message') or '马帮交运提交失败。')
 
         verify_seconds = max(15, min(int(verify_timeout_seconds), 300))
-        deadline = time.time() + verify_seconds
+        tracking_wait_seconds = max(10, min(int(tracking_wait_timeout_seconds), verify_seconds, 120))
+        deadline = time.time() + tracking_wait_seconds
         latest = order
         channel_matched = False
         tracking_poll_count = 0
         tracking_started = time.monotonic()
         while time.time() < deadline:
-            time.sleep(3)
+            time.sleep(fulfillment_poll_delay(tracking_poll_count))
+            tracking_poll_count += 1
             try:
                 latest = self.find_order_for_fulfillment(order_reference, '')
             except Exception:
                 continue
-            tracking_poll_count += 1
             channel_matched = self.fulfillment_order_channel_selected(latest, channel_id, channel_value)
             if str(latest.get('trackNumber') or '').strip() and channel_matched:
                 break
@@ -1187,15 +1712,16 @@ class MabangClient:
                     distribution_message = str(distribution_result.get('message') or '马帮拒绝转入配货中。')
                 else:
                     distribution_message = str(distribution_result.get('message') or '已开始配货')
-                    distribution_deadline = time.time() + verify_seconds
+                    distribution_verify_seconds = max(5, min(int(distribution_verify_timeout_seconds), verify_seconds, 60))
+                    distribution_deadline = time.time() + distribution_verify_seconds
                     distribution_wait_started = time.monotonic()
                     while time.time() < distribution_deadline:
-                        time.sleep(3)
+                        time.sleep(fulfillment_poll_delay(distribution_poll_count))
+                        distribution_poll_count += 1
                         try:
                             latest = self.find_order_for_fulfillment(order_reference, '')
                         except Exception:
                             continue
-                        distribution_poll_count += 1
                         after_status = str(latest.get('showOrderStatusText') or latest.get('orderStatus') or '')
                         latest_tracking = str(latest.get('trackNumber') or '').strip()
                         if '配货中' in after_status and latest_tracking == tracking_number:
@@ -1203,9 +1729,8 @@ class MabangClient:
                             break
                     distribution_wait_ms = round((time.monotonic() - distribution_wait_started) * 1000)
                     if not distribution_success:
-                        distribution_error_code = 'DISTRIBUTION_VERIFY_FAILED'
-                        if not distribution_message:
-                            distribution_message = '马帮已接受转配货请求，但状态回查尚未变为配货中。'
+                        distribution_error_code = 'DISTRIBUTION_PENDING'
+                        distribution_message = '马帮已接受转配货请求，短窗口内状态尚未变为配货中；系统将异步持续回查。'
 
         sync_status = str(latest.get('isSyncLogistics') or '')
         verified = bool(tracking_number and channel_matched and distribution_success and '配货中' in after_status)
