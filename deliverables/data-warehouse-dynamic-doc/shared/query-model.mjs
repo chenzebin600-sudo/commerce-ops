@@ -68,7 +68,7 @@ export function mergeResultPage(state, response) {
 
 function normalizeQuery({ product, params, pageSize, cursor }, errors) {
   const normalizedProduct = normalizeString(product);
-  const schema = PRODUCTS[normalizedProduct];
+  const schema = Object.hasOwn(PRODUCTS, normalizedProduct) ? PRODUCTS[normalizedProduct] : undefined;
   if (!schema) {
     errors.push("产品无效");
     return undefined;

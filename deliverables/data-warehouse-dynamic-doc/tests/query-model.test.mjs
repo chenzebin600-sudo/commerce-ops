@@ -36,6 +36,17 @@ test("rejects a daily-sales window longer than 92 inclusive days", () => {
   assert.match(result.errors.join("\n"), /92/);
 });
 
+test("rejects inherited product names without throwing", () => {
+  assert.deepEqual(buildQueryRequest({
+    product: "__proto__",
+    pageSize: 500,
+    params: {},
+  }), {
+    ok: false,
+    errors: ["产品无效"],
+  });
+});
+
 test("rejects unknown fields and invalid enum values", () => {
   const result = buildQueryRequest({
     product: "控价",
