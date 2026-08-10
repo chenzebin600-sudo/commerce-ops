@@ -100,6 +100,52 @@ test("sanitizes upstream network failures", async () => {
   });
 });
 
+test("rejects a cross-origin upstream redirect before it receives the data key", async (t) => {
+  let sinkHeaders;
+  const sink = createServer((request, response) => {
+    sinkHeaders = request.headers;
+    response.end(JSON.stringify({ ok: true }));
+  });
+  sink.listen(0, "127.0.0.1");
+  await once(sink, "listening");
+  t.after(async () => {
+    const closed = once(sink, "close");
+    sink.close();
+    await closed;
+  });
+
+  const sinkPort = sink.address().port;
+  const upstream = createServer((request, response) => {
+    response.writeHead(307, { location: `http://127.0.0.1:${sinkPort}/redirect-sink` });
+    response.end();
+  });
+  upstream.listen(0, "127.0.0.1");
+  await once(upstream, "listening");
+  t.after(async () => {
+    const closed = once(upstream, "close");
+    upstream.close();
+    await closed;
+  });
+
+  const upstreamPort = upstream.address().port;
+  const app = createApp({ upstreamBaseUrl: `http://127.0.0.1:${upstreamPort}` });
+  app.listen(0, "127.0.0.1");
+  await once(app, "listening");
+  t.after(async () => {
+    const closed = once(app, "close");
+    app.close();
+    await closed;
+  });
+
+  const appPort = app.address().port;
+  const testKey = ["zndr", "redirect-secret"].join("_");
+  const response = await fetch(`http://127.0.0.1:${appPort}/proxy/me`, {
+    headers: { "x-data-key": testKey },
+  });
+  assert.equal(response.status, 502);
+  assert.equal(sinkHeaders, undefined);
+});
+
 test("rejects unsupported method and path combinations", async () => {
   let calls = 0;
   await withServer(async () => { calls += 1; }, async (base) => {

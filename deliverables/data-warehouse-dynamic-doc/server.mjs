@@ -119,6 +119,7 @@ async function proxyRequest(request, response, route, upstream, fetchImpl) {
       headers,
       body,
       signal: controller.signal,
+      redirect: "error",
     });
     const responseBody = await readResponseBody(upstreamResponse, MAX_UPSTREAM_BODY_BYTES);
     if (!responseBody.ok) return sendJson(response, 502, { error: "Upstream response too large" });
