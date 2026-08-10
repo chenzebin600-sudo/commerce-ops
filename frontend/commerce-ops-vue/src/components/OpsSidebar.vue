@@ -14,6 +14,7 @@ import {
   Megaphone,
   MonitorCog,
   Radar,
+  Replace,
   ScanSearch,
   Send,
   ShoppingBag,
@@ -48,6 +49,7 @@ const groups = [
     { path: "/mabang", label: "马帮数据", icon: ShoppingBag },
     { path: "/mabang-listing", label: "商品刊登", icon: Send },
     { path: "/fulfillment", label: "履约中心", icon: Truck },
+    { path: "/sku-replacement", label: "缺货 SKU 替换", icon: Replace },
     { path: "/customer-service", label: "客服中心", icon: Headphones },
   ] },
   { label: "治理", items: [

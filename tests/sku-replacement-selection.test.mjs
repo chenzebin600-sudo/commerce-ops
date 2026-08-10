@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildSkuReplacementSelections,
+  executionStatusesFromTask,
   filterSkuReplacementPlans,
   replacementItemKey,
   summarizeSkuSelections,
@@ -68,4 +70,28 @@ test("无候选与执行结果状态能独立筛选", () => {
   assert.deepEqual(completed.map((plan) => plan.items.map((item) => item.itemId)), [["2"]]);
   const noCandidate = filterSkuReplacementPlans(plans, { kind: "ALL", risk: "ALL", status: "NO_CANDIDATE" }, {}, {});
   assert.deepEqual(noCandidate.map((plan) => [plan.order.platformOrderId, plan.items.map((item) => item.itemId)]), [["ORDER_2", ["3"]]]);
+});
+
+test("批量请求只包含仍存在于完整预览中的有效选择", () => {
+  const selections = {
+    [replacementItemKey("ORDER_1", "1")]: "CHAIR-BLACK-3",
+    [replacementItemKey("ORDER_1", "2")]: "MISSING-SKU",
+    [replacementItemKey("REMOVED", "9")]: "STALE-SKU",
+  };
+  assert.deepEqual(buildSkuReplacementSelections(plans, selections), [
+    { orderReference:"ORDER_1",itemId:"1",replacementSku:"CHAIR-BLACK-3" },
+  ]);
+});
+
+test("后台批量任务逐项状态可恢复为页面筛选状态", () => {
+  assert.deepEqual(executionStatusesFromTask({ items:[
+    { orderReference:"ORDER_1",itemId:"1",status:"RUNNING" },
+    { orderReference:"ORDER_1",itemId:"2",status:"COMPLETED" },
+    { orderReference:"ORDER_2",itemId:"3",status:"MANUAL_REVIEW" },
+    { orderReference:"ORDER_3",itemId:"4",status:"PENDING" },
+  ] }), {
+    [replacementItemKey("ORDER_1", "1")]: "RUNNING",
+    [replacementItemKey("ORDER_1", "2")]: "COMPLETED",
+    [replacementItemKey("ORDER_2", "3")]: "MANUAL_REVIEW",
+  });
 });

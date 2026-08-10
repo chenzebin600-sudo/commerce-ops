@@ -1,4 +1,4 @@
-import type { SkuReplacementKind, SkuReplacementPlan } from "./warehouse-transfer";
+import type { SkuReplacementKind, SkuReplacementPlan } from "./sku-replacement";
 
 export type ReplacementKindFilter = "ALL" | SkuReplacementKind;
 export type ReplacementRiskFilter = "ALL" | "LOW" | "MEDIUM" | "HIGH";
@@ -65,4 +65,27 @@ export function summarizeSkuSelections(plans: SkuReplacementPlan[], selections: 
     }
   }
   return { selectedItems, selectedOrders: selectedOrders.size };
+}
+
+export function buildSkuReplacementSelections(plans: SkuReplacementPlan[], selections: SkuSelections) {
+  const result: Array<{ orderReference: string; itemId: string; replacementSku: string }> = [];
+  for (const plan of plans) {
+    for (const item of plan.items) {
+      const replacementSku = selections[replacementItemKey(plan.order.platformOrderId, item.itemId)];
+      if (!replacementSku || !item.candidates.some((candidate) => candidate.sku === replacementSku)) continue;
+      result.push({ orderReference: plan.order.platformOrderId, itemId: item.itemId, replacementSku });
+    }
+  }
+  return result;
+}
+
+export function executionStatusesFromTask(task: { items?: Array<{ orderReference: string; itemId: string; status: string }> } | null) {
+  const result: ReplacementExecutionStatuses = {};
+  for (const item of task?.items || []) {
+    const status = item.status === "NOT_EXECUTED" ? "FAILED" : item.status;
+    if (["RUNNING", "COMPLETED", "FAILED", "MANUAL_REVIEW"].includes(status)) {
+      result[replacementItemKey(item.orderReference, item.itemId)] = status as ReplacementExecutionStatuses[string];
+    }
+  }
+  return result;
 }
