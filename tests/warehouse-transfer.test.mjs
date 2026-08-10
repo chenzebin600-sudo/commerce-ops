@@ -66,6 +66,40 @@ test("批量预览去重订单并整批只读取一次库存", async () => {
   } finally { fs.rmSync(rootDir, { recursive: true, force: true }); }
 });
 
+test("页面连接中断后可按原订单恢复最近批次", async () => {
+  const { service, calls, rootDir } = fixtureService();
+  try {
+    const original = await service.previewBatch({ orderReferences: ["ORDER_10001", "ORDER_10002"] });
+    const restartedService = new WarehouseTransferService({ rootDir, runWorker: service.runWorker, credentials: service.credentials,
+      hasShopAccess: service.hasShopAccess, allowedWarehouses: service.allowedWarehouses });
+    const recovered = restartedService.recoverBatch({ orderReferences: ["ORDER_10001", "ORDER_10002"] });
+    assert.notEqual(recovered.batchHash, original.batchHash);
+    assert.notEqual(recovered.plans[0].planHash, original.plans[0].planHash);
+    assert.equal(recovered.requestedCount, 2);
+    assert.equal(recovered.plans.length, 2);
+    assert.ok(recovered.recoveredAt);
+    const executed = await restartedService.executeBatch({ batchHash: recovered.batchHash,
+      planHashes: recovered.plans.map((plan) => plan.planHash), approvalText: "确认批量换仓 2 单" });
+    assert.deepEqual(executed.summary, { completed: 2, failed: 0 });
+    assert.equal(calls.filter((call) => call.action === "order-warehouse-change").length, 2);
+  } finally { fs.rmSync(rootDir, { recursive: true, force: true }); }
+});
+
+test("批量换仓允许 100 单并拒绝第 101 单", async () => {
+  const { service, rootDir } = fixtureService();
+  const hundredOrders = Array.from({ length: 100 }, (_, index) => `ORDER_${String(index + 1).padStart(5, "0")}`);
+  try {
+    const batch = await service.previewBatch({ orderReferences: hundredOrders });
+    assert.equal(batch.requestedCount, 100);
+    assert.ok(Date.parse(batch.plans[0].expiresAt) - Date.parse(batch.plans[0].createdAt) >= 60 * 60 * 1000,
+      "100 单预览期间，早期计划应保持足够长的有效期");
+    await assert.rejects(
+      () => service.previewBatch({ orderReferences: [...hundredOrders, "ORDER_00101"] }),
+      /请输入 1-100 个有效订单号/,
+    );
+  } finally { fs.rmSync(rootDir, { recursive: true, force: true }); }
+});
+
 test("批量预览会预占前序订单库存，禁止重复分配同一库存", async () => {
   const { service, rootDir } = fixtureService();
   try {

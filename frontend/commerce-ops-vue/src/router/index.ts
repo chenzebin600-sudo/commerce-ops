@@ -98,7 +98,7 @@ const routes = [
     path: "/warehouse-transfer",
     name: "warehouse-transfer",
     component: () => import("@/pages/WarehouseTransferPage.vue"),
-    meta: { title: "订单换仓", subtitle: "核对整单 SKU 库存，预览并安全修改马帮订单仓库。" },
+    meta: { title: "缺货处理", subtitle: "优先换仓；无法换仓时推荐同款换色或更小规格 SKU。" },
   },
   {
     path: "/:module",

@@ -5,6 +5,9 @@ import { createMabangWorkerRunner } from "../lib/mabang-worker-runner.mjs";
 import { InventorySnapshotStore } from "../lib/inventory-sync/inventory-snapshot-store.mjs";
 
 const PLAN_TTL_MS = 10 * 60 * 1000;
+const BATCH_PLAN_TTL_MS = 60 * 60 * 1000;
+const BATCH_RECOVERY_MAX_AGE_MS = 45 * 60 * 1000;
+const MAX_BATCH_ORDERS = 100;
 const IGNORED_SKUS = new Set(["直播赠品单", "TKZP001"]);
 
 function text(value) { return String(value ?? "").trim(); }
@@ -89,7 +92,8 @@ export class WarehouseTransferService {
     if (wanted && !selected) throw coded("WAREHOUSE_TARGET_NOT_ALLOWED", "目标仓库不在该店铺允许范围，或订单商品不支持该仓库");
     if (!selected?.ready) throw coded("WAREHOUSE_NO_COMMON_STOCK", "允许仓库中没有一个仓库可同时满足订单内全部 SKU 库存");
     const createdAt = this.now();
-    const record = { version: 1, createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + PLAN_TTL_MS).toISOString(),
+    const planTtlMs = Number(context.planTtlMs) || PLAN_TTL_MS;
+    const record = { version: 1, createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + planTtlMs).toISOString(),
       order: { internalOrderId: order.internalOrderId, platformOrderId: order.platformOrderId, shopId: order.shopId, platformId: order.platformId, orderStatus: order.orderStatus },
       targetWarehouse: selected.warehouse,
       items: activeItems.map((item) => ({ itemId: text(item.itemId), stockSku: text(item.stockSku), title: text(item.title), quantity: number(item.quantity), currentWarehouse: text(item.stockWarehouseName) })),
@@ -109,8 +113,8 @@ export class WarehouseTransferService {
 
   async previewBatch({ orderReferences = [], targetWarehouse = "" } = {}) {
     const references = [...new Set((Array.isArray(orderReferences) ? orderReferences : []).map(text).filter(Boolean))];
-    if (!references.length || references.length > 10 || references.some((reference) => !/^[A-Za-z0-9_-]{4,100}$/.test(reference))) {
-      throw coded("WAREHOUSE_BATCH_ORDERS_INVALID", "请输入 1-10 个有效订单号");
+    if (!references.length || references.length > MAX_BATCH_ORDERS || references.some((reference) => !/^[A-Za-z0-9_-]{4,100}$/.test(reference))) {
+      throw coded("WAREHOUSE_BATCH_ORDERS_INVALID", `请输入 1-${MAX_BATCH_ORDERS} 个有效订单号`);
     }
     const account = this.credentials();
     if (!account?.ok) throw coded(account?.code || "MABANG_ACCOUNT_NOT_CONNECTED", account?.message || "请先连接马帮账号");
@@ -118,7 +122,7 @@ export class WarehouseTransferService {
     const inventory = snapshot ? { records: snapshot.records, source: "inventory_sync_snapshot", capturedAt: snapshot.capturedAt, expiresAt: snapshot.expiresAt } : null;
     const plans = []; const failures = []; const reservations = new Map(); const inventoryCache = new Map();
     for (const orderReference of references) {
-      try { plans.push(await this.preview({ orderReference, targetWarehouse }, { account, inventory, inventoryCache, reservations })); }
+      try { plans.push(await this.preview({ orderReference, targetWarehouse }, { account, inventory, inventoryCache, reservations, planTtlMs: BATCH_PLAN_TTL_MS })); }
       catch (error) { failures.push({ orderReference, code: error.code || "WAREHOUSE_PREVIEW_FAILED", message: text(error.message || "换仓预览失败").slice(0, 300) }); }
     }
     const createdAt = this.now();
@@ -132,13 +136,56 @@ export class WarehouseTransferService {
     return record;
   }
 
+  recoverBatch({ orderReferences = [] } = {}) {
+    const references = [...new Set((Array.isArray(orderReferences) ? orderReferences : []).map(text).filter(Boolean))];
+    if (!references.length || references.length > MAX_BATCH_ORDERS || references.some((reference) => !/^[A-Za-z0-9_-]{4,100}$/.test(reference))) {
+      throw coded("WAREHOUSE_BATCH_ORDERS_INVALID", `请输入 1-${MAX_BATCH_ORDERS} 个有效订单号`);
+    }
+    const wanted = [...references].sort().join("\u0000");
+    const directory = path.join(this.historyDir, "batch-previews");
+    const candidates = fs.existsSync(directory) ? fs.readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => {
+        try { return JSON.parse(fs.readFileSync(path.join(directory, entry.name), "utf8")); } catch { return null; }
+      }).filter(Boolean) : [];
+    const source = candidates.filter((record) => {
+      const recordReferences = [...new Set([
+        ...(record.orderReferences || []),
+        ...(record.plans || []).map((plan) => plan.order?.platformOrderId),
+        ...(record.failures || []).map((failure) => failure.orderReference),
+      ].map(text).filter(Boolean))].sort().join("\u0000");
+      const age = this.now().getTime() - Date.parse(record.createdAt || "");
+      return recordReferences === wanted && age >= 0 && age <= BATCH_RECOVERY_MAX_AGE_MS;
+    }).sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
+    if (!source) throw coded("WAREHOUSE_BATCH_RECOVERY_NOT_FOUND", "没有找到这批订单最近完成的预览结果，请重新读取");
+    const createdAt = this.now();
+    const recoveredPlans = source.plans.map((plan) => {
+      const refreshed = { ...plan, createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + BATCH_PLAN_TTL_MS).toISOString(),
+        recoveredAt: createdAt.toISOString(), recoveredFromPlanHash: plan.recoveredFromPlanHash || plan.planHash };
+      delete refreshed.planHash; delete refreshed.approvalText;
+      refreshed.planHash = hash(refreshed);
+      refreshed.approvalText = `确认换仓 ${refreshed.order.platformOrderId} -> ${refreshed.targetWarehouse}`;
+      this.plans.set(refreshed.planHash, refreshed);
+      this.write("previews", refreshed.planHash, refreshed);
+      return refreshed;
+    });
+    const recovered = { ...source, plans: recoveredPlans, createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + PLAN_TTL_MS).toISOString(),
+      orderReferences: references, recoveredAt: createdAt.toISOString() };
+    recovered.batchHash = hash({ version: recovered.version, createdAt: recovered.createdAt, expiresAt: recovered.expiresAt,
+      requestedCount: recovered.requestedCount, planHashes: recovered.plans.map((plan) => plan.planHash), failures: recovered.failures });
+    recovered.approvalText = `确认批量换仓 ${recovered.plans.length} 单`;
+    this.batches.set(recovered.batchHash, recovered);
+    this.write("batch-previews", recovered.batchHash, recovered);
+    return recovered;
+  }
+
   async executeBatch({ batchHash, planHashes = [], approvalText } = {}) {
     const record = this.batches.get(text(batchHash));
     if (!record) throw coded("WAREHOUSE_BATCH_NOT_FOUND", "批量换仓预览不存在或已经执行，请重新预览");
     if (this.now().getTime() >= Date.parse(record.expiresAt)) { this.batches.delete(record.batchHash); throw coded("WAREHOUSE_BATCH_EXPIRED", "批量换仓预览已过期，请重新预览"); }
     const requested = new Set((Array.isArray(planHashes) ? planHashes : []).map(text).filter(Boolean));
     const available = new Map(record.plans.map((plan) => [plan.planHash, plan]));
-    if (!requested.size || requested.size > 10 || [...requested].some((planHash) => !available.has(planHash))) throw coded("WAREHOUSE_BATCH_SELECTION_INVALID", "请选择当前批次中可执行的订单");
+    if (!requested.size || requested.size > MAX_BATCH_ORDERS || [...requested].some((planHash) => !available.has(planHash))) throw coded("WAREHOUSE_BATCH_SELECTION_INVALID", "请选择当前批次中可执行的订单");
     // 始终沿用预览顺序，避免调用方通过重排 planHashes 改变同仓同 SKU 的库存优先级。
     const selected = record.plans.filter((plan) => requested.has(plan.planHash));
     const expectedApproval = `确认批量换仓 ${selected.length} 单`;

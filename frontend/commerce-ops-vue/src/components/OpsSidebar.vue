@@ -47,7 +47,7 @@ const groups = [
     { path: "/shopee-api", label: "Shopee API", icon: Braces },
     { path: "/returns-collection", label: "售后数据采集", icon: Database },
     { path: "/fulfillment", label: "自动发货", icon: Truck },
-    { path: "/warehouse-transfer", label: "订单换仓", icon: Warehouse },
+    { path: "/warehouse-transfer", label: "缺货处理", icon: Warehouse },
   ] },
   { label: "治理", items: [
     { path: "/shop-health", label: "店铺健康", icon: ShieldCheck },
