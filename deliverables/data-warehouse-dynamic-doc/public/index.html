@@ -27,7 +27,7 @@
           </div>
           <p id="connection-status" class="status" aria-live="polite">尚未连接</p>
         </div>
-        <div class="connection-controls">
+        <form id="connection-form" class="connection-controls">
           <div class="field key-field">
             <label for="key-input">数据密钥</label>
             <div class="input-action">
@@ -36,8 +36,8 @@
             </div>
             <p id="key-help" class="help-text">密钥仅用于本次浏览器会话，不会显示在查询结果中。</p>
           </div>
-          <button id="connect-button" class="button button-primary" type="button">连接</button>
-        </div>
+          <button id="connect-button" class="button button-primary" type="submit">连接</button>
+        </form>
         <p id="scope-summary" class="scope-summary" aria-live="polite">连接后将显示你的数据范围。</p>
       </section>
 
@@ -49,11 +49,11 @@
               <h2 id="query-heading">配置查询</h2>
             </div>
           </div>
-          <div id="product-tabs" class="product-tabs" role="tablist" aria-label="选择数据产品">
-            <button class="product-tab" type="button" role="tab" aria-selected="true" aria-controls="query-form" data-product="日销">日销</button>
-            <button class="product-tab" type="button" role="tab" aria-selected="false" aria-controls="query-form" data-product="库存">库存</button>
-            <button class="product-tab" type="button" role="tab" aria-selected="false" aria-controls="query-form" data-product="产品包">产品包</button>
-            <button class="product-tab" type="button" role="tab" aria-selected="false" aria-controls="query-form" data-product="控价">控价</button>
+          <div id="product-tabs" class="product-tabs" role="group" aria-label="选择数据产品">
+            <button class="product-tab is-selected" type="button" data-product="日销">日销</button>
+            <button class="product-tab" type="button" data-product="库存">库存</button>
+            <button class="product-tab" type="button" data-product="产品包">产品包</button>
+            <button class="product-tab" type="button" data-product="控价">控价</button>
           </div>
           <form id="query-form" aria-busy="false" novalidate>
             <fieldset>
@@ -63,9 +63,9 @@
                   <label for="query-page-size">每页行数</label>
                   <select id="query-page-size" name="pageSize">
                     <option value="50">50</option>
-                    <option value="100" selected>100</option>
+                    <option value="100">100</option>
                     <option value="250">250</option>
-                    <option value="500">500</option>
+                    <option value="500" selected>500</option>
                   </select>
                 </div>
               </div>

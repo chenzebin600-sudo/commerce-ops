@@ -91,7 +91,7 @@ input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--da
 .workspace-grid { display: grid; gap: 20px; }
 .product-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
 .product-tab { min-height: 40px; padding: 7px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-input); background: var(--surface); color: var(--ink); }
-.product-tab[aria-selected="true"] { border-color: var(--accent); background: var(--accent-soft); color: #053f70; font-weight: 700; }
+.product-tab.is-selected { border-color: var(--accent); background: var(--accent-soft); color: #053f70; font-weight: 700; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
 .message { margin: 14px 0; padding: 10px 12px; border-radius: var(--radius-input); font-size: .875rem; }
 .message-error { border: 1px solid var(--danger); background: var(--danger-soft); color: #741c1c; }
@@ -103,7 +103,7 @@ input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--da
 .button-secondary:hover:not(:disabled) { background: var(--surface-subtle); }
 .button[aria-busy="true"]::after { content: "…"; }
 
-.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-input); }
+.table-wrap { max-height: 32rem; overflow-x: auto; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-input); }
 table { width: 100%; min-width: 580px; border-collapse: collapse; background: var(--surface); }
 caption { padding: 10px 12px; color: var(--muted); font-size: .8125rem; text-align: left; }
 th, td { padding: 10px 12px; border-top: 1px solid var(--border); text-align: left; vertical-align: top; white-space: nowrap; }
