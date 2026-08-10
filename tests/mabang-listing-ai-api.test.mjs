@@ -6,6 +6,7 @@ import test from "node:test";
 import { AiGateway } from "../lib/ai/ai-gateway.mjs";
 import {
   createMabangListingAiApi,
+  MABANG_LISTING_AI_PROFILES,
   MABANG_LISTING_AI_PATH,
   MABANG_LISTING_AI_TOKEN_HEADER,
 } from "../lib/ai/mabang-listing-ai-api.mjs";
@@ -60,6 +61,17 @@ function input(overrides = {}) {
   };
 }
 
+function pythonRawPrompt(source, name) {
+  const normalizedSource = source.replace(/\r\n?/g, "\n");
+  const opening = `${name} = r\"\"\"`;
+  const start = normalizedSource.indexOf(opening);
+  assert.notEqual(start, -1, `${name} must exist in the Python adapter`);
+  const contentStart = start + opening.length;
+  const end = normalizedSource.indexOf('\"\"\".strip()', contentStart);
+  assert.notEqual(end, -1, `${name} must remain a stripped raw triple-quoted string`);
+  return normalizedSource.slice(contentStart, end).trim();
+}
+
 test("Mabang listing internal AI profile routes through the unified Gateway", async () => {
   const providerCalls = [];
   const gateway = new AiGateway({
@@ -93,6 +105,17 @@ test("Mabang listing internal AI profile routes through the unified Gateway", as
   assert.equal(providerCalls[0].maxTokens, 2400);
   assert.equal(gateway.promptRegistry.list()[0].moduleId, MODULE_IDS.MABANG_LISTING);
   assert.equal(gateway.promptRegistry.list()[0].version, "test-v1");
+});
+
+test("registered Mabang prompt digests match the Python adapter prompts", async () => {
+  const source = await fs.readFile("integrations/mabang-getdata/ai_service.py", "utf8");
+  for (const [profileName, promptName] of [
+    ["command_parser", "SYSTEM_PROMPT"],
+    ["listing_material", "LISTING_MATERIAL_SYSTEM_PROMPT"],
+  ]) {
+    const digest = createHash("sha256").update(pythonRawPrompt(source, promptName), "utf8").digest("hex");
+    assert.equal(digest, MABANG_LISTING_AI_PROFILES[profileName].systemPromptSha256);
+  }
 });
 
 test("Mabang listing internal AI endpoint rejects external callers and invalid tokens", async () => {

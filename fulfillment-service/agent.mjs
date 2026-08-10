@@ -80,7 +80,7 @@ export class FulfillmentAgent {
     const runId = randomUUID();
     const startedAt = this.now().toISOString();
     const trace = [];
-    this.repository?.startAgentRun?.({ id: runId, conversationId: id, model: this.model, startedAt });
+    await this.repository?.startAgentRun?.({ id: runId, conversationId: id, model: this.model, startedAt });
     const messages = [
       { role: "system", content: FULFILLMENT_AGENT_SYSTEM_PROMPT },
       ...(this.conversations.get(id) || []),
@@ -96,7 +96,7 @@ export class FulfillmentAgent {
         const command = result.validatedOutput ?? parseCommand(result.content);
         if (command.type === "final") {
           this.remember(id, userMessage, command.message);
-          this.repository?.finishAgentRun?.({ id: runId, status: "completed", stepCount: step,
+          await this.repository?.finishAgentRun?.({ id: runId, status: "completed", stepCount: step,
             toolTrace: auditTrace(trace), finishedAt: this.now().toISOString() });
           return { conversationId: id, runId, mode: "read_only", message: command.message, toolsUsed: trace };
         }
@@ -111,7 +111,7 @@ export class FulfillmentAgent {
       }
       throw new FulfillmentError("AGENT_STEP_LIMIT", "Agent 达到最大工具调用步数，未执行任何真实操作", 409);
     } catch (error) {
-      this.repository?.finishAgentRun?.({ id: runId, status: "failed", stepCount: trace.length,
+      await this.repository?.finishAgentRun?.({ id: runId, status: "failed", stepCount: trace.length,
         toolTrace: auditTrace(trace), errorCode: error.code || "AGENT_FAILED", finishedAt: this.now().toISOString() });
       if (error instanceof FulfillmentError) throw error;
       throw new FulfillmentError(error.code || "AGENT_FAILED", error.message || "Agent 执行失败", 502);

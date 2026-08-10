@@ -94,3 +94,24 @@ test("download path policy failures use the dedicated path rejection action", ()
   completeHttpAudit(audit, context, { httpStatus: 403 });
   assert.equal(events[0].action, "file.path.rejected");
 });
+
+test("product-knowledge review and release writes have durable audit descriptors", () => {
+  const cases = [
+    ["/api/product-knowledge/candidates/pkc_1/reviews", "product_knowledge.candidate.reviewed"],
+    ["/api/product-knowledge/releases", "product_knowledge.release.created"],
+    ["/api/product-knowledge/releases/pkrel_1/publish", "product_knowledge.release.published"],
+  ];
+  for (const [pathname, action] of cases) {
+    const context = createHttpAuditContext(request(), new URL(`http://localhost${pathname}`));
+    context.annotate({
+      actorIdentifier: "knowledge-reviewer",
+      metadata: { candidateId: "pkc_1", releaseId: "pkrel_1" },
+    });
+    const { events, audit } = collector();
+    completeHttpAudit(audit, context, { httpStatus: 200 });
+    assert.equal(events[0].module, "product_knowledge");
+    assert.equal(events[0].action, action);
+    assert.equal(events[0].actorIdentifier, "knowledge-reviewer");
+    assert.equal(events[0].metadata.releaseId, "pkrel_1");
+  }
+});

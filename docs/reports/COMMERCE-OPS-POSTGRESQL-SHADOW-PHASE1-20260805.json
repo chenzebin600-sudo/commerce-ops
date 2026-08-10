@@ -1,0 +1,987 @@
+{
+  "status": "PASS",
+  "contractVersion": "COMMERCE-OPS-PG-SHADOW-1.0.0",
+  "database": "commerce_ops_shadow",
+  "generatedFiles": {
+    "first": "postgresql/shadow/migrations/001_legacy_tables.sql",
+    "second": "postgresql/shadow/migrations/002_ai_observability.sql",
+    "third": "postgresql/shadow/migrations/003_legacy_constraints_indexes_views.sql",
+    "contract": "postgresql/shadow/schema-contract.json"
+  },
+  "selectedTables": [
+    "dingtalk_robot_configs",
+    "export_files",
+    "foundation_account_capabilities",
+    "foundation_identity_links",
+    "foundation_integration_accounts",
+    "foundation_owners",
+    "foundation_source_runs",
+    "foundation_source_systems",
+    "foundation_task_events",
+    "foundation_task_leases",
+    "foundation_tasks",
+    "foundation_warehouses",
+    "growth_country_mapping_sets",
+    "growth_inventory_snapshots",
+    "growth_order_headers",
+    "growth_order_inventory_links",
+    "growth_order_lines",
+    "growth_shop_source_mappings",
+    "growth_shops",
+    "growth_sku_warehouse_sales_metrics",
+    "growth_source_batches",
+    "growth_warehouse_country_mappings",
+    "mabang_account_profiles",
+    "operation_audit_events",
+    "price_control_price_snapshots",
+    "price_control_source_batches",
+    "price_control_sync_runs",
+    "product_ai_contents",
+    "product_categories",
+    "product_cost_snapshots",
+    "product_detail_preferences",
+    "product_field_override_events",
+    "product_field_overrides",
+    "product_identity_mappings",
+    "product_image_generation_items",
+    "product_image_generation_tasks",
+    "product_images",
+    "product_import_batches",
+    "product_import_field_changes",
+    "product_import_files",
+    "product_import_issues",
+    "product_import_rows",
+    "product_inventory_snapshots",
+    "product_listing_drafts",
+    "product_listing_publish_records",
+    "product_media_assets",
+    "product_media_links",
+    "product_models",
+    "product_package_rows",
+    "product_packaging_profiles",
+    "product_price_change_events",
+    "product_sku_current_prices",
+    "product_sku_lifecycle",
+    "product_sku_lifecycle_events",
+    "product_skus",
+    "scheduled_export_run_events",
+    "scheduled_export_runs",
+    "scheduled_export_tasks",
+    "scheduler_leases",
+    "schema_migrations"
+  ],
+  "databaseCreation": {
+    "existed": true
+  },
+  "migrations": [
+    {
+      "version": "001_legacy_tables.sql",
+      "sha256": "bacd7014e3d6a43d22c201cf62324a19803992b6f3e61954bae0553b78bd0947",
+      "status": "ALREADY_APPLIED"
+    },
+    {
+      "version": "002_ai_observability.sql",
+      "sha256": "240c73c166e7f6c5a61ae4ea97598bc6580274434839640c3903975e65582105",
+      "status": "ALREADY_APPLIED"
+    },
+    {
+      "version": "003_legacy_constraints_indexes_views.sql",
+      "sha256": "eb1db9cefb0d211d6bedc4fa107772f0ba01bc944d22ac6c01bb435ff56f723f",
+      "status": "ALREADY_APPLIED"
+    }
+  ],
+  "loads": [
+    {
+      "table": "dingtalk_robot_configs",
+      "rows": 4,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "export_files",
+      "rows": 20,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "foundation_account_capabilities",
+      "rows": 10,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "foundation_identity_links",
+      "rows": 24983,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "foundation_integration_accounts",
+      "rows": 3,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "foundation_owners",
+      "rows": 22,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "foundation_source_runs",
+      "rows": 6,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "foundation_source_systems",
+      "rows": 7,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "foundation_task_events",
+      "rows": 258,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "foundation_task_leases",
+      "rows": 0,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "foundation_tasks",
+      "rows": 252,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "foundation_warehouses",
+      "rows": 29,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "growth_country_mapping_sets",
+      "rows": 2,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "growth_inventory_snapshots",
+      "rows": 61548,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "growth_order_headers",
+      "rows": 79768,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "growth_order_inventory_links",
+      "rows": 344576,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "growth_order_lines",
+      "rows": 115868,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "growth_shop_source_mappings",
+      "rows": 131,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "growth_shops",
+      "rows": 131,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "growth_sku_warehouse_sales_metrics",
+      "rows": 60110,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "growth_source_batches",
+      "rows": 11,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "growth_warehouse_country_mappings",
+      "rows": 29,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "mabang_account_profiles",
+      "rows": 2,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "operation_audit_events",
+      "rows": 42031,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "price_control_price_snapshots",
+      "rows": 704033,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "price_control_source_batches",
+      "rows": 118,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "price_control_sync_runs",
+      "rows": 2,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_ai_contents",
+      "rows": 0,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_categories",
+      "rows": 78,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_cost_snapshots",
+      "rows": 18602,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_detail_preferences",
+      "rows": 1,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_field_override_events",
+      "rows": 102,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_field_overrides",
+      "rows": 81,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_identity_mappings",
+      "rows": 0,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_image_generation_items",
+      "rows": 0,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_image_generation_tasks",
+      "rows": 0,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_images",
+      "rows": 1,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_import_batches",
+      "rows": 5,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_import_field_changes",
+      "rows": 3,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_import_files",
+      "rows": 5,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_import_issues",
+      "rows": 2153,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_import_rows",
+      "rows": 21981,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_inventory_snapshots",
+      "rows": 21978,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_listing_drafts",
+      "rows": 0,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_listing_publish_records",
+      "rows": 0,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_media_assets",
+      "rows": 6583,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_media_links",
+      "rows": 33764,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_models",
+      "rows": 6500,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_package_rows",
+      "rows": 21714,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_packaging_profiles",
+      "rows": 18347,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_price_change_events",
+      "rows": 186722,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_sku_current_prices",
+      "rows": 399095,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_sku_lifecycle",
+      "rows": 18347,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_sku_lifecycle_events",
+      "rows": 18393,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "product_skus",
+      "rows": 18347,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "scheduled_export_run_events",
+      "rows": 216,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "scheduled_export_runs",
+      "rows": 16,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "scheduled_export_tasks",
+      "rows": 4,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "scheduler_leases",
+      "rows": 1,
+      "status": "ALREADY_LOADED"
+    },
+    {
+      "table": "schema_migrations",
+      "rows": 23,
+      "status": "ALREADY_LOADED"
+    }
+  ],
+  "projection": {
+    "agentRunsInserted": 0,
+    "toolInvocationsInserted": 0,
+    "gatewayCallsInserted": 0
+  },
+  "validation": {
+    "status": true,
+    "database": {
+      "database": "commerce_ops_shadow",
+      "bytes": "1619392191",
+      "size": "1544 MB"
+    },
+    "source": {
+      "sourceBytes": 2184671232,
+      "snapshotBytes": 2184679424,
+      "snapshotSha256": "46704f2d4f2c6792cedb870658a8fdb020bb4a2b3edba33a0e12e0424f8c11db",
+      "integrity": "ok",
+      "foreignKeyViolations": 0,
+      "reused": true,
+      "tables": 88,
+      "rows": 2569000
+    },
+    "target": {
+      "appTables": 88,
+      "appViews": 15,
+      "indexes": 303,
+      "foreignKeys": 148,
+      "foreignKeysValidated": true
+    },
+    "migratedTables": [
+      {
+        "table": "dingtalk_robot_configs",
+        "sourceRows": 4,
+        "targetRows": 4,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "export_files",
+        "sourceRows": 20,
+        "targetRows": 20,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "foundation_account_capabilities",
+        "sourceRows": 10,
+        "targetRows": 10,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "foundation_identity_links",
+        "sourceRows": 24983,
+        "targetRows": 24983,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "foundation_integration_accounts",
+        "sourceRows": 3,
+        "targetRows": 3,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "foundation_owners",
+        "sourceRows": 22,
+        "targetRows": 22,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "foundation_source_runs",
+        "sourceRows": 6,
+        "targetRows": 6,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "foundation_source_systems",
+        "sourceRows": 7,
+        "targetRows": 7,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "foundation_task_events",
+        "sourceRows": 258,
+        "targetRows": 258,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "foundation_task_leases",
+        "sourceRows": 0,
+        "targetRows": 0,
+        "rowCountMatch": true,
+        "sampleCount": 0,
+        "match": true
+      },
+      {
+        "table": "foundation_tasks",
+        "sourceRows": 252,
+        "targetRows": 252,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "foundation_warehouses",
+        "sourceRows": 29,
+        "targetRows": 29,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "growth_country_mapping_sets",
+        "sourceRows": 2,
+        "targetRows": 2,
+        "rowCountMatch": true,
+        "sampleCount": 4,
+        "match": true
+      },
+      {
+        "table": "growth_inventory_snapshots",
+        "sourceRows": 61548,
+        "targetRows": 61548,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "growth_order_headers",
+        "sourceRows": 79768,
+        "targetRows": 79768,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "growth_order_inventory_links",
+        "sourceRows": 344576,
+        "targetRows": 344576,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "growth_order_lines",
+        "sourceRows": 115868,
+        "targetRows": 115868,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "growth_shop_source_mappings",
+        "sourceRows": 131,
+        "targetRows": 131,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "growth_shops",
+        "sourceRows": 131,
+        "targetRows": 131,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "growth_sku_warehouse_sales_metrics",
+        "sourceRows": 60110,
+        "targetRows": 60110,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "growth_source_batches",
+        "sourceRows": 11,
+        "targetRows": 11,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "growth_warehouse_country_mappings",
+        "sourceRows": 29,
+        "targetRows": 29,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "mabang_account_profiles",
+        "sourceRows": 2,
+        "targetRows": 2,
+        "rowCountMatch": true,
+        "sampleCount": 4,
+        "match": true
+      },
+      {
+        "table": "operation_audit_events",
+        "sourceRows": 42031,
+        "targetRows": 42031,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "price_control_price_snapshots",
+        "sourceRows": 704033,
+        "targetRows": 704033,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "price_control_source_batches",
+        "sourceRows": 118,
+        "targetRows": 118,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "price_control_sync_runs",
+        "sourceRows": 2,
+        "targetRows": 2,
+        "rowCountMatch": true,
+        "sampleCount": 4,
+        "match": true
+      },
+      {
+        "table": "product_ai_contents",
+        "sourceRows": 0,
+        "targetRows": 0,
+        "rowCountMatch": true,
+        "sampleCount": 0,
+        "match": true
+      },
+      {
+        "table": "product_categories",
+        "sourceRows": 78,
+        "targetRows": 78,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_cost_snapshots",
+        "sourceRows": 18602,
+        "targetRows": 18602,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_detail_preferences",
+        "sourceRows": 1,
+        "targetRows": 1,
+        "rowCountMatch": true,
+        "sampleCount": 2,
+        "match": true
+      },
+      {
+        "table": "product_field_override_events",
+        "sourceRows": 102,
+        "targetRows": 102,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_field_overrides",
+        "sourceRows": 81,
+        "targetRows": 81,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_identity_mappings",
+        "sourceRows": 0,
+        "targetRows": 0,
+        "rowCountMatch": true,
+        "sampleCount": 0,
+        "match": true
+      },
+      {
+        "table": "product_image_generation_items",
+        "sourceRows": 0,
+        "targetRows": 0,
+        "rowCountMatch": true,
+        "sampleCount": 0,
+        "match": true
+      },
+      {
+        "table": "product_image_generation_tasks",
+        "sourceRows": 0,
+        "targetRows": 0,
+        "rowCountMatch": true,
+        "sampleCount": 0,
+        "match": true
+      },
+      {
+        "table": "product_images",
+        "sourceRows": 1,
+        "targetRows": 1,
+        "rowCountMatch": true,
+        "sampleCount": 2,
+        "match": true
+      },
+      {
+        "table": "product_import_batches",
+        "sourceRows": 5,
+        "targetRows": 5,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_import_field_changes",
+        "sourceRows": 3,
+        "targetRows": 3,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_import_files",
+        "sourceRows": 5,
+        "targetRows": 5,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_import_issues",
+        "sourceRows": 2153,
+        "targetRows": 2153,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_import_rows",
+        "sourceRows": 21981,
+        "targetRows": 21981,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_inventory_snapshots",
+        "sourceRows": 21978,
+        "targetRows": 21978,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_listing_drafts",
+        "sourceRows": 0,
+        "targetRows": 0,
+        "rowCountMatch": true,
+        "sampleCount": 0,
+        "match": true
+      },
+      {
+        "table": "product_listing_publish_records",
+        "sourceRows": 0,
+        "targetRows": 0,
+        "rowCountMatch": true,
+        "sampleCount": 0,
+        "match": true
+      },
+      {
+        "table": "product_media_assets",
+        "sourceRows": 6583,
+        "targetRows": 6583,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_media_links",
+        "sourceRows": 33764,
+        "targetRows": 33764,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_models",
+        "sourceRows": 6500,
+        "targetRows": 6500,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_package_rows",
+        "sourceRows": 21714,
+        "targetRows": 21714,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_packaging_profiles",
+        "sourceRows": 18347,
+        "targetRows": 18347,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_price_change_events",
+        "sourceRows": 186722,
+        "targetRows": 186722,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_sku_current_prices",
+        "sourceRows": 399095,
+        "targetRows": 399095,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_sku_lifecycle",
+        "sourceRows": 18347,
+        "targetRows": 18347,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_sku_lifecycle_events",
+        "sourceRows": 18393,
+        "targetRows": 18393,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_skus",
+        "sourceRows": 18347,
+        "targetRows": 18347,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "scheduled_export_run_events",
+        "sourceRows": 216,
+        "targetRows": 216,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "scheduled_export_runs",
+        "sourceRows": 16,
+        "targetRows": 16,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "scheduled_export_tasks",
+        "sourceRows": 4,
+        "targetRows": 4,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "scheduler_leases",
+        "sourceRows": 1,
+        "targetRows": 1,
+        "rowCountMatch": true,
+        "sampleCount": 2,
+        "match": true
+      },
+      {
+        "table": "schema_migrations",
+        "sourceRows": 23,
+        "targetRows": 23,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      }
+    ],
+    "keyTables": [
+      {
+        "table": "foundation_tasks",
+        "sourceRows": 252,
+        "targetRows": 252,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "growth_inventory_snapshots",
+        "sourceRows": 61548,
+        "targetRows": 61548,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "growth_order_headers",
+        "sourceRows": 79768,
+        "targetRows": 79768,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "growth_order_lines",
+        "sourceRows": 115868,
+        "targetRows": 115868,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "operation_audit_events",
+        "sourceRows": 42031,
+        "targetRows": 42031,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      },
+      {
+        "table": "product_skus",
+        "sourceRows": 18347,
+        "targetRows": 18347,
+        "rowCountMatch": true,
+        "sampleCount": 6,
+        "match": true
+      }
+    ],
+    "ai": {
+      "agent_runs": 2,
+      "tool_invocations": 8,
+      "context_snapshots": 0,
+      "gateway_calls": 4,
+      "agent_evaluations": 0
+    },
+    "repository": {
+      "providerContractExists": true,
+      "postgresqlProviderExists": true,
+      "productionProviderSwitchImplemented": false,
+      "sqliteOnlyRepositoryFiles": [
+        "sqlite-audit-repository.mjs",
+        "sqlite-provider.mjs",
+        "sqlite-scheduler-repository.mjs"
+      ],
+      "providerAwareRepositoryFiles": [
+        "account-repository.mjs",
+        "audit-repository.mjs",
+        "growth-radar-repository.mjs",
+        "product-ai-content-repository.mjs",
+        "product-catalog-repository.mjs",
+        "product-image-generation-repository.mjs",
+        "product-import-repository.mjs",
+        "product-listing-repository.mjs",
+        "scheduled-run-repository.mjs",
+        "scheduled-task-repository.mjs"
+      ],
+      "recommendation": "Add a provider factory at the composition root, then migrate real repositories domain by domain behind parity contracts; do not switch DATABASE_PROVIDER until production Repository SQL passes PostgreSQL integration tests."
+    }
+  }
+}

@@ -48,7 +48,8 @@ export class FulfillmentAgentTools {
     }
     if (name === "get_scheduler_status") return this.scheduler.status();
     if (name === "list_recent_batches") {
-      return this.serviceForShop().listRecentBatches(boundedInteger(args.limit, 10, 1, 20)).map((batch) => ({
+      const batches = await this.serviceForShop().listRecentBatches(boundedInteger(args.limit, 10, 1, 20));
+      return batches.map((batch) => ({
         id: batch.id, previewId: batch.previewId, status: batch.status, createdAt: batch.createdAt,
         finishedAt: batch.finishedAt, orderCount: batch.orders?.length || 0,
         successCount: batch.orders?.filter((order) => order.status === "success").length || 0,
@@ -60,7 +61,7 @@ export class FulfillmentAgentTools {
     }
     if (name === "get_preview") {
       const previewId = requiredId(args.previewId, "预览 ID");
-      return safePreview(this.serviceForPreview(previewId).getPreview(previewId));
+      return safePreview(await (await this.serviceForPreview(previewId)).getPreview(previewId));
     }
     if (name === "inspect_shop_orders") {
       const shopId = requiredId(args.shopId, "店铺 ID", 24);

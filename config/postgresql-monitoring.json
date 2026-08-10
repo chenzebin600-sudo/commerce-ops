@@ -1,0 +1,30 @@
+{
+  "contract": "COMMERCE-OPS-POSTGRESQL-MONITORING-1.0.0",
+  "status": "APPROVED_FOR_CANDIDATE",
+  "target": "commerce_ops_staging",
+  "collectionIntervalSeconds": 300,
+  "connectionPool": true,
+  "locks": true,
+  "replication": true,
+  "disk": true,
+  "slowQueries": true,
+  "backupFreshness": true,
+  "restoreFreshness": true,
+  "autovacuum": true,
+  "checkpoints": true,
+  "ioTiming": true,
+  "thresholds": {
+    "connectionUtilizationWarningPercent": 70,
+    "connectionUtilizationCriticalPercent": 85,
+    "blockedSessionsCritical": 1,
+    "longTransactionWarningSeconds": 300,
+    "archiveFailureCritical": 1,
+    "backupAgeWarningHours": 36,
+    "restoreVerificationAgeWarningDays": 8,
+    "diskFreeWarningPercent": 25,
+    "diskFreeCriticalPercent": 15,
+    "slowQueryMeanWarningMs": 500
+  },
+  "collectionCommand": "npm run postgres:production:monitor -- --database=commerce_ops_staging",
+  "owner": "Commerce Ops infrastructure operator"
+}

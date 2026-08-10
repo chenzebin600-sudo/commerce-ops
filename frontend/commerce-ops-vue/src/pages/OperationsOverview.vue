@@ -64,9 +64,9 @@ onBeforeUnmount(() => refreshController?.abort());
     </el-alert>
 
     <section class="metric-grid" aria-label="核心经营指标">
-      <MetricCard label="我方销售额" :value="sales ? `¥${sales.summary.ownAmount.toLocaleString('zh-CN')}` : '—'" :hint="`${workspace.periodDays} 天统计口径`" />
+      <MetricCard label="我方标准化估值" :value="sales ? `¥${(sales.summary.ownEstimatedAmount ?? sales.summary.ownAmount).toLocaleString('zh-CN')}` : '—'" :hint="`${workspace.periodDays} 天目标利润标价估值，非实际销售额`" />
       <MetricCard label="销售件数" :value="sales ? sales.summary.ownQuantity.toLocaleString('zh-CN') : '—'" hint="订单有效商品数量" />
-      <MetricCard label="货盘占比" :value="sales ? `${Number(sales.summary.ownShare || 0).toFixed(1)}%` : '—'" hint="我方销售额 / 货盘金额" />
+      <MetricCard label="标准化承接占比" :value="sales ? `${Number(sales.summary.ownShare || 0).toFixed(1)}%` : '—'" hint="我方标准化估值 / 货盘标准化估值" />
       <MetricCard label="履约成功率" :value="successRate" :hint="`${fulfillmentTotals.total} 个履约订单`" tone="success" />
       <MetricCard label="执行中" :value="fulfillmentTotals.running.toLocaleString('zh-CN')" hint="正在处理的履约任务" tone="warning" />
       <MetricCard label="履约异常" :value="fulfillmentTotals.exceptions.toLocaleString('zh-CN')" hint="需要人工关注" :tone="fulfillmentTotals.exceptions ? 'danger' : 'default'" />
@@ -94,7 +94,7 @@ onBeforeUnmount(() => refreshController?.abort());
         <el-table-column prop="country" label="国家" width="90" />
         <el-table-column prop="platform" label="平台" width="120" />
         <el-table-column prop="store" label="店铺" min-width="180" show-overflow-tooltip />
-        <el-table-column label="销售额" width="150" align="right"><template #default="scope">¥{{ Number(scope.row.ownAmount || 0).toLocaleString("zh-CN") }}</template></el-table-column>
+        <el-table-column label="标准化估值" width="150" align="right"><template #default="scope">¥{{ Number(scope.row.ownAmount || 0).toLocaleString("zh-CN") }}</template></el-table-column>
         <el-table-column prop="opportunityCount" label="机会数" width="100" align="right" sortable />
       </el-table>
     </section>

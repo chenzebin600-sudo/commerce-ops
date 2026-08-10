@@ -98,6 +98,8 @@ COUNTRY_ALIASES = {
     "vn": "VN",
     "越南": "VN",
     "vietnam": "VN",
+    "tw": "TW",
+    "taiwan": "TW",
 }
 
 SYSTEM_PROMPT = r"""
@@ -119,7 +121,7 @@ JSON 必须符合以下结构，字段不可省略：
       },
       "scope": {
         "platforms": ["lazada | shopee | tiktokshop | amazon"],
-        "countries": ["TH | MY | PH | SG | ID | VN"],
+        "countries": ["TH | MY | PH | SG | ID | VN | TW"],
         "shop_ids": [],
         "shop_names": [],
         "categories": []

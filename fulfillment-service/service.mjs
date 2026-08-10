@@ -63,7 +63,7 @@ export class FulfillmentService {
     this.activeJobs = new Set();
   }
 
-  normalizeOrder(raw) {
+  async normalizeOrder(raw) {
     const sourceOrderId = bounded(raw.sourceOrderId || raw.orderId || raw["订单编号"]);
     const tradeNumber = bounded(raw.tradeNumber || raw["交易编号"]);
     const displayOrderId = tradeNumber || sourceOrderId;
@@ -89,7 +89,7 @@ export class FulfillmentService {
     if (!Number.isFinite(quantity) || quantity <= 0) exclusions.push("INVALID_QUANTITY");
     if (inventory.stockStatus === "out_of_stock") exclusions.push("OUT_OF_STOCK");
     if (inventory.stockStatus === "unknown") exclusions.push("INVENTORY_UNKNOWN");
-    if (this.repository.isCompleted(orderKey)) exclusions.push("ALREADY_FULFILLED");
+    if (await this.repository.isCompleted(orderKey)) exclusions.push("ALREADY_FULFILLED");
     return {
       orderKey, displayOrderId, tradeNumber, warehouse, skuCount: sku ? 1 : 0,
       stockStatus: inventory.stockStatus, isOutOfStock: inventory.isOutOfStock,
@@ -100,7 +100,7 @@ export class FulfillmentService {
     };
   }
 
-  aggregateOrders(rows) {
+  async aggregateOrders(rows) {
     const groups = new Map();
     for (const row of rows) {
       const group = groups.get(row.orderKey);
@@ -177,15 +177,15 @@ export class FulfillmentService {
     return this.createPreviewFromRaw(raw, request);
   }
 
-  createPreviewFromRecords(records, options = {}) {
+  async createPreviewFromRecords(records, options = {}) {
     if (!Array.isArray(records)) throw new FulfillmentError("INVALID_SCAN_RECORDS", "共享扫描结果格式无效", 500);
     const request = this.previewRequest(options);
     if (request.hasOrderIds) throw new FulfillmentError("INVALID_SCAN_RECORDS", "共享扫描不支持指定订单号", 500);
     return this.createPreviewFromRaw(records, request);
   }
 
-  createPreviewFromRaw(raw, { hasOrderIds, requestedOrderIds, requested }) {
-    let normalized = this.aggregateOrders(raw.map((order) => this.normalizeOrder(order)));
+  async createPreviewFromRaw(raw, { hasOrderIds, requestedOrderIds, requested }) {
+    let normalized = await this.aggregateOrders(await Promise.all(raw.map((order) => this.normalizeOrder(order))));
     if (!hasOrderIds) normalized.sort((left, right) => paidTimestamp(right) - paidTimestamp(left));
     if (hasOrderIds) {
       const wanted = new Set(requestedOrderIds);
@@ -206,7 +206,7 @@ export class FulfillmentService {
     const excluded = normalized.filter((order) => !order.eligible);
     const confirmationToken = randomBytes(24).toString("base64url");
     const createdAt = this.now();
-    const preview = this.repository.createPreview({
+    const preview = await this.repository.createPreview({
       id: randomUUID(), status: "pending", shopId: this.config.shopId, shopName: this.config.shopName,
       channelId: this.config.channelId, channelName: this.config.channelName, confirmationHash: hash(confirmationToken),
       createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + this.config.previewTtlSeconds * 1000).toISOString(),
@@ -240,8 +240,8 @@ export class FulfillmentService {
     return response;
   }
 
-  getPreview(id) {
-    const preview = this.repository.getPreview(id);
+  async getPreview(id) {
+    const preview = await this.repository.getPreview(id);
     if (!preview) throw new FulfillmentError("PREVIEW_NOT_FOUND", "预览不存在", 404);
     return this.presentPreview(preview);
   }
@@ -249,10 +249,10 @@ export class FulfillmentService {
   async recheckManualReview(orderId, preflight) {
     const reference = bounded(orderId, 100);
     if (!reference) throw new FulfillmentError("INVALID_ORDER_ID", "必须指定需要重新核对的订单号");
-    const review = this.repository.getManualReview(this.config.shopId, reference);
+    const review = await this.repository.getManualReview(this.config.shopId, reference);
     if (!review) throw new FulfillmentError("MANUAL_REVIEW_NOT_FOUND", "没有找到可重新核对的人工处理订单", 404);
     const currentOrders = await this.source.getByIds([reference]);
-    const current = this.currentMap(currentOrders).get(reference);
+    const current = (await this.currentMap(currentOrders)).get(reference);
     if (!current) throw new FulfillmentError("ORDER_NOT_FOUND_OR_NOT_PENDING",
       "订单尚未回到待处理状态，或马帮当前无法读取该订单", 409);
     const blockers = current.exclusions.filter((code) => code !== "ALREADY_FULFILLED");
@@ -270,7 +270,7 @@ export class FulfillmentService {
       throw new FulfillmentError("MANUAL_REVIEW_PREFLIGHT_FAILED", "订单深度预检仍未通过，人工处理锁未解除", 409);
     }
     const releasedAt = this.now().toISOString();
-    if (!this.repository.releaseManualReview(review, releasedAt)) {
+    if (!await this.repository.releaseManualReview(review, releasedAt)) {
       throw new FulfillmentError("MANUAL_REVIEW_CHANGED", "人工处理状态已经变化，请刷新后重试", 409);
     }
     return {
@@ -284,16 +284,16 @@ export class FulfillmentService {
   }
 
   async autoRecoverManualReviews({ records = null, limit = 5 } = {}) {
-    const reviews = this.repository.listRecoverableManualReviews(this.config.shopId, limit);
+    const reviews = await this.repository.listRecoverableManualReviews(this.config.shopId, limit);
     const result = { shop: { id: this.config.shopId, name: this.config.shopName }, checked: 0,
       firstPass: [], released: [], retained: [] };
     if (!reviews.length || !this.preflight?.run) return result;
-    let currentById = Array.isArray(records) ? this.currentMap(records) : new Map();
+    let currentById = Array.isArray(records) ? await this.currentMap(records) : new Map();
     const missing = reviews.filter((review) => !currentById.has(review.displayOrderId)).map((review) => review.displayOrderId);
     if (missing.length) {
       try {
         const targeted = await this.source.getByIds(missing);
-        currentById = new Map([...currentById, ...this.currentMap(targeted)]);
+        currentById = new Map([...currentById, ...await this.currentMap(targeted)]);
       } catch (error) {
         for (const review of reviews) result.retained.push({ orderId: review.displayOrderId,
           code: bounded(error?.code || "AUTO_RECOVERY_READ_FAILED", 80) });
@@ -305,25 +305,25 @@ export class FulfillmentService {
       const current = currentById.get(review.displayOrderId);
       const blockers = current?.exclusions?.filter((code) => code !== "ALREADY_FULFILLED") || ["ORDER_NOT_FOUND_OR_NOT_PENDING"];
       if (!current || blockers.length || (current.warehouses || []).length !== 1) {
-        this.repository.resetManualRecovery(review);
+        await this.repository.resetManualRecovery(review);
         result.retained.push({ orderId: review.displayOrderId, code: blockers[0] || "MULTI_WAREHOUSE_REQUIRES_REVIEW" });
         continue;
       }
       try {
         const checked = await this.preflight.run(review.displayOrderId, { singleWarehouseVerified: true });
         if (!preflightPassed(checked)) throw Object.assign(new Error("深度预检未通过"), { code: "AUTO_RECOVERY_PREFLIGHT_FAILED" });
-        const passed = this.repository.recordManualRecoveryPass(review, this.now().toISOString());
+        const passed = await this.repository.recordManualRecoveryPass(review, this.now().toISOString());
         if (!passed) {
           result.retained.push({ orderId: review.displayOrderId, code: "MANUAL_REVIEW_CHANGED" });
         } else if (passed.passCount < 2) {
           result.firstPass.push({ orderId: review.displayOrderId, passCount: passed.passCount });
-        } else if (this.repository.releaseManualReview(review, this.now().toISOString())) {
+        } else if (await this.repository.releaseManualReview(review, this.now().toISOString())) {
           result.released.push({ orderId: review.displayOrderId, previousErrorCode: review.errorCode });
         } else {
           result.retained.push({ orderId: review.displayOrderId, code: "MANUAL_REVIEW_CHANGED" });
         }
       } catch (error) {
-        this.repository.resetManualRecovery(review);
+        await this.repository.resetManualRecovery(review);
         result.retained.push({ orderId: review.displayOrderId,
           code: bounded(error?.code || "AUTO_RECOVERY_PREFLIGHT_FAILED", 80) });
       }
@@ -337,7 +337,7 @@ export class FulfillmentService {
     const reference = bounded(orderId, 100);
     if (!reference) throw new FulfillmentError("INVALID_ORDER_ID", "必须指定一个订单号");
     const currentOrders = await this.source.getByIds([reference]);
-    const current = this.currentMap(currentOrders).get(reference);
+    const current = (await this.currentMap(currentOrders)).get(reference);
     if (!current) throw new FulfillmentError("ORDER_NOT_FOUND_OR_NOT_PENDING",
       "订单不存在、不是待处理状态或马帮当前无法读取", 409);
     const blockers = current.exclusions.filter((code) => code !== "ALREADY_FULFILLED");
@@ -353,9 +353,10 @@ export class FulfillmentService {
       warehouses: current.warehouses || [current.warehouse].filter(Boolean), skuCount: current.skuCount };
   }
 
-  currentMap(rawOrders) {
+  async currentMap(rawOrders) {
     const map = new Map();
-    for (const order of this.aggregateOrders(rawOrders.map((raw) => this.normalizeOrder(raw)))) {
+    const normalized = await Promise.all(rawOrders.map((raw) => this.normalizeOrder(raw)));
+    for (const order of await this.aggregateOrders(normalized)) {
       for (const key of [order.snapshot.sourceOrderId, order.tradeNumber].filter(Boolean)) map.set(key, order);
     }
     return map;
@@ -393,8 +394,8 @@ export class FulfillmentService {
     throw new FulfillmentError(code, messages[code], 409, { orders: issues.map(({ displayOrderId, code: issueCode }) => ({ displayOrderId, code: issueCode })) });
   }
 
-  createConfirmedBatch(id, confirmationToken) {
-    const preview = this.repository.getPreview(id);
+  async createConfirmedBatch(id, confirmationToken) {
+    const preview = await this.repository.getPreview(id);
     if (!preview) throw new FulfillmentError("PREVIEW_NOT_FOUND", "预览不存在", 404);
     if (preview.status !== "pending") throw new FulfillmentError("PREVIEW_ALREADY_USED", "预览已经确认或失效", 409);
     if (new Date(preview.expiresAt) <= this.now()) throw new FulfillmentError("PREVIEW_EXPIRED", "预览已超过10分钟，请重新生成", 409);
@@ -405,7 +406,7 @@ export class FulfillmentService {
     const createdAt = this.now().toISOString();
     let batch;
     try {
-      batch = this.repository.createBatch({ id: randomUUID(), previewId: preview.id, status: "queued", createdAt }, selected);
+      batch = await this.repository.createBatch({ id: randomUUID(), previewId: preview.id, status: "queued", createdAt }, selected);
     } catch (error) {
       if (["BATCH_ALREADY_RUNNING", "PREVIEW_ALREADY_USED", "IDEMPOTENCY_CONFLICT"].includes(error.code)) {
         throw new FulfillmentError(error.code, error.message, 409);
@@ -415,31 +416,31 @@ export class FulfillmentService {
     return { batch, selected };
   }
 
-  failBatchBeforeSubmit(batch, selected, error, timings = null) {
-    for (const order of selected) this.repository.updateBatchOrder(batch.id, order.orderKey, {
+  async failBatchBeforeSubmit(batch, selected, error, timings = null) {
+    for (const order of selected) await this.repository.updateBatchOrder(batch.id, order.orderKey, {
       status: "failed", errorCode: bounded(error.code || "PRE_SUBMIT_CHECK_FAILED", 80),
       errorMessage: bounded(error.message), timings, updatedAt: this.now().toISOString(),
     });
-    if (timings) this.repository.updateBatchTimings(batch.id, timings);
-    const finished = this.repository.finishBatch(batch.id, "failed", this.now().toISOString());
+    if (timings) await this.repository.updateBatchTimings(batch.id, timings);
+    const finished = await this.repository.finishBatch(batch.id, "failed", this.now().toISOString());
     this.notifier.notify({ title: `${this.config.shopName} 发货批次失败`, message: `批次 ${batch.id} 提交前检查未通过，请打开工作台处理。` });
     return finished;
   }
 
   async processBatch(batch, selected) {
     const batchStartedMs = Date.now();
-    this.repository.startBatch(batch.id);
+    await this.repository.startBatch(batch.id);
     let currentById;
     let revalidationMs = 0;
     try {
       const revalidationStartedMs = Date.now();
       const current = await this.source.getByIds(selected.map((order) => order.tradeNumber || order.snapshot.sourceOrderId));
-      currentById = this.currentMap(current);
+      currentById = await this.currentMap(current);
       const preflightIssues = selected.map((order) => ({ displayOrderId: order.displayOrderId,
         ...this.revalidationIssue(order, this.currentOrderFor(order, currentById)) })).filter((issue) => issue.code);
       this.throwBatchRevalidation(preflightIssues);
       revalidationMs = Date.now() - revalidationStartedMs;
-      this.repository.updateBatchTimings(batch.id, { preSubmitRevalidation: revalidationMs,
+      await this.repository.updateBatchTimings(batch.id, { preSubmitRevalidation: revalidationMs,
         orderConcurrency: Math.min(2, Math.max(1, Number(this.config.orderConcurrency || 1))), total: null });
     } catch (error) {
       const timings = { preSubmitRevalidation: Date.now() - batchStartedMs, total: Date.now() - batchStartedMs };
@@ -471,22 +472,23 @@ export class FulfillmentService {
     for (let index = 0; index < selected.length; index += orderConcurrency) {
       const wave = selected.slice(index, index + orderConcurrency);
       const patches = await Promise.all(wave.map((order) => executeOrder(order)));
-      patches.forEach((patch, patchIndex) => {
+      for (let patchIndex = 0; patchIndex < patches.length; patchIndex += 1) {
+        const patch = patches[patchIndex];
         const order = wave[patchIndex];
         if (patch.status === "success") successes += 1;
         const updatedAt = this.now().toISOString();
-        this.repository.updateBatchOrder(batch.id, order.orderKey, { ...patch, updatedAt });
+        await this.repository.updateBatchOrder(batch.id, order.orderKey, { ...patch, updatedAt });
         if (patch.errorCode === "TRACKING_NUMBER_PENDING") {
           const submittedAt = updatedAt;
-          this.repository.registerTrackingRecovery({ orderKey: order.orderKey, batchId: batch.id,
+          await this.repository.registerTrackingRecovery({ orderKey: order.orderKey, batchId: batch.id,
             displayOrderId: order.displayOrderId, shopId: this.config.shopId, submittedAt,
             nextCheckAt: new Date(this.now().getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString(),
             deadlineAt: new Date(this.now().getTime() + this.config.trackingRecoveryDeadlineHours * 3600000).toISOString() });
         }
-      });
+      }
       if (patches.some((patch) => patch.status !== "success")) {
         for (const order of selected.slice(index + wave.length)) {
-          this.repository.updateBatchOrder(batch.id, order.orderKey, {
+          await this.repository.updateBatchOrder(batch.id, order.orderKey, {
             status: "skipped", errorCode: "SKIPPED_AFTER_BATCH_FAILURE",
             errorMessage: "当前并发波次出现失败，后续订单已停止", timings: { executorTotal: 0 },
             updatedAt: this.now().toISOString(),
@@ -496,21 +498,21 @@ export class FulfillmentService {
       }
     }
     const status = successes === selected.length ? "success" : successes ? "partial_success" : "failed";
-    this.repository.updateBatchTimings(batch.id, { preSubmitRevalidation: revalidationMs, orderConcurrency,
+    await this.repository.updateBatchTimings(batch.id, { preSubmitRevalidation: revalidationMs, orderConcurrency,
       execution: Math.max(0, Date.now() - batchStartedMs - revalidationMs), total: Date.now() - batchStartedMs });
-    const finished = this.repository.finishBatch(batch.id, status, this.now().toISOString());
+    const finished = await this.repository.finishBatch(batch.id, status, this.now().toISOString());
     this.notifier.notify({ title: status === "success" ? `${this.config.shopName} 发货批次完成` : `${this.config.shopName} 发货批次需处理`,
       message: `批次 ${batch.id} 已结束，状态：${status}，成功 ${successes}/${selected.length} 单。` });
     return finished;
   }
 
   async confirmPreview(id, confirmationToken) {
-    const { batch, selected } = this.createConfirmedBatch(id, confirmationToken);
+    const { batch, selected } = await this.createConfirmedBatch(id, confirmationToken);
     return this.processBatch(batch, selected);
   }
 
-  enqueuePreview(id, confirmationToken) {
-    const { batch, selected } = this.createConfirmedBatch(id, confirmationToken);
+  async enqueuePreview(id, confirmationToken) {
+    const { batch, selected } = await this.createConfirmedBatch(id, confirmationToken);
     const job = new Promise((resolve) => setImmediate(resolve))
       .then(() => this.processBatch(batch, selected))
       .catch((error) => this.failBatchBeforeSubmit(batch, selected, error));
@@ -523,7 +525,7 @@ export class FulfillmentService {
     await Promise.allSettled([...this.activeJobs]);
   }
 
-  listTrackingRecoveries(limit = 50) {
+  async listTrackingRecoveries(limit = 50) {
     return this.repository.listTrackingRecoveries(limit, this.config.shopId);
   }
 
@@ -531,14 +533,14 @@ export class FulfillmentService {
     if (!this.trackingRecovery) return { shop: { id: this.config.shopId, name: this.config.shopName }, checked: 0, results: [] };
     const now = this.now();
     const recoveryWriteEnabled = Boolean(this.config.trackingRecoveryResetEnabled || allowReset);
-    const due = this.repository.listDueTrackingRecoveries(now.toISOString(), limit, this.config.shopId, orderId);
+    const due = await this.repository.listDueTrackingRecoveries(now.toISOString(), limit, this.config.shopId, orderId);
     const results = [];
     for (const recovery of due) {
       const checkedAt = this.now();
       if (checkedAt.getTime() >= Date.parse(recovery.deadlineAt)) {
         const errorCode = "TRACKING_APPROVAL_TIMEOUT";
         const errorMessage = "Shopee 运单号审批超过 24 小时，已停止自动恢复并转人工处理。";
-        this.repository.expireTrackingRecovery(recovery, { completedAt: checkedAt.toISOString(), errorCode, errorMessage });
+        await this.repository.expireTrackingRecovery(recovery, { completedAt: checkedAt.toISOString(), errorCode, errorMessage });
         this.notifier.notify({ title: `${this.config.shopName} 运单号需人工处理`, message: `${recovery.displayOrderId} 超过审批期限。` });
         results.push({ orderId: recovery.displayOrderId, status: "manual_attention", errorCode });
         continue;
@@ -548,7 +550,7 @@ export class FulfillmentService {
         if (inspection.trackingNumber) {
           const distributed = await this.trackingRecovery.distribute(recovery.displayOrderId, inspection.trackingNumber);
           if (distributed.verified && String(distributed.afterStatus).includes("配货中")) {
-            this.repository.completeTrackingRecovery(recovery, { completedAt: this.now().toISOString(),
+            await this.repository.completeTrackingRecovery(recovery, { completedAt: this.now().toISOString(),
               trackingNumberMasked: maskTracking(distributed.trackingNumber), afterStatus: distributed.afterStatus });
             this.notifier.notify({ title: `${this.config.shopName} 运单号恢复成功`,
               message: `${recovery.displayOrderId} 已获取运单号并转入配货中。` });
@@ -556,7 +558,7 @@ export class FulfillmentService {
               trackingNumberMasked: maskTracking(distributed.trackingNumber), afterStatus: distributed.afterStatus });
           } else {
             const nextCheckAt = new Date(this.now().getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString();
-            this.repository.deferTrackingRecovery(recovery.orderKey, { status: recovery.status,
+            await this.repository.deferTrackingRecovery(recovery.orderKey, { status: recovery.status,
               checkedAt: this.now().toISOString(), nextCheckAt, errorCode: "DISTRIBUTION_VERIFY_FAILED",
               errorMessage: distributed.message || "已有运单号，但转配货状态尚未确认。" });
             results.push({ orderId: recovery.displayOrderId, status: "waiting_distribution" });
@@ -568,13 +570,13 @@ export class FulfillmentService {
         if (recovery.status === "resubmitting") {
           if (inspection.shippingRecordPending) {
             const nextCheckAt = new Date(checkedAt.getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString();
-            this.repository.deferTrackingRecovery(recovery.orderKey, { status: "waiting_after_reset",
+            await this.repository.deferTrackingRecovery(recovery.orderKey, { status: "waiting_after_reset",
               checkedAt: checkedAt.toISOString(), nextCheckAt });
             results.push({ orderId: recovery.displayOrderId, status: "waiting_tracking_after_resubmit" });
           } else {
             const errorCode = "TRACKING_RESUBMIT_STATE_UNCERTAIN";
             const errorMessage = "重新交运过程曾中断，马帮未返回可确认的交运记录；为避免重复交运，已转人工处理。";
-            this.repository.expireTrackingRecovery(recovery, { completedAt: checkedAt.toISOString(), errorCode, errorMessage });
+            await this.repository.expireTrackingRecovery(recovery, { completedAt: checkedAt.toISOString(), errorCode, errorMessage });
             this.notifier.notify({ title: `${this.config.shopName} 运单号恢复需人工处理`,
               message: `${recovery.displayOrderId} 重新交运状态无法确认。` });
             results.push({ orderId: recovery.displayOrderId, status: "manual_attention", errorCode });
@@ -585,14 +587,14 @@ export class FulfillmentService {
         if (recovery.status === "ready_to_resubmit") {
           if (inspection.shippingRecordPending) {
             const nextCheckAt = new Date(checkedAt.getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString();
-            this.repository.deferTrackingRecovery(recovery.orderKey, { status: "waiting_after_reset",
+            await this.repository.deferTrackingRecovery(recovery.orderKey, { status: "waiting_after_reset",
               checkedAt: checkedAt.toISOString(), nextCheckAt });
             results.push({ orderId: recovery.displayOrderId, status: "waiting_tracking_after_resubmit" });
             continue;
           }
           if (!recoveryWriteEnabled) {
             const nextCheckAt = new Date(checkedAt.getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString();
-            this.repository.deferTrackingRecovery(recovery.orderKey, { status: "ready_to_resubmit",
+            await this.repository.deferTrackingRecovery(recovery.orderKey, { status: "ready_to_resubmit",
               checkedAt: checkedAt.toISOString(), nextCheckAt, errorCode: "TRACKING_RESET_DISABLED",
               errorMessage: "自动清空渠道与重新交运开关未开启。" });
             results.push({ orderId: recovery.displayOrderId, status: "reset_disabled" });
@@ -600,7 +602,7 @@ export class FulfillmentService {
           }
           if (typeof this.trackingRecovery.resubmitPending !== "function") {
             const nextCheckAt = new Date(checkedAt.getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString();
-            this.repository.deferTrackingRecovery(recovery.orderKey, { status: "ready_to_resubmit",
+            await this.repository.deferTrackingRecovery(recovery.orderKey, { status: "ready_to_resubmit",
               checkedAt: checkedAt.toISOString(), nextCheckAt, errorCode: "TRACKING_RESUBMIT_ADAPTER_MISSING",
               errorMessage: "重新交运适配器尚未启用。" });
             results.push({ orderId: recovery.displayOrderId, status: "resubmit_adapter_pending" });
@@ -609,28 +611,28 @@ export class FulfillmentService {
 
           // 先把不可重入状态持久化，再产生真实重新交运请求；即使服务在请求中断，也不会自动重复提交。
           const resubmitStartedAt = this.now().toISOString();
-          this.repository.deferTrackingRecovery(recovery.orderKey, { status: "resubmitting",
+          await this.repository.deferTrackingRecovery(recovery.orderKey, { status: "resubmitting",
             checkedAt: resubmitStartedAt,
             nextCheckAt: new Date(this.now().getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString() });
           try {
             const resubmitted = await this.trackingRecovery.resubmitPending(recovery.displayOrderId);
             const completedAt = this.now().toISOString();
             if (resubmitted.trackingNumber && resubmitted.verified && String(resubmitted.afterStatus).includes("配货中")) {
-              this.repository.completeTrackingRecovery(recovery, { completedAt,
+              await this.repository.completeTrackingRecovery(recovery, { completedAt,
                 trackingNumberMasked: maskTracking(resubmitted.trackingNumber), afterStatus: resubmitted.afterStatus });
               this.notifier.notify({ title: `${this.config.shopName} 运单号恢复成功`,
                 message: `${recovery.displayOrderId} 重新交运后已转入配货中。` });
               results.push({ orderId: recovery.displayOrderId, status: "completed",
                 trackingNumberMasked: maskTracking(resubmitted.trackingNumber), afterStatus: resubmitted.afterStatus });
             } else {
-              this.repository.deferTrackingRecovery(recovery.orderKey, { status: "waiting_after_reset", checkedAt: completedAt,
+              await this.repository.deferTrackingRecovery(recovery.orderKey, { status: "waiting_after_reset", checkedAt: completedAt,
                 nextCheckAt: new Date(this.now().getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString() });
               results.push({ orderId: recovery.displayOrderId, status: "resubmitted_once" });
             }
           } catch (error) {
             const errorCode = bounded(error.code || "TRACKING_RESUBMIT_FAILED", 80);
             const errorMessage = `重新交运未能确认成功：${bounded(error.message)}`;
-            this.repository.expireTrackingRecovery(recovery, { completedAt: this.now().toISOString(), errorCode, errorMessage });
+            await this.repository.expireTrackingRecovery(recovery, { completedAt: this.now().toISOString(), errorCode, errorMessage });
             this.notifier.notify({ title: `${this.config.shopName} 运单号恢复需人工处理`,
               message: `${recovery.displayOrderId} 重新交运未能确认成功。` });
             results.push({ orderId: recovery.displayOrderId, status: "manual_attention", errorCode });
@@ -650,7 +652,7 @@ export class FulfillmentService {
               if (uncertainResetCodes.has(error.code)) {
                 const errorCode = bounded(error.code, 80);
                 const errorMessage = `清空物流渠道的结果无法安全确认：${bounded(error.message)}`;
-                this.repository.expireTrackingRecovery(recovery, { completedAt: this.now().toISOString(), errorCode, errorMessage });
+                await this.repository.expireTrackingRecovery(recovery, { completedAt: this.now().toISOString(), errorCode, errorMessage });
                 this.notifier.notify({ title: `${this.config.shopName} 运单号恢复需人工处理`,
                   message: `${recovery.displayOrderId} 清空物流渠道结果无法确认。` });
                 results.push({ orderId: recovery.displayOrderId, status: "manual_attention", errorCode });
@@ -660,19 +662,19 @@ export class FulfillmentService {
             }
           }
           const resetAt = this.now().toISOString();
-          this.repository.deferTrackingRecovery(recovery.orderKey, { status: "ready_to_resubmit", checkedAt: resetAt,
+          await this.repository.deferTrackingRecovery(recovery.orderKey, { status: "ready_to_resubmit", checkedAt: resetAt,
             nextCheckAt: resetAt,
             resetCount: recovery.resetCount + 1, lastResetAt: resetAt });
           results.push({ orderId: recovery.displayOrderId, status: "channel_cleared_once" });
         } else {
-          this.repository.deferTrackingRecovery(recovery.orderKey, { status: recovery.status,
+          await this.repository.deferTrackingRecovery(recovery.orderKey, { status: recovery.status,
             checkedAt: checkedAt.toISOString(),
             nextCheckAt: new Date(checkedAt.getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString() });
           results.push({ orderId: recovery.displayOrderId, status: resetDue && !recoveryWriteEnabled
             ? "reset_disabled" : resetDue ? "reset_adapter_pending" : "waiting_tracking" });
         }
       } catch (error) {
-        this.repository.deferTrackingRecovery(recovery.orderKey, { status: recovery.status,
+        await this.repository.deferTrackingRecovery(recovery.orderKey, { status: recovery.status,
           checkedAt: this.now().toISOString(),
           nextCheckAt: new Date(this.now().getTime() + this.config.trackingRecoveryCheckSeconds * 1000).toISOString(),
           errorCode: bounded(error.code || "TRACKING_RECOVERY_CHECK_FAILED", 80), errorMessage: bounded(error.message) });
@@ -682,45 +684,45 @@ export class FulfillmentService {
     return { shop: { id: this.config.shopId, name: this.config.shopName }, checked: due.length, results };
   }
 
-  getActiveBatch() {
+  async getActiveBatch() {
     return this.repository.getActiveBatch();
   }
 
-  getLatestPendingPreview() {
-    const preview = this.repository.getLatestPendingPreview(this.now().toISOString(), this.config.shopId);
+  async getLatestPendingPreview() {
+    const preview = await this.repository.getLatestPendingPreview(this.now().toISOString(), this.config.shopId);
     return preview ? this.presentPreview(preview) : null;
   }
 
-  listPendingPreviewSummaries(limit = 20) {
+  async listPendingPreviewSummaries(limit = 20) {
     return this.repository.listPendingPreviewSummaries(this.now().toISOString(), limit);
   }
 
-  recordScanRun(run) {
-    this.repository.recordScanRun(run);
+  async recordScanRun(run) {
+    await this.repository.recordScanRun(run);
   }
 
-  listRecentScanRuns(limit = 10) {
+  async listRecentScanRuns(limit = 10) {
     return this.repository.listRecentScanRuns(limit);
   }
 
-  listRecentBatches(limit = 20) {
+  async listRecentBatches(limit = 20) {
     return this.repository.listRecentBatches(limit);
   }
 
-  issueConfirmationToken(id) {
-    const preview = this.repository.getPreview(id);
+  async issueConfirmationToken(id) {
+    const preview = await this.repository.getPreview(id);
     if (!preview) throw new FulfillmentError("PREVIEW_NOT_FOUND", "预览不存在", 404);
     if (preview.status !== "pending") throw new FulfillmentError("PREVIEW_ALREADY_USED", "预览已经确认或失效", 409);
     if (new Date(preview.expiresAt) <= this.now()) throw new FulfillmentError("PREVIEW_EXPIRED", "预览已过期，请重新扫描", 409);
     const confirmationToken = randomBytes(24).toString("base64url");
-    if (!this.repository.updatePreviewConfirmationHash(id, hash(confirmationToken))) {
+    if (!await this.repository.updatePreviewConfirmationHash(id, hash(confirmationToken))) {
       throw new FulfillmentError("PREVIEW_ALREADY_USED", "预览已经确认或失效", 409);
     }
-    return this.presentPreview(this.repository.getPreview(id), confirmationToken);
+    return this.presentPreview(await this.repository.getPreview(id), confirmationToken);
   }
 
-  getBatch(id) {
-    const batch = this.repository.getBatch(id);
+  async getBatch(id) {
+    const batch = await this.repository.getBatch(id);
     if (!batch) throw new FulfillmentError("BATCH_NOT_FOUND", "发货批次不存在", 404);
     return batch;
   }

@@ -163,6 +163,27 @@ test("manual order export rejects unsupported filter fields", async () => {
   context.db.close();
 });
 
+test("manual run and retry reject a task that is already pending or running", async () => {
+  const context = createContext();
+  const request = createApiHarness(context);
+  const active = context.db.createRun({
+    taskId: context.task.id,
+    triggerType: "manual",
+    scheduledRunAt: new Date("2026-07-16T00:59:00.000Z"),
+  });
+  context.db.claimRun(active.id);
+
+  const manual = await request("POST", `/api/mabang/scheduled-tasks/${context.task.id}/run-now`, {});
+  const retry = await request("POST", `/api/mabang/scheduled-runs/${active.id}/retry`, {});
+
+  assert.equal(manual.status, 409);
+  assert.equal(manual.data.code, "TASK_RUN_ACTIVE");
+  assert.equal(retry.status, 409);
+  assert.equal(retry.data.code, "TASK_RUN_ACTIVE");
+  assert.equal(context.db.listRuns({ taskId: context.task.id }).length, 1);
+  context.db.close();
+});
+
 test("soft-delete migration is additive and preserves all existing business rows", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "commerce-ops-soft-delete-migration-"));
   const stagedMigrations = path.join(root, "migrations");
@@ -272,7 +293,7 @@ test("deleted tasks reject edits, state changes, execution, preview and duplicat
     assert.equal(response.data.error, "该定时任务已删除，不能继续执行。如需使用，请先恢复任务。");
     assert.doesNotMatch(JSON.stringify(response.data), /[A-Za-z]:\\|at executeRun|node:internal/);
   }
-  assert.ok(context.audit.queryEvents({ action: "mabang.task.deleted_execution_rejected" }).total >= 1);
+  assert.ok((await context.audit.queryEvents({ action: "mabang.task.deleted_execution_rejected" })).total >= 1);
   context.db.close();
 });
 
@@ -322,7 +343,7 @@ test("a task linked to a disabled account can be restored but cannot be enabled"
   context.db.close();
 });
 
-test("deleted tasks are excluded from due scheduling and remain excluded after restart", () => {
+test("deleted tasks are excluded from due scheduling and remain excluded after restart", async () => {
   const context = createContext({ nextRunAt: "2026-07-16T00:00:00.000Z" });
   context.db.softDeleteTask(context.task.id);
   assert.equal(context.db.dueTasks(new Date("2026-07-16T01:00:00.000Z")).length, 0);
@@ -335,7 +356,7 @@ test("deleted tasks are excluded from due scheduling and remain excluded after r
     exportRoot: context.exportRoot,
     now: () => new Date("2026-07-16T01:00:00.000Z"),
   });
-  service.initialize();
+  await service.initialize();
   const task = reopened.getTask(context.task.id);
   assert.equal(task.deleted, true);
   assert.equal(task.nextRunAt, null);
@@ -358,7 +379,7 @@ test("a queued run is skipped when its task is deleted before execution and is a
   assert.equal(result.status, "skipped");
   assert.equal(result.errorCode, "TASK_DELETED");
   assert.equal(context.db.getRunDetails(run.id).events.some((event) => event.errorCode === "TASK_DELETED"), true);
-  assert.equal(context.audit.queryEvents({ action: "mabang.task.deleted_scheduler_skipped" }).total, 1);
+  assert.equal((await context.audit.queryEvents({ action: "mabang.task.deleted_scheduler_skipped" })).total, 1);
   context.db.close();
 });
 
@@ -398,8 +419,8 @@ test("delete and restore APIs write dedicated audit actions", async () => {
   const request = createApiHarness(context);
   assert.equal((await request("DELETE", `/api/mabang/scheduled-tasks/${context.task.id}`, { reason: "test cleanup" })).status, 200);
   assert.equal((await request("POST", `/api/mabang/scheduled-tasks/${context.task.id}/restore`, {})).status, 200);
-  assert.equal(context.audit.queryEvents({ action: "mabang.task.delete" }).total, 1);
-  assert.equal(context.audit.queryEvents({ action: "mabang.task.restore" }).total, 1);
+  assert.equal((await context.audit.queryEvents({ action: "mabang.task.delete" })).total, 1);
+  assert.equal((await context.audit.queryEvents({ action: "mabang.task.restore" })).total, 1);
   context.db.close();
 });
 

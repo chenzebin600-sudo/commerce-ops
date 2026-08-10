@@ -20,10 +20,12 @@ export class FulfillmentPreviewScheduler {
     this.lastTrackingRecoveries = [];
   }
 
-  status() {
-    const activeBatch = this.service.getActiveBatch();
-    const pendingPreviews = this.service.listPendingPreviewSummaries();
-    const recentScans = this.service.listRecentScanRuns();
+  async status() {
+    const [activeBatch, pendingPreviews, recentScans] = await Promise.all([
+      this.service.getActiveBatch(),
+      this.service.listPendingPreviewSummaries(),
+      this.service.listRecentScanRuns(),
+    ]);
     const latestPersistedScan = recentScans[0] || null;
     return {
       enabled: Boolean(this.config.schedulerEnabled),
@@ -47,10 +49,10 @@ export class FulfillmentPreviewScheduler {
     };
   }
 
-  finishRun({ startedAt, outcome, message, eligibleCount = 0, excludedCount = 0, previewId = null }) {
+  async finishRun({ startedAt, outcome, message, eligibleCount = 0, excludedCount = 0, previewId = null }) {
     this.lastOutcome = outcome;
     this.lastMessage = message;
-    this.service.recordScanRun({ startedAt, finishedAt: this.now().toISOString(), outcome, message,
+    await this.service.recordScanRun({ startedAt, finishedAt: this.now().toISOString(), outcome, message,
       eligibleCount, excludedCount, previewId });
     if (outcome === "preview_created") this.notifier.notify({ title: "马帮有订单待确认", message });
     if (outcome === "auto_fulfillment_started") this.notifier.notify({ title: "马帮自动发货已启动", message });
@@ -61,7 +63,7 @@ export class FulfillmentPreviewScheduler {
   async performScan() {
     const startedAt = this.now().toISOString();
     this.lastRunAt = startedAt;
-    const activeBatch = this.service.getActiveBatch();
+    const activeBatch = await this.service.getActiveBatch();
     if (activeBatch) {
       return this.finishRun({ startedAt, outcome: "skipped_active_batch",
         message: `批次 ${activeBatch.id} 正在运行，本次未扫描。` });
@@ -86,7 +88,12 @@ export class FulfillmentPreviewScheduler {
     });
     let sharedRecordsByShopId = null;
     this.lastSharedCollectionMs = null;
-    const servicesNeedingPreview = orderedServices.filter(({ shopService }) => !shopService.getLatestPendingPreview());
+    const pendingPreviewPairs = await Promise.all(orderedServices.map(async ({ shopService }) => [
+      shopService,
+      await shopService.getLatestPendingPreview(),
+    ]));
+    const pendingPreviewByService = new Map(pendingPreviewPairs);
+    const servicesNeedingPreview = orderedServices.filter(({ shopService }) => !pendingPreviewByService.get(shopService));
     if (this.scanSource && servicesNeedingPreview.length) {
       const collectionStartedMs = Date.now();
       try {
@@ -106,14 +113,14 @@ export class FulfillmentPreviewScheduler {
     }
     for (const { shopService, serviceIndex } of orderedServices) {
       const shopName = shopService.config?.shopName || "未知店铺";
-      const existingPreview = shopService.getLatestPendingPreview();
+      const existingPreview = pendingPreviewByService.get(shopService) || null;
       if (existingPreview) {
         existingPreviews.push(existingPreview);
         if (shopService.config?.autoFulfillEnabled && existingPreview.eligibleOrders.length) {
           try {
-            const refreshed = shopService.issueConfirmationToken(existingPreview.previewId);
+            const refreshed = await shopService.issueConfirmationToken(existingPreview.previewId);
             autoBatch = { shopName, preview: refreshed,
-              batch: shopService.enqueuePreview(refreshed.previewId, refreshed.confirmationToken) };
+              batch: await shopService.enqueuePreview(refreshed.previewId, refreshed.confirmationToken) };
             this.nextServiceIndex = (serviceIndex + 1) % this.services.length;
             break;
           } catch (error) {
@@ -124,12 +131,12 @@ export class FulfillmentPreviewScheduler {
       }
       try {
         const preview = sharedRecordsByShopId
-          ? shopService.createPreviewFromRecords(sharedRecordsByShopId.get(String(shopService.config.shopId)) || [], { limit: this.config.maxBatchSize })
+          ? await shopService.createPreviewFromRecords(sharedRecordsByShopId.get(String(shopService.config.shopId)) || [], { limit: this.config.maxBatchSize })
           : await shopService.createPreview({ limit: this.config.maxBatchSize });
         createdPreviews.push(preview);
         if (shopService.config?.autoFulfillEnabled && preview.eligibleOrders.length) {
           autoBatch = { shopName, preview,
-            batch: shopService.enqueuePreview(preview.previewId, preview.confirmationToken) };
+            batch: await shopService.enqueuePreview(preview.previewId, preview.confirmationToken) };
           this.nextServiceIndex = (serviceIndex + 1) % this.services.length;
           break;
         }
@@ -138,7 +145,7 @@ export class FulfillmentPreviewScheduler {
       }
     }
     this.lastManualRecoveries = [];
-    if (!autoBatch && !this.service.getActiveBatch()) {
+    if (!autoBatch && !await this.service.getActiveBatch()) {
       for (const { shopService } of orderedServices) {
         try {
           const records = sharedRecordsByShopId?.get(String(shopService.config.shopId));
@@ -177,7 +184,7 @@ export class FulfillmentPreviewScheduler {
     const firstPassCount = this.lastManualRecoveries.reduce((sum, recovery) => sum + (recovery.firstPass?.length || 0), 0);
     if (releasedCount) message += ` ${releasedCount} 笔人工处理订单连续两轮复核通过，已解除锁，将从下一轮重新发货。`;
     else if (firstPassCount) message += ` ${firstPassCount} 笔人工处理订单已通过第 1/2 轮自动复核。`;
-    const result = this.finishRun({ startedAt, outcome, message, eligibleCount, excludedCount,
+    const result = await this.finishRun({ startedAt, outcome, message, eligibleCount, excludedCount,
       previewId: firstEligible?.previewId || null });
     if (outcome === "scan_failed") {
       const error = new Error(message); error.code = "SCHEDULER_SCAN_FAILED"; throw error;

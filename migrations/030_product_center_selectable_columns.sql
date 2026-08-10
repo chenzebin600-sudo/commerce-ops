@@ -1,0 +1,2 @@
+CREATE INDEX idx_product_package_rows_latest_import_row
+  ON product_package_rows(latest_import_row_id);

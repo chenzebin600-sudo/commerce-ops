@@ -227,6 +227,53 @@ test("platform API exposes normalized gateway endpoints without exposing credent
   assert.equal(JSON.stringify(shops).includes("refresh-secret"), false);
 });
 
+test("platform API reads and explicitly projects the Platform API authoritative shop catalog", async (t) => {
+  const { repository } = temporaryRepository(t);
+  const { service } = fakeGateway(repository);
+  const calls = [];
+  const shopDirectory = {
+    async list(filters) {
+      calls.push(["list", filters]);
+      return [{ id: "directory-1", shopCode: "MS0001", shopName: "Manual Shop", authorizationStatus: "NOT_AUTHORIZED" }];
+    },
+    async synchronizeFromPlatformGateway() {
+      calls.push(["sync-api"]);
+      return { source: "API", observed: 1, total: 1, created: 0, updated: 1, rejected: [] };
+    },
+  };
+  const handler = createPlatformGatewayApi({ service, shopDirectory, status: () => ({ enabled: true }) });
+  const server = http.createServer((req, res) => handler(req, res, new URL(req.url, "http://127.0.0.1")));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const listed = await (await fetch(`${base}/api/platform/shops?platform=lazada`)).json();
+  assert.equal(listed.shops[0].shopCode, "MS0001");
+  const manual = await fetch(`${base}/api/platform/shops`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ shopCode: "MS0002", shopName: "Second Shop", platform: "lazada", country: "MY" }),
+  });
+  assert.equal(manual.status, 409);
+  assert.equal((await manual.json()).code, "PLATFORM_API_SHOP_AUTHORITY_REQUIRED");
+  const synchronized = await (await fetch(`${base}/api/platform/shops/sync`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  })).json();
+  assert.equal(synchronized.updated, 1);
+  const uploadedRows = await fetch(`${base}/api/platform/shops/sync`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ shops: [{ shopCode: "MS0003" }] }),
+  });
+  assert.equal(uploadedRows.status, 400);
+  assert.equal((await uploadedRows.json()).code, "PLATFORM_API_SHOP_ROWS_NOT_ACCEPTED");
+  assert.deepEqual(calls.map((call) => call[0]), ["list", "sync-api"]);
+});
+
 test("platform API routes order-item reads and guarded ReadyToShip writes", async (t) => {
   const { repository } = temporaryRepository(t);
   const shop = addShop(repository);

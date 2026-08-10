@@ -203,6 +203,7 @@ test("portable path scanner has one centralized and narrowly scoped exception re
     "docs/growth-radar-g1b-three-stash-audit.md",
     "docs/product-query-center-DESIGN.md",
     "docs/product-query-center-production-analysis.md",
+    "memory/daily/",
     "tests/",
   ]);
   assert.equal(exceptions.some((item) => item.prefix === "docs/"), false);

@@ -3,6 +3,15 @@
 Status: implementation baseline
 Scope: shared AI infrastructure only; no business Agent is implemented here.
 
+Successor implementation: `COMMERCE-OPS-DAILY-REPORT-AGENT-V2.md` uses this
+foundation for the first production business Agent without changing the V1
+database contract.
+`COMMERCE-OPS-AI-AGENT-FOUNDATION-1.1.md` defines the additive Gateway trace
+and Agent-produced operation task contract.
+`COMMERCE-OPS-AI-AGENT-FOUNDATION-1.3.md` defines the current mandatory
+production Runtime, Tool schema, dependency-injection, and invocation-trace
+boundary.
+
 ## 1. Current Architecture Audit
 
 ### Data model

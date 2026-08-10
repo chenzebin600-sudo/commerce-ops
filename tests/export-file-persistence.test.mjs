@@ -349,8 +349,8 @@ test("file persistence and integrity failures write bounded audit events without
     const created = await persist(context, { content: Buffer.from("private order contents") });
     await fs.appendFile(created.absolutePath, "tamper");
     await assert.rejects(context.service.download(created.file.id));
-    const createdEvents = context.audit.queryEvents({ action: "file.export.created" });
-    const integrityEvents = context.audit.queryEvents({ action: "file.integrity_failed" });
+    const createdEvents = await context.audit.queryEvents({ action: "file.export.created" });
+    const integrityEvents = await context.audit.queryEvents({ action: "file.integrity_failed" });
     assert.equal(createdEvents.total, 1);
     assert.equal(integrityEvents.total, 1);
     const serialized = JSON.stringify([...createdEvents.events, ...integrityEvents.events]);

@@ -16,7 +16,7 @@ import {
 import { loadLocalEnv } from "./lib/env.mjs";
 import { createMabangWorkerRunner } from "./lib/mabang-worker-runner.mjs";
 import { createMabangDataPersistenceService } from "./lib/mabang-data/persistence-service.mjs";
-import { openCommerceDataAccess } from "./lib/data/data-access.mjs";
+import { openProviderRuntimeDataAccess } from "./lib/data/provider-runtime-data-access.mjs";
 import { createMabangSchedulerApi } from "./lib/mabang-scheduler/api.mjs";
 import { createAdServiceProxy, resolveAdServiceProxyConfig } from "./lib/ad-service-proxy.mjs";
 import {
@@ -85,6 +85,9 @@ import { createProductCenterApi } from "./lib/product-center/product-center-api.
 import { ProductAiContentService } from "./lib/product-center/product-ai-content-service.mjs";
 import { ProductListingService } from "./lib/product-center/product-listing-service.mjs";
 import { createProductAccessPolicy } from "./lib/product-center/product-access-policy.mjs";
+import { createMysqlProductPackageSource } from "./lib/product-package-sync/mysql-product-package-source.mjs";
+import { ProductPackageSyncService } from "./lib/product-package-sync/product-package-sync-service.mjs";
+import { createProductPackageSyncApi } from "./lib/product-package-sync/product-package-sync-api.mjs";
 import { resolveImageGenerationConfig } from "./lib/product-center/image-generation-config.mjs";
 import { createImageGenerationProvider } from "./lib/product-center/image-generation-provider.mjs";
 import { ProductImageGenerationService } from "./lib/product-center/product-image-generation-service.mjs";
@@ -96,6 +99,8 @@ import { createGrowthRadarV2Api } from "./lib/growth-radar/v2/growth-radar-v2-ap
 import { SalesAssortmentService } from "./lib/sales-assortment/sales-assortment-service.mjs";
 import { createSalesAssortmentApi } from "./lib/sales-assortment/sales-assortment-api.mjs";
 import { SalesAssortmentAiService } from "./lib/sales-assortment/sales-assortment-ai-service.mjs";
+import { SalesAssortmentAnalysisStore } from "./lib/sales-assortment/sales-assortment-analysis-store.mjs";
+import { LocalStorageProvider } from "./lib/storage/local-storage-provider.mjs";
 import { normalizeMarketplaceLink } from "./lib/marketplace-url.mjs";
 import { AiGateway, aiGatewayError } from "./lib/ai/ai-gateway.mjs";
 import { createAiAuditLogger } from "./lib/ai/ai-audit-logger.mjs";
@@ -103,7 +108,10 @@ import { createAiOutputValidator } from "./lib/ai/ai-output-validation.mjs";
 import { createMabangListingAiApi, MABANG_LISTING_AI_PATH } from "./lib/ai/mabang-listing-ai-api.mjs";
 import { DeepSeekProvider, resolveDeepSeekEndpoint } from "./lib/ai/providers/deepseek-provider.mjs";
 import { AiContextService } from "./lib/ai/context/ai-context-service.mjs";
+import { registerCustomerServiceContext } from "./lib/ai/context/customer-service-context-registration.mjs";
 import { createAiContextApi } from "./lib/ai/context/ai-context-api.mjs";
+import { createAgentObservabilityApi } from "./lib/ai/observability/agent-observability-api.mjs";
+import { AgentObservabilityService } from "./lib/ai/observability/agent-observability-service.mjs";
 import { MODULE_IDS } from "./lib/contracts/module-ids.mjs";
 import { createIdentifier } from "./lib/contracts/identifiers.mjs";
 import { MabangInventoryWorkerSession } from "./lib/mabang-images/worker-session.mjs";
@@ -113,6 +121,45 @@ import { createMabangImageAccessPolicy } from "./lib/mabang-images/access-policy
 import { createMabangImageApi } from "./lib/mabang-images/api.mjs";
 import { createFulfillmentDashboardProxy } from "./lib/fulfillment-dashboard-proxy.mjs";
 import { decryptSecret } from "./lib/mabang-scheduler/crypto.mjs";
+import { FoundationService } from "./lib/foundation/foundation-service.mjs";
+import { AgentRuntime } from "./lib/ai/agent/agent-runtime.mjs";
+import { AgentToolRegistry } from "./lib/ai/tools/agent-tool-registry.mjs";
+import { FoundationListingAccountBridge } from "./lib/foundation/foundation-listing-account-bridge.mjs";
+import { createMysqlPriceControlSource } from "./lib/price-control/mysql-price-control-source.mjs";
+import { PriceControlService } from "./lib/price-control/price-control-service.mjs";
+import { createPriceControlApi } from "./lib/price-control/price-control-api.mjs";
+import { PriceControlRepricingService } from "./lib/price-control/price-control-repricing-service.mjs";
+import { MabangListingRepricingAdapter, MabangRepricingClient } from "./lib/price-control/mabang-repricing-client.mjs";
+import { createPlatformConnectorRuntime } from "./connectors/runtime.mjs";
+import { CustomerServiceService } from "./lib/customer-service/customer-service-service.mjs";
+import {
+  createCustomerServiceApi,
+  createCustomerServiceWorkerApi,
+} from "./lib/customer-service/customer-service-api.mjs";
+import { createCustomerServiceWorkerAuth } from "./lib/customer-service/customer-service-worker-auth.mjs";
+import { resolveCustomerServiceWorkerToken } from "./lib/customer-service/customer-service-worker-token.mjs";
+import { CustomerServiceContextService } from "./lib/customer-service/customer-service-context-service.mjs";
+import { ProductCoreReadFacade } from "./lib/product-center/product-core-read-facade.mjs";
+import {
+  ProductKnowledgeService,
+  countPublishedCustomerServiceKnowledgeReleases,
+} from "./lib/product-knowledge/product-knowledge-service.mjs";
+import { createProductKnowledgeApi } from "./lib/product-knowledge/product-knowledge-api.mjs";
+import { CustomerServiceBusinessContextFacade } from "./lib/customer-service/customer-service-business-context-facade.mjs";
+import {
+  CustomerServiceReplyAgent,
+  CUSTOMER_SERVICE_REPLY_AGENT_DEFINITION,
+  CUSTOMER_SERVICE_REPLY_OUTPUT_VALIDATOR,
+} from "./lib/customer-service/customer-service-reply-agent.mjs";
+import { CustomerServiceReplyOrchestrator } from "./lib/customer-service/customer-service-reply-orchestrator.mjs";
+import { CustomerServiceReplyRunner } from "./lib/customer-service/customer-service-reply-runner.mjs";
+import { createCustomerServiceLocalRuntimeManager } from "./lib/customer-service/customer-service-local-runtime-manager.mjs";
+import { ProfitService } from "./lib/profit/profit-service.mjs";
+import { ShopeeProfitService } from "./lib/profit/shopee-profit-service.mjs";
+import { UnifiedProfitService } from "./lib/profit/unified-profit-service.mjs";
+import { parseShopeeStatementWorkbook } from "./lib/profit/shopee-statement-parser.mjs";
+import { createProfitApi } from "./lib/profit/profit-api.mjs";
+import { ProfitScheduleRunner } from "./lib/profit/profit-schedule-runner.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
@@ -132,9 +179,18 @@ const hashedStaticAssetPattern = /\/assets\/[^/]+-[A-Za-z0-9_-]{8,}\.[^/]+$/;
 const excelCellPolicyModulePath = path.join(__dirname, "lib", "security", "excel-cell-policy.mjs");
 const productPackageParserPath = path.join(__dirname, "scripts", "product-package-parser.py");
 const growthRadarParserPath = path.join(__dirname, "scripts", "growth-radar-parser.py");
+const shopeeProfitParserPath = path.join(__dirname, "scripts", "shopee-profit-parser.py");
 loadLocalEnv(__dirname);
 const runtimeConfig = resolveRuntimeConfig({ bootstrapRoot: __dirname, env: process.env });
 const runtimeEnv = { ...process.env, ...runtimeEnvironment(runtimeConfig) };
+const customerServiceWorkerToken = await resolveCustomerServiceWorkerToken({
+  configuredToken: runtimeEnv.CUSTOMER_SERVICE_WORKER_TOKEN,
+  tokenFile: path.join(
+    runtimeConfig.storageRoot,
+    "secrets",
+    "customer-service-worker-token",
+  ),
+});
 const fileStorageConfig = await ensureFileStorageRoots(resolveFileStorageConfig(runtimeConfig.appRoot, runtimeEnv));
 const startupTempCleanup = await cleanupTemporaryFiles(fileStorageConfig.tempRoot, {
   retentionHours: fileStorageConfig.tempFileRetentionHours,
@@ -254,6 +310,15 @@ const mabangWpsAssistantManager = createMabangWpsAssistantManager({
   pythonExecutable: mabangWpsPython.ok ? mabangWpsPython.executable : null,
   env: runtimeEnv,
 });
+const liaoliaoIntegrationDir = path.join(runtimeConfig.appRoot, "integrations", "liaoliao-ai-assistant");
+const liaoliaoPython = resolvePythonRuntime({
+  appRoot: liaoliaoIntegrationDir,
+  env: {
+    PYTHON_EXECUTABLE: runtimeEnv.LIAOLIAO_PYTHON_EXECUTABLE || "",
+    PYTHON_VENV_DIR: runtimeEnv.LIAOLIAO_PYTHON_VENV_DIR || ".venv",
+  },
+  requiredModules: ["dotenv", "httpx", "playwright"],
+});
 const chromeAllowedHosts = resolveAllowedHosts(
   Object.values(DEFAULT_CHROME_ALLOWED_HOSTS_BY_PLATFORM).flat(),
   process.env.CHROME_ALLOWED_HOSTS,
@@ -332,9 +397,85 @@ async function readBody(req) {
 }
 
 const scheduledExportRoot = fileStorageConfig.exportRoot;
-const dataAccess = openCommerceDataAccess({ rootDir: runtimeConfig.appRoot, databasePath: runtimeConfig.databasePath });
+const dataAccess = openProviderRuntimeDataAccess({
+  rootDir: runtimeConfig.appRoot,
+  databasePath: runtimeConfig.databasePath,
+  env: runtimeEnv,
+});
+const auditService = createOperationAuditService({
+  repository: dataAccess.repositories.audit,
+  env: { ...runtimeEnv, CUSTOMER_SERVICE_WORKER_TOKEN: customerServiceWorkerToken },
+});
+const platformConnectorRuntime = createPlatformConnectorRuntime({
+  rootDir: runtimeConfig.appRoot,
+  env: runtimeEnv,
+  shopRepository: dataAccess.repositories.commerceShops,
+});
+const handlePlatformGatewayApi = platformConnectorRuntime.handleApi;
 const schedulerDatabase = dataAccess.repositories.scheduler;
-const auditService = createOperationAuditService({ repository: dataAccess.repositories.audit, env: process.env });
+const customerServiceBusinessContext = new CustomerServiceBusinessContextFacade({
+  provider: dataAccess.provider,
+  platformGatewayService: platformConnectorRuntime.service,
+});
+const customerService = new CustomerServiceService({
+  repository: dataAccess.repositories.customerService,
+  identityPepper: runtimeEnv.CUSTOMER_SERVICE_IDENTITY_PEPPER || runtimeEnv.APP_ENCRYPTION_KEY,
+  commerceShopFacade: customerServiceBusinessContext,
+});
+const productKnowledge = new ProductKnowledgeService({
+  repository: dataAccess.repositories.productKnowledge,
+  governance: {
+    enabled: String(runtimeEnv.PRODUCT_KNOWLEDGE_GOVERNANCE_ENABLED || "false").toLowerCase() === "true",
+    reviewerIds: String(runtimeEnv.PRODUCT_KNOWLEDGE_REVIEWER_IDS || "").split(",").map((value) => value.trim()).filter(Boolean),
+    publisherIds: String(runtimeEnv.PRODUCT_KNOWLEDGE_PUBLISHER_IDS || "").split(",").map((value) => value.trim()).filter(Boolean),
+  },
+});
+customerService.configureKnowledgeReadiness(async () => {
+  const knowledgeStatus = await productKnowledge.status();
+  return {
+    ready: knowledgeStatus.ready === true,
+    publishedSupportReleaseTotal: countPublishedCustomerServiceKnowledgeReleases(knowledgeStatus.releases),
+  };
+});
+const productCoreReadFacade = new ProductCoreReadFacade({ provider: dataAccess.provider });
+const customerServiceContext = new CustomerServiceContextService({
+  customerServiceRepository: dataAccess.repositories.customerService,
+  productCoreFacade: productCoreReadFacade,
+  productKnowledgeService: productKnowledge,
+  businessContextFacade: customerServiceBusinessContext,
+  encryptText: customerService.encryptText,
+  decryptText: customerService.decryptText,
+  digestText: (value) => customerService.digest("context", value),
+  createId: () => createIdentifier(),
+});
+const customerServiceWorkerAuth = createCustomerServiceWorkerAuth({
+  token: customerServiceWorkerToken,
+});
+const customerServiceLocalRuntimeManager = createCustomerServiceLocalRuntimeManager({
+  integrationDir: liaoliaoIntegrationDir,
+  storageRoot: runtimeConfig.storageRoot,
+  pythonExecutable: liaoliaoPython.ok ? liaoliaoPython.executable : null,
+  centralApiUrl: `http://127.0.0.1:${port}`,
+  workerToken: customerServiceWorkerToken,
+  maxMonitors: Number(runtimeEnv.CUSTOMER_SERVICE_LOCAL_MAX_MONITORS || 4),
+  env: runtimeEnv,
+  audit: auditService,
+});
+const handleCustomerServiceWorkerApi = createCustomerServiceWorkerApi({
+  service: customerService,
+  auth: customerServiceWorkerAuth,
+});
+const handleCustomerServiceApi = createCustomerServiceApi({
+  service: customerService,
+  contextService: customerServiceContext,
+  localRuntimeManager: customerServiceLocalRuntimeManager,
+});
+const handleProductKnowledgeApi = createProductKnowledgeApi({ service: productKnowledge });
+const agentObservabilityService = new AgentObservabilityService({
+  audit: auditService,
+  repository: dataAccess.repositories.agentObservability,
+});
+const handleAgentObservabilityApi = createAgentObservabilityApi({ service: agentObservabilityService });
 const trustedAuditProxies = parseTrustedProxies(process.env.TRUST_PROXY);
 const auditRetentionDays = Number(process.env.AUDIT_RETENTION_DAYS || 180);
 const handleAuditApi = createAuditApi({ audit: auditService, retentionDays: auditRetentionDays });
@@ -362,6 +503,64 @@ const productImportService = new ProductImportService({
 const productCatalogService = new ProductCatalogService({ repository: dataAccess.repositories.productCatalog });
 const productListingService = new ProductListingService({ repository: dataAccess.repositories.productListings });
 const productAccessPolicy = createProductAccessPolicy(process.env);
+const productPackageSyncEnabled = String(runtimeEnv.PRODUCT_PACKAGE_SYNC_ENABLED || "").toLowerCase() === "true";
+const productPackageSource = createMysqlProductPackageSource(runtimeEnv);
+const productPackageSyncService = dataAccess.repositories.productPackageSync
+  ? new ProductPackageSyncService({
+    repository: dataAccess.repositories.productPackageSync,
+    source: productPackageSource,
+    enabled: productPackageSyncEnabled,
+    manualSyncEnabled: String(runtimeEnv.PRODUCT_PACKAGE_MANUAL_SYNC_ENABLED || "true").toLowerCase() === "true",
+    batchSize: runtimeEnv.PRODUCT_PACKAGE_SYNC_BATCH_SIZE,
+    maxRemovalRatio: runtimeEnv.PRODUCT_PACKAGE_MAX_REMOVAL_RATIO,
+    audit: auditService,
+  })
+  : null;
+const handleProductPackageSyncApi = productPackageSyncService
+  ? createProductPackageSyncApi({ service: productPackageSyncService, accessPolicy: productAccessPolicy })
+  : async () => false;
+const foundationService = new FoundationService({ repository: dataAccess.repositories.foundation });
+const priceControlSource = createMysqlPriceControlSource(runtimeEnv);
+const priceControlService = new PriceControlService({
+  repository: dataAccess.repositories.priceControl,
+  source: priceControlSource,
+  foundationRepository: dataAccess.repositories.foundation,
+  foundationTaskService: foundationService.tasks,
+  notificationConfigRepository: dataAccess.repositories.scheduler,
+  audit: auditService,
+  syncEnabled: String(runtimeEnv.PRICE_CONTROL_SYNC_ENABLED || "").toLowerCase() === "true",
+  manualSyncEnabled: String(runtimeEnv.PRICE_CONTROL_MANUAL_SYNC_ENABLED || "").toLowerCase() === "true",
+  syncIntervalMs: runtimeEnv.PRICE_CONTROL_SYNC_INTERVAL_MS,
+  staleRunTimeoutMs: runtimeEnv.PRICE_CONTROL_STALE_RUN_TIMEOUT_MS,
+  batchLimit: runtimeEnv.PRICE_CONTROL_BATCH_LIMIT,
+  batchesPerCountry: runtimeEnv.PRICE_CONTROL_BATCHES_PER_COUNTRY,
+});
+const mabangRepricingClient = new MabangRepricingClient({
+  baseUrl: mabangListingProxyConfig.baseUrl,
+  internalToken: mabangListingInternalToken,
+});
+const listingAccountBridge = new FoundationListingAccountBridge({
+  foundationRepository: dataAccess.repositories.foundation,
+  accountRegistry: foundationService.accounts,
+  accountRepository: dataAccess.repositories.accounts,
+  decryptSecret,
+  connectListing: (credentials) => mabangRepricingClient.login(credentials),
+});
+const priceControlRepricingService = new PriceControlRepricingService({
+  repository: dataAccess.repositories.priceControlRepricing,
+  priceControlRepository: dataAccess.repositories.priceControl,
+  shopRepository: dataAccess.repositories.commerceShops,
+  priceControlService,
+  audit: auditService,
+  executors: new Map([
+    ["MABANG_LISTING", new MabangListingRepricingAdapter({ client: mabangRepricingClient, accountBridge: listingAccountBridge })],
+  ]),
+});
+const handlePriceControlApi = createPriceControlApi({
+  service: priceControlService,
+  repricingService: priceControlRepricingService,
+  accessPolicy: productAccessPolicy,
+});
 const productAiApiKey = getDeepSeekApiKey();
 const deepSeekModel = process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
 const deepSeekGateway = new AiGateway({
@@ -438,9 +637,15 @@ const handleGrowthRadarV2Api = createGrowthRadarV2Api({
 const salesAssortmentService = new SalesAssortmentService({
   repository: dataAccess.repositories.salesAssortment,
 });
+const salesAssortmentAnalysisStore = new SalesAssortmentAnalysisStore({
+  storage: new LocalStorageProvider({
+    rootDir: path.join(fileStorageConfig.storageRoot, "sales-assortment-ai"),
+  }),
+});
 const salesAssortmentAiService = new SalesAssortmentAiService({
   dashboardService: salesAssortmentService,
   gateway: deepSeekGateway,
+  analysisStore: salesAssortmentAnalysisStore,
   configured: Boolean(productAiApiKey),
   model: process.env.SALES_ASSORTMENT_DEEPSEEK_MODEL || deepSeekModel,
 });
@@ -450,6 +655,57 @@ const handleSalesAssortmentApi = createSalesAssortmentApi({
   accessPolicy: growthRadarAccessPolicy,
 });
 const aiContextService = new AiContextService({ repository: dataAccess.repositories.aiContext });
+registerCustomerServiceContext({
+  registry: aiContextService.registry,
+  contextService: customerServiceContext,
+});
+const customerServiceAgentRuntime = new AgentRuntime({
+  taskService: foundationService.tasks,
+  contextRegistry: aiContextService.registry,
+  toolRegistry: new AgentToolRegistry(),
+  gateway: deepSeekGateway,
+  auditService,
+});
+const customerServiceReplyAgent = customerServiceAgentRuntime.createAgent({
+  definition: CUSTOMER_SERVICE_REPLY_AGENT_DEFINITION,
+  Agent: CustomerServiceReplyAgent,
+  options: {
+    configured: Boolean(productAiApiKey),
+    model: runtimeEnv.CUSTOMER_SERVICE_DEEPSEEK_MODEL || deepSeekModel,
+  },
+  outputValidator: CUSTOMER_SERVICE_REPLY_OUTPUT_VALIDATOR,
+});
+const customerServiceReplyOrchestrator = new CustomerServiceReplyOrchestrator({
+  repository: dataAccess.repositories.customerService,
+  contextService: customerServiceContext,
+  replyAgent: customerServiceReplyAgent,
+  encryptText: customerService.encryptText,
+  decryptText: customerService.decryptText,
+  digestText: (value) => customerService.digest("message-content", String(value || "").trim()),
+  createId: () => createIdentifier(),
+  audit: auditService,
+  draftFillEnabled: String(runtimeEnv.CUSTOMER_SERVICE_DRAFT_FILL_ENABLED || "false").toLowerCase() === "true",
+  contextSettleMs: Number(runtimeEnv.CUSTOMER_SERVICE_CONTEXT_SETTLE_MS || 8_000),
+  minimumAutoFillConfidence: Number(runtimeEnv.CUSTOMER_SERVICE_MIN_AUTOFILL_CONFIDENCE || 0.72),
+});
+const customerServiceReplyRunner = new CustomerServiceReplyRunner({
+  orchestrator: customerServiceReplyOrchestrator,
+  enabled: Boolean(productAiApiKey)
+    && String(runtimeEnv.CUSTOMER_SERVICE_AI_ENABLED || "false").toLowerCase() === "true",
+  concurrency: dataAccess.provider.dialect === "sqlite"
+    ? 1
+    : Number(runtimeEnv.CUSTOMER_SERVICE_AI_CONCURRENCY || 4),
+  batchSize: Number(runtimeEnv.CUSTOMER_SERVICE_AI_BATCH_SIZE || 20),
+  pollIntervalMs: Number(runtimeEnv.CUSTOMER_SERVICE_AI_POLL_MS || 2_000),
+});
+customerService.configureReplyAutomation(() => ({
+  ...customerServiceReplyAgent.status(),
+  enabled: customerServiceReplyRunner.enabled,
+  draftFillEnabled: customerServiceReplyOrchestrator.draftFillEnabled,
+  minimumAutoFillConfidence: customerServiceReplyOrchestrator.minimumAutoFillConfidence,
+  concurrency: customerServiceReplyRunner.concurrency,
+  pollIntervalMs: customerServiceReplyRunner.pollIntervalMs,
+}));
 const handleAiContextApi = createAiContextApi({ service: aiContextService });
 const runMabangWorker = createMabangWorkerRunner({
   rootDir: runtimeConfig.appRoot,
@@ -473,7 +729,7 @@ const mabangImageService = new MabangSkuImageCollectorService({
   assetService: mabangImageAssetService,
   accountRepository: dataAccess.repositories.accounts,
   browserFactory: async ({ accountId, startPage = 1, maxSkus = mabangImageMaxSkus }) => {
-    const profile = dataAccess.repositories.accounts.get(accountId, { includeSecret: true });
+    const profile = await dataAccess.repositories.accounts.get(accountId, { includeSecret: true });
     if (!profile?.encryptedPassword) {
       const error = new Error("所选马帮账号没有可用的加密密码。");
       error.code = "MABANG_ACCOUNT_CREDENTIALS_MISSING";
@@ -507,7 +763,7 @@ const handleMabangImageApi = createMabangImageApi({
   maxImageBytes: mabangImageMaxBytes,
   accessPolicy: createMabangImageAccessPolicy(process.env),
 });
-auditService.recordSafely({
+await auditService.recordSafely({
   module: "file",
   action: "file.temp.cleanup",
   status: startupTempCleanup.errors ? "failed" : "success",
@@ -520,6 +776,184 @@ const mabangDataPersistence = createMabangDataPersistenceService({
   runWorker: runMabangWorker,
   tempRoot: fileStorageConfig.tempRoot,
 });
+async function syncProfitMabangOrders({
+  mode = "date_range", dateFrom, dateTo, missingOrderNumbers = [], runId, platform = "LAZADA",
+}) {
+  const tasks = await dataAccess.repositories.scheduledTasks.list();
+  const profiles = await dataAccess.repositories.accounts.list();
+  const preferredTask = tasks.find((task) => task.enabled && task.taskType === "order_export");
+  const preferredProfile = profiles.find((profile) => profile.id === preferredTask?.accountProfileId)
+    || profiles.find((profile) => profile.enabled && profile.passwordConfigured);
+  if (!preferredProfile) {
+    throw Object.assign(new Error("没有可用的马帮订单采集账号。"), { code: "MABANG_ACCOUNT_NOT_CONFIGURED", status: 409 });
+  }
+  const profile = await dataAccess.repositories.accounts.get(preferredProfile.id, { includeSecret: true });
+  if (!profile?.encryptedPassword) {
+    throw Object.assign(new Error("马帮订单采集账号没有可用的加密密码。"), { code: "MABANG_ACCOUNT_CREDENTIALS_MISSING", status: 409 });
+  }
+  const result = await runMabangWorker({
+    action: mode === "references" ? "profit-order-references" : "orders",
+    username: profile.username,
+    password: decryptSecret(profile.encryptedPassword),
+    startDate: mode === "date_range" ? dateFrom : undefined,
+    endDate: mode === "date_range" ? dateTo : undefined,
+    orderReferences: mode === "references" ? missingOrderNumbers : undefined,
+  });
+  try {
+    return await mabangDataPersistence.persistCollected({
+      kind: "orders",
+      columns: Array.isArray(result.columns) ? result.columns : [],
+      records: Array.isArray(result.records) ? result.records : [],
+      summary: result.summary || {},
+      collectedAt: new Date().toISOString(),
+      sourceAccountId: preferredProfile.id,
+      sourceScope: {
+        queryType: mode === "references" ? "profit_order_references" : "profit_initial_sync",
+        dateFrom, dateTo, profitRunId: runId,
+        shopCoverageMode: mode === "date_range" ? "ALL_VISIBLE_SHOPS" : "FILTERED_SHOPS",
+      },
+      actorLabel: `profit_${String(platform || "LAZADA").toLowerCase()}_sync`,
+    });
+  } finally {
+    if (Array.isArray(result.records)) result.records.splice(0, result.records.length);
+  }
+}
+function unavailableProfitService() {
+  const error = new Error("利润模块依赖的平台连接器尚未配置。");
+  error.code = "PROFIT_PLATFORM_GATEWAY_UNAVAILABLE";
+  error.status = 503;
+  throw error;
+}
+const profitAvailable = Boolean(platformConnectorRuntime.service && platformConnectorRuntime.shopDirectory);
+const profitAutoSyncEnabled = profitAvailable
+  && String(runtimeEnv.PROFIT_AUTO_SYNC_ENABLED ?? "true").trim().toLowerCase() !== "false";
+const profitAutoSyncHour = Number(runtimeEnv.PROFIT_AUTO_SYNC_HOUR || 9);
+const profitAutoSyncMinute = Number(runtimeEnv.PROFIT_AUTO_SYNC_MINUTE || 30);
+const lazadaProfitService = profitAvailable
+  ? new ProfitService({
+      repository: dataAccess.repositories.profit,
+      platformGatewayService: platformConnectorRuntime.service,
+      shopDirectoryService: platformConnectorRuntime.shopDirectory,
+      shopRepository: dataAccess.repositories.commerceShops,
+      syncMabangOrders: syncProfitMabangOrders,
+      financeConcurrency: Number(process.env.PROFIT_LAZADA_FINANCE_CONCURRENCY || 4),
+      automaticSync: {
+        enabled: profitAutoSyncEnabled,
+        timeZone: "Asia/Shanghai",
+        scheduleTime: `${String(profitAutoSyncHour).padStart(2, "0")}:${String(profitAutoSyncMinute).padStart(2, "0")}`,
+        mode: "PREVIOUS_DAY_MISSING_ONLY",
+      },
+    })
+  : null;
+const shopeeIncomeStatementSource = profitAvailable ? async ({ shop, dateFrom, dateTo }) => {
+  const response = await platformConnectorRuntime.service.getFinanceTransactions({
+    platform: "shopee",
+    shopId: shop.id,
+    input: { dateFrom, dateTo },
+  });
+  const workbookBuffer = response.data?.workbookBuffer;
+  if (!Buffer.isBuffer(workbookBuffer) || !workbookBuffer.length) {
+    throw Object.assign(new Error("Shopee 官方接口未返回可解析的账单文件。"), {
+      code: "SHOPEE_INCOME_REPORT_FILE_MISSING",
+      status: 502,
+    });
+  }
+  const temporary = await createTemporaryFilePath(fileStorageConfig.tempRoot, {
+    prefix: "shopee-income-api",
+    extension: ".xlsx",
+  });
+  try {
+    await fs.writeFile(temporary.path, workbookBuffer, { flag: "wx" });
+    let statement;
+    try {
+      statement = await parseShopeeStatementWorkbook({
+        pythonExecutable: productPackagePython.executable || runtimeConfig.pythonExecutable || "python",
+        parserScript: shopeeProfitParserPath,
+        filename: temporary.path,
+        countryCode: shop.country,
+      });
+    } catch (error) {
+      if (error?.code !== "SHOPEE_STATEMENT_PARSE_FAILED"
+        || !["INCOME_HEADER_MISSING", "ADJUSTMENT_TOTAL_MISSING"].includes(error?.reason)) throw error;
+      statement = await parseShopeeStatementWorkbook({
+        pythonExecutable: productPackagePython.executable || runtimeConfig.pythonExecutable || "python",
+        parserScript: shopeeProfitParserPath,
+        filename: temporary.path,
+        countryCode: shop.country,
+        summaryOnly: true,
+      });
+      statement.income = { ...(statement.income || {}), sourceComplete: false, issue: "INCOME_HEADER_MISSING" };
+    }
+    return {
+      ...statement,
+      providerRequestId: response.data?.providerRequestId || null,
+      reportId: response.data?.incomeReportId || null,
+    };
+  } finally {
+    await removeFileInsideRoot(fileStorageConfig.tempRoot, temporary.path).catch(() => {});
+  }
+} : null;
+const shopeeExpenseTransactionSource = profitAvailable ? async ({ shop, dateFrom, dateTo }) => {
+  const response = await platformConnectorRuntime.service.getExpenseTransactions({
+    platform: "shopee",
+    shopId: shop.id,
+    input: { dateFrom, dateTo },
+  });
+  return response.data;
+} : null;
+const shopeeProfitService = profitAvailable
+  ? new ShopeeProfitService({
+      repository: dataAccess.repositories.profit,
+      shopDirectoryService: platformConnectorRuntime.shopDirectory,
+      shopRepository: dataAccess.repositories.commerceShops,
+      // Shopee profit joins the authoritative Mabang order facts already in
+      // Commerce Ops.  A profit refresh must not trigger a second Mabang import.
+      syncMabangOrders: null,
+      incomeStatementSource: shopeeIncomeStatementSource,
+      expenseTransactionSource: shopeeExpenseTransactionSource,
+      statementConcurrency: Number(runtimeEnv.PROFIT_SHOPEE_STATEMENT_CONCURRENCY || 1),
+      statementTimeoutMs: Number(runtimeEnv.PROFIT_SHOPEE_STATEMENT_TIMEOUT_MS || 180_000),
+      automaticSync: {
+        enabled: profitAutoSyncEnabled,
+        timeZone: "Asia/Shanghai",
+        scheduleTime: `${String(profitAutoSyncHour).padStart(2, "0")}:${String(profitAutoSyncMinute).padStart(2, "0")}`,
+        mode: "PREVIOUS_DAY_MISSING_ONLY",
+      },
+    })
+  : null;
+const profitService = profitAvailable
+  ? new UnifiedProfitService({
+      lazadaService: lazadaProfitService,
+      shopeeService: shopeeProfitService,
+      repository: dataAccess.repositories.profit,
+      transactionCutoffDate: runtimeEnv.PROFIT_TRANSACTION_CUTOFF_DATE || null,
+    })
+  : {
+      dashboard: unavailableProfitService,
+      status: unavailableProfitService,
+      startSync: unavailableProfitService,
+      periods: unavailableProfitService,
+      importShopeeStatement: unavailableProfitService,
+      checkShopeeStatementAccess: unavailableProfitService,
+    };
+const profitScheduleRunner = profitAvailable ? new ProfitScheduleRunner({
+  service: profitService,
+  enabled: profitAutoSyncEnabled,
+  hour: profitAutoSyncHour,
+  minute: profitAutoSyncMinute,
+}) : null;
+const handleProfitApi = createProfitApi({
+  service: profitService,
+  accessPolicy: growthRadarAccessPolicy,
+  fileStorageConfig,
+  maxUploadBytes: fileStorageConfig.maxUploadBytes,
+  parseShopeeStatement: ({ filename, countryCode }) => parseShopeeStatementWorkbook({
+    pythonExecutable: productPackagePython.executable || runtimeConfig.pythonExecutable || "python",
+    parserScript: shopeeProfitParserPath,
+    filename,
+    countryCode,
+  }),
+});
 const lifecyclePolicy = resolveLifecyclePolicy(process.env);
 const lifecycleRepository = dataAccess.repositories.fileLifecycle;
 const fileReviewRepository = dataAccess.repositories.fileReview;
@@ -529,7 +963,7 @@ const lifecycleScanner = new FileLifecycleScanner({
   managedFileRepository: fileReviewRepository,
   roots: lifecycleRoots,
   policy: lifecyclePolicy,
-  protectedFileIds: lifecycleRepository.protectedFileIds(),
+  protectedFileIds: await lifecycleRepository.protectedFileIds(),
 });
 const lifecycleService = new FileLifecycleService({
   repository: lifecycleRepository,
@@ -2419,6 +2853,9 @@ async function handleApi(req, res, url) {
   const mabangListingAiHandled = await handleMabangListingAiApi(req, res, url);
   if (mabangListingAiHandled) return true;
 
+  const customerServiceWorkerHandled = await handleCustomerServiceWorkerApi(req, res, url);
+  if (customerServiceWorkerHandled) return true;
+
   const authResponse = authenticationApiResponse({
     method: req.method,
     pathname: url.pathname,
@@ -2432,6 +2869,18 @@ async function handleApi(req, res, url) {
   const auditHandled = await handleAuditApi(req, res, url);
   if (auditHandled) return true;
 
+  const customerServiceHandled = await handleCustomerServiceApi(req, res, url);
+  if (customerServiceHandled) return true;
+
+  const productKnowledgeHandled = await handleProductKnowledgeApi(req, res, url);
+  if (productKnowledgeHandled) return true;
+
+  const platformGatewayHandled = await handlePlatformGatewayApi(req, res, url);
+  if (platformGatewayHandled) return true;
+
+  const agentObservabilityHandled = await handleAgentObservabilityApi(req, res, url);
+  if (agentObservabilityHandled) return true;
+
   const aiContextHandled = await handleAiContextApi(req, res, url);
   if (aiContextHandled) return true;
 
@@ -2441,6 +2890,9 @@ async function handleApi(req, res, url) {
   const salesAssortmentHandled = await handleSalesAssortmentApi(req, res, url);
   if (salesAssortmentHandled) return true;
 
+  const profitHandled = await handleProfitApi(req, res, url);
+  if (profitHandled) return true;
+
   const growthRadarHandled = await handleGrowthRadarApi(req, res, url);
   if (growthRadarHandled) return true;
 
@@ -2449,6 +2901,12 @@ async function handleApi(req, res, url) {
 
   const productCenterHandled = await handleProductCenterApi(req, res, url);
   if (productCenterHandled) return true;
+
+  const productPackageSyncHandled = await handleProductPackageSyncApi(req, res, url);
+  if (productPackageSyncHandled) return true;
+
+  const priceControlHandled = await handlePriceControlApi(req, res, url);
+  if (priceControlHandled) return true;
 
   const reviewHandled = await handleFileReviewApi(req, res, url);
   if (reviewHandled) return true;
@@ -2630,6 +3088,7 @@ async function handleApi(req, res, url) {
                 queryType: "manual_collect",
                 dateFrom: body.startDate || null,
                 dateTo: body.endDate || null,
+                shopCoverageMode: body.orderFilters ? "FILTERED_SHOPS" : "ALL_VISIBLE_SHOPS",
               }
             : {
                 queryType: "manual_collect",
@@ -2709,7 +3168,7 @@ async function handleApi(req, res, url) {
       const task = getMabangTask(body.taskId);
       const requestId = validateFileId(body.requestId || createIdentifier());
       const requestKey = `mabang_manual:${task.kind}:${requestId}`;
-      const existing = exportFileService.getByRequestKey(requestKey);
+      const existing = await exportFileService.getByRequestKey(requestKey);
       if (existing) {
         if (existing.status !== "available") throw new FilePolicyError(FILE_ERROR_CODES.FILE_NOT_AVAILABLE);
         req.auditContext?.annotate({ fileId: existing.id });
@@ -3028,7 +3487,7 @@ const server = http.createServer(async (req, res) => {
     auditContext.annotate({ errorStage: "request", errorCode: error.code || "REQUEST_FAILED", errorSummary: error });
     json(res, 500, { ok: false, error: error.message });
   } finally {
-    completeHttpAudit(auditService, auditContext, { httpStatus: res.statusCode || 500, error: requestError });
+    await completeHttpAudit(auditService, auditContext, { httpStatus: res.statusCode || 500, error: requestError });
   }
 });
 
@@ -3043,6 +3502,8 @@ function getLanUrls() {
 }
 
 server.listen(port, host, () => {
+  customerServiceReplyRunner.start();
+  profitScheduleRunner?.start();
   for (const message of appStartupMessages(appConfig, accessPolicy)) console.log(message);
   console.log(`Network policy: ${chromeAllowedHosts.length} Chrome hosts, ${imageProxyAllowedHosts.length} image hosts`);
   if (!isLoopbackBindHost(host)) {
@@ -3060,12 +3521,18 @@ async function shutdown() {
   shuttingDown = true;
   const forceExit = setTimeout(() => process.exit(0), 3000);
   forceExit.unref();
+  await customerServiceLocalRuntimeManager.stopAll();
   await mabangImageService.shutdown({ timeoutMs: 2000 });
+  await customerServiceReplyRunner.stop();
+  profitScheduleRunner?.stop();
   await mabangWpsAssistantManager.stop();
   await mabangListingServiceManager.stop();
   await adServiceManager.stop();
+  await productPackageSource?.close();
+  await priceControlSource?.close();
   if (ownedChromeChild && ownedChromeChild.exitCode == null && !ownedChromeChild.killed) ownedChromeChild.kill();
-  dataAccess.close();
+  platformConnectorRuntime.close();
+  await dataAccess.close();
   server.close(() => process.exit(0));
 }
 

@@ -6,6 +6,7 @@ import test from "node:test";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
 import { createAiContextApi } from "../lib/ai/context/ai-context-api.mjs";
 import { AiContextService } from "../lib/ai/context/ai-context-service.mjs";
+import { AiContextRegistry } from "../lib/ai/context/ai-context-registry.mjs";
 import { AI_CONTEXT_VERSION } from "../lib/ai/context/ai-context-contracts.mjs";
 
 const NOW = new Date("2026-08-05T03:00:00.000Z");
@@ -78,6 +79,76 @@ test("AI Context Layer exposes product and SKU context without reading source fi
   assert.equal(sku.data.sales.current7d, 3);
   assert.equal(sku.data.inventory.minimumDaysOfSupply, 3);
   assert.equal(sku.data.priceChanges[0].standardPriceTier45, 100);
+});
+
+test("Context Registry exposes five structured business contexts", async () => {
+  const service = new AiContextService({ repository: fixture(), now: () => NOW });
+  assert.deepEqual(service.list().map((item) => item.type), [
+    "inventory",
+    "product",
+    "sales",
+    "shop",
+    "sku",
+  ]);
+  assert.equal(service.list().every((item) => item.source === "structured_data"), true);
+
+  const sales = await service.get("sales", "shop-1", { subjectType: "shop" });
+  const inventory = await service.get("inventory", "sku-1", { subjectType: "sku" });
+  assert.equal(sales.contextType, "sales");
+  assert.deepEqual(sales.data.scope, { type: "shop", id: "shop-1" });
+  assert.equal(sales.data.metrics.current7d, 20);
+  assert.equal(inventory.contextType, "inventory");
+  assert.deepEqual(inventory.data.scope, { type: "sku", id: "sku-1" });
+  assert.equal(inventory.data.metrics.availableQuantity, 9);
+});
+
+test("Context Registry rejects conflicts and incompatible resolver output", async () => {
+  const registry = new AiContextRegistry();
+  const definition = {
+    type: "shop",
+    version: "1.0.0",
+    description: "Test shop context.",
+    inputSchema: { type: "object" },
+    resolve: async () => ({ contextType: "shop" }),
+  };
+  registry.register(definition);
+  assert.equal(registry.register(definition).type, "shop");
+  assert.throws(
+    () => registry.register({ ...definition, description: "Conflicting context." }),
+    { code: "AI_CONTEXT_DEFINITION_CONFLICT" },
+  );
+  const invalidRegistry = new AiContextRegistry();
+  invalidRegistry.register({ ...definition, resolve: async () => ({ contextType: "sku" }) });
+  await assert.rejects(
+    () => invalidRegistry.resolve("shop", { subjectId: "shop-1" }),
+    { code: "AI_CONTEXT_OUTPUT_INVALID" },
+  );
+});
+
+test("Context Registry resolves exact name and version pairs", async () => {
+  const registry = new AiContextRegistry();
+  const base = {
+    type: "shop",
+    description: "Versioned shop Context.",
+    inputSchema: { type: "object" },
+  };
+  registry.register({
+    ...base,
+    version: "1.0.0",
+    resolve: async () => ({ contextType: "shop", subject: { type: "shop", id: "one" }, data: { version: 1 } }),
+  });
+  registry.register({
+    ...base,
+    version: "2.0.0",
+    resolve: async () => ({ contextType: "shop", subject: { type: "shop", id: "two" }, data: { version: 2 } }),
+  });
+
+  assert.equal((await registry.resolve("shop", "1.0.0", {})).data.version, 1);
+  assert.equal((await registry.resolve("shop", "2.0.0", {})).data.version, 2);
+  await assert.rejects(
+    () => registry.resolve("shop", "3.0.0", {}),
+    { code: "AI_CONTEXT_NOT_REGISTERED" },
+  );
 });
 
 test("AI Context Layer rejects unsupported subjects with stable errors", async () => {
@@ -179,6 +250,7 @@ test("AI Context API exposes read-only context routes with stable status codes",
 test("AI Context production modules cannot read Excel or source files", async () => {
   const files = [
     "lib/ai/context/ai-context-contracts.mjs",
+    "lib/ai/context/ai-context-registry.mjs",
     "lib/ai/context/ai-context-repository.mjs",
     "lib/ai/context/ai-context-service.mjs",
     "lib/ai/context/ai-context-api.mjs",

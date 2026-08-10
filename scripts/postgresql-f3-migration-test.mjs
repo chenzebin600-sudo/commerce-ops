@@ -9,18 +9,42 @@ import { loadPostgresqlF1Config, publicPostgresqlF1Config } from "../lib/postgre
 import {
   assertMigrationTestTarget,
   buildPostgresqlSchema,
+  createTableDigestAccumulator,
   createSqliteMigrationSnapshot,
   encodeNormalizedPostgresqlMigrationValue,
   inspectSqliteSchema,
-  normalizeMigrationValue,
   normalizePostgresqlMigrationValue,
   openReadOnlySqliteSnapshot,
   quoteIdentifier,
-  readNormalizedTableRows,
-  tableDigests,
-  tableInsertSql,
+  readNormalizedTableBatches,
+  tableBatchInsertSql,
   topologicalTableOrder,
 } from "../lib/postgresql/sqlite-migration.mjs";
+
+const DEFAULT_BATCH_ROWS = 250;
+const MAX_BIND_PARAMETERS = 60_000;
+
+export function resolveF3BatchRows(value, columnCount) {
+  const requested = value === undefined || value === null || String(value).trim() === ""
+    ? DEFAULT_BATCH_ROWS
+    : Number(value);
+  if (!Number.isInteger(requested) || requested < 1 || requested > 5_000) {
+    throw new TypeError("POSTGRES_F3_BATCH_ROWS must be an integer between 1 and 5000");
+  }
+  if (!Number.isInteger(columnCount) || columnCount < 1) {
+    throw new TypeError("F3 table column count must be a positive integer");
+  }
+  return Math.min(requested, Math.max(1, Math.floor(MAX_BIND_PARAMETERS / columnCount)));
+}
+
+export function assertF3ExecutionApproval({ apply = false, confirmedDatabase = null } = {}, config) {
+  if (!apply || confirmedDatabase !== config?.testDatabase) {
+    throw Object.assign(
+      new Error(`F3 migration requires --apply --confirm-database=${config?.testDatabase || "<test-database>"}`),
+      { code: "F3_CONFIRMATION_REQUIRED" },
+    );
+  }
+}
 
 function qualified(schema, table) {
   return `${quoteIdentifier(schema)}.${quoteIdentifier(table)}`;
@@ -50,8 +74,9 @@ async function migrationStage(label, callback) {
   }
 }
 
-async function resetAndMigrate({ provider, config, source, generated, rowsByTable }) {
+async function resetAndMigrate({ provider, config, source, generated, snapshotDatabase, requestedBatchRows }) {
   let order;
+  const sourceTables = new Map();
   try {
     order = topologicalTableOrder(source);
   } catch (error) {
@@ -69,6 +94,13 @@ async function resetAndMigrate({ provider, config, source, generated, rowsByTabl
     const allowedTables = new Set(source.tables.map((table) => table.name));
     const unexpectedTables = existing.rows.map((row) => row.tablename).filter((name) => !allowedTables.has(name));
     if (unexpectedTables.length) throw new Error("F3 migration test schema contains unexpected tables");
+    const existingViews = await transaction.query("SELECT viewname FROM pg_views WHERE schemaname=$1 ORDER BY viewname", [config.schema]);
+    const allowedViews = new Set((source.views || []).map((view) => view.name));
+    const unexpectedViews = existingViews.rows.map((row) => row.viewname).filter((name) => !allowedViews.has(name));
+    if (unexpectedViews.length) throw new Error("F3 migration test schema contains unexpected views");
+    for (const { viewname } of existingViews.rows) {
+      await transaction.executeScript(`DROP VIEW ${qualified(config.schema, viewname)} CASCADE`);
+    }
     for (const { tablename } of existing.rows) {
       await transaction.executeScript(`DROP TABLE ${qualified(config.schema, tablename)} CASCADE`);
     }
@@ -77,10 +109,30 @@ async function resetAndMigrate({ provider, config, source, generated, rowsByTabl
     }
     for (const tableName of order) {
       const table = source.tables.find((candidate) => candidate.name === tableName);
-      const statement = tableInsertSql(config.schema, table, transaction);
-      for (const row of rowsByTable.get(tableName)) {
-        await migrationStage(`F3 insert table ${tableName}`, () => transaction.execute(statement, table.columns.map((column) => encodeNormalizedPostgresqlMigrationValue(row[column.name], column))));
+      const batchRows = resolveF3BatchRows(requestedBatchRows, table.columns.length);
+      const digest = createTableDigestAccumulator(table, { valuesAreNormalized: true });
+      let insertedRows = 0;
+      let batches = 0;
+      for (const batch of readNormalizedTableBatches(snapshotDatabase, table, { batchSize: batchRows })) {
+        digest.addMany(batch);
+        const statement = tableBatchInsertSql(config.schema, table, transaction, batch.length);
+        const values = batch.flatMap((row) => table.columns.map((column) => (
+          encodeNormalizedPostgresqlMigrationValue(row[column.name], column)
+        )));
+        batches += 1;
+        await migrationStage(
+          `F3 insert table ${tableName} batch ${batches}`,
+          () => transaction.execute(statement, values),
+        );
+        insertedRows += batch.length;
       }
+      if (insertedRows !== table.rowCount) throw new Error(`F3 source row count changed for ${tableName}`);
+      sourceTables.set(tableName, {
+        rowCount: insertedRows,
+        batches,
+        batchRows,
+        digests: digest.finish(),
+      });
       if (table.autoIncrement) {
         const identityColumn = table.columns.find((column) => column.logicalType === "identity");
         const sequence = await transaction.query("SELECT pg_get_serial_sequence($1, $2) AS name", [`${config.schema}.${table.name}`, identityColumn.name]);
@@ -99,29 +151,49 @@ async function resetAndMigrate({ provider, config, source, generated, rowsByTabl
     for (let index = 0; index < generated.indexStatements.length; index += 1) {
       await migrationStage(`F3 create index ${index + 1}`, () => transaction.executeScript(generated.indexStatements[index]));
     }
+    for (let index = 0; index < generated.viewStatements.length; index += 1) {
+      await migrationStage(`F3 create view ${index + 1}`, () => transaction.executeScript(generated.viewStatements[index]));
+    }
     await transaction.executeScript(`GRANT USAGE ON SCHEMA ${quoteIdentifier(config.schema)} TO ${quoteIdentifier(config.appUser)}`);
     await transaction.executeScript(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${quoteIdentifier(config.schema)} TO ${quoteIdentifier(config.appUser)}`);
     await transaction.executeScript(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${quoteIdentifier(config.schema)} TO ${quoteIdentifier(config.appUser)}`);
   });
-  return order;
+  return { order, sourceTables };
 }
 
-async function inspectPostgresqlTarget(provider, source, config) {
+async function inspectPostgresqlTarget(provider, source, config, requestedBatchRows) {
   const tableRows = await provider.query("SELECT table_name FROM information_schema.tables WHERE table_schema=$1 AND table_type='BASE TABLE' ORDER BY table_name", [config.schema]);
   const names = tableRows.rows.map((row) => row.table_name);
   const columnRows = await provider.query("SELECT table_name, column_name, data_type, udt_name, ordinal_position FROM information_schema.columns WHERE table_schema=$1 ORDER BY table_name, ordinal_position", [config.schema]);
   const indexRows = await provider.query("SELECT tablename, indexname FROM pg_indexes WHERE schemaname=$1 ORDER BY tablename,indexname", [config.schema]);
   const foreignKeyRows = await provider.query("SELECT c.relname AS table_name, con.conname FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND con.contype='f' ORDER BY c.relname,con.conname", [config.schema]);
   const checkRows = await provider.query("SELECT c.relname AS table_name, con.conname FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND con.contype='c' ORDER BY c.relname,con.conname", [config.schema]);
+  const viewRows = await provider.query("SELECT table_name FROM information_schema.views WHERE table_schema=$1 ORDER BY table_name", [config.schema]);
   const tables = [];
   for (const table of source.tables) {
     const projection = table.columns.map((column) => quoteIdentifier(column.name)).join(", ");
-    const result = await provider.query(`SELECT ${projection} FROM ${qualified(config.schema, table.name)}`);
-    const normalizedRows = result.rows.map((row) => Object.fromEntries(table.columns.map((column) => [column.name, normalizePostgresqlMigrationValue(row[column.name], column)])));
+    const batchRows = resolveF3BatchRows(requestedBatchRows, table.columns.length);
+    const digest = createTableDigestAccumulator(table, { valuesAreNormalized: true });
+    let rowCount = 0;
+    await provider.transaction(async (transaction) => {
+      await transaction.executeScript(`DECLARE f3_validation_cursor NO SCROLL CURSOR FOR SELECT ${projection} FROM ${qualified(config.schema, table.name)}`);
+      while (true) {
+        const result = await transaction.query(`FETCH FORWARD ${batchRows} FROM f3_validation_cursor`);
+        if (!result.rows.length) break;
+        for (const row of result.rows) {
+          digest.add(Object.fromEntries(table.columns.map((column) => [
+            column.name,
+            normalizePostgresqlMigrationValue(row[column.name], column),
+          ])));
+        }
+        rowCount += result.rows.length;
+      }
+    });
     tables.push({
       name: table.name,
-      rows: normalizedRows,
-      rowCount: result.rowCount,
+      digests: digest.finish(),
+      rowCount,
+      batchRows,
       columnCount: columnRows.rows.filter((row) => row.table_name === table.name).length,
       indexCount: indexRows.rows.filter((row) => row.tablename === table.name).length,
       foreignKeyCount: foreignKeyRows.rows.filter((row) => row.table_name === table.name).length,
@@ -135,11 +207,13 @@ async function inspectPostgresqlTarget(provider, source, config) {
     indexCount: indexRows.rowCount,
     foreignKeyCount: foreignKeyRows.rowCount,
     checkCount: checkRows.rowCount,
+    viewNames: viewRows.rows.map((row) => row.table_name),
+    viewCount: viewRows.rowCount,
     tables,
   };
 }
 
-function validateMigration({ source, generated, rowsByTable, target }) {
+function validateMigration({ source, generated, sourceTables, target }) {
   const failures = [];
   const expectedNames = source.tables.map((table) => table.name).sort();
   if (JSON.stringify(target.tableNames) !== JSON.stringify(expectedNames)) failures.push("TABLE_NAMES_MISMATCH");
@@ -147,15 +221,21 @@ function validateMigration({ source, generated, rowsByTable, target }) {
   if (target.columnCount !== source.columnCount) failures.push("COLUMN_COUNT_MISMATCH");
   if (target.indexCount !== generated.expectedIndexCount) failures.push("INDEX_COUNT_MISMATCH");
   if (target.foreignKeyCount !== logicalForeignKeyCount(source)) failures.push("FOREIGN_KEY_COUNT_MISMATCH");
+  const expectedViews = (source.views || []).map((view) => view.name).sort();
+  if (JSON.stringify(target.viewNames) !== JSON.stringify(expectedViews)) failures.push("VIEW_NAMES_MISMATCH");
+  if (target.viewCount !== generated.expectedViewCount) failures.push("VIEW_COUNT_MISMATCH");
   const tables = source.tables.map((table) => {
     const targetTable = target.tables.find((candidate) => candidate.name === table.name);
-    const sourceRows = rowsByTable.get(table.name);
-    const sourceHashes = tableDigests(sourceRows, table, { valuesAreNormalized: true });
-    const targetHashes = tableDigests(targetTable?.rows || [], table, { valuesAreNormalized: true });
-    const rowMatch = targetTable?.rowCount === table.rowCount;
+    const sourceTable = sourceTables.get(table.name);
+    const sourceHashes = sourceTable?.digests;
+    const targetHashes = targetTable?.digests;
+    const rowMatch = sourceTable?.rowCount === table.rowCount
+      && sourceHashes?.rowCount === table.rowCount
+      && targetTable?.rowCount === table.rowCount
+      && targetHashes?.rowCount === table.rowCount;
     const columnMatch = targetTable?.columnCount === table.columns.length;
-    const fullHashMatch = sourceHashes.full === targetHashes.full;
-    const keyHashMatch = sourceHashes.keys === targetHashes.keys;
+    const fullHashMatch = Boolean(sourceHashes && targetHashes && sourceHashes.full === targetHashes.full);
+    const keyHashMatch = Boolean(sourceHashes && targetHashes && sourceHashes.keys === targetHashes.keys);
     if (!rowMatch) failures.push(`ROW_COUNT_MISMATCH:${table.name}`);
     if (!columnMatch) failures.push(`COLUMN_COUNT_MISMATCH:${table.name}`);
     if (!fullHashMatch) failures.push(`FULL_HASH_MISMATCH:${table.name}`);
@@ -170,11 +250,14 @@ function validateMigration({ source, generated, rowsByTable, target }) {
       checks: table.checks.length,
       rowMatch,
       columnMatch,
-      fullHash: sourceHashes.full,
-      keyHash: sourceHashes.keys,
+      fullHash: sourceHashes?.full || null,
+      keyHash: sourceHashes?.keys || null,
       fullHashMatch,
       keyHashMatch,
-      keyColumns: sourceHashes.keyColumns,
+      keyColumns: sourceHashes?.keyColumns || [],
+      sourceBatches: sourceTable?.batches || 0,
+      sourceBatchRows: sourceTable?.batchRows || 0,
+      targetBatchRows: targetTable?.batchRows || 0,
     };
   });
   return { ok: failures.length === 0, failures, tables };
@@ -187,15 +270,21 @@ function schemaConversionReport({ source, generated, snapshot }) {
 
 function migrationReport({ source, snapshot, generated, validation, target, config, order }) {
   const rows = validation.tables.map((table) => `| \`${table.name}\` | ${table.rows} | ${table.columns} | ${table.sourceIndexes} | ${table.targetIndexes} | ${table.foreignKeys} | ${table.fullHashMatch ? "PASS" : "FAIL"} | ${table.keyHashMatch ? "PASS" : "FAIL"} |`).join("\n");
-  return `# PostgreSQL Migration Test Report (F3)\n\nDate: 2026-07-20\nStatus: ${validation.ok ? "PASS" : "FAIL"}\n\n## Safety boundary\n\n- Source: official SQLite online-backup snapshot, opened read-only.\n- Target: \`${config.testDatabase}.${config.schema}\` only.\n- \`${config.database}\` was not connected to or modified by the F3 migration runner.\n- Production SQLite schema and rows were not modified.\n- Files, environment variables, and credentials were not migrated.\n- Active production provider remains \`sqlite\`.\n\n## Source inventory\n\n- SQLite version: ${source.sqliteVersion}\n- Source main database size at snapshot start: ${snapshot.sourceBytes} bytes\n- Snapshot size: ${snapshot.snapshotBytes} bytes\n- Snapshot SHA-256: \`${snapshot.snapshotHash}\`\n- Snapshot integrity: ${snapshot.integrity}\n- Snapshot foreign-key violations: ${snapshot.foreignKeyViolations}\n- Tables: ${source.tableCount}\n- Columns: ${source.columnCount}\n- Rows: ${source.rowCount}\n- Raw SQLite indexes: ${source.indexCount}\n- Logical foreign keys: ${logicalForeignKeyCount(source)}\n\n## Target inventory\n\n- PostgreSQL endpoint: ${config.host}:${config.port}\n- Database: \`${config.testDatabase}\`\n- Schema: \`${config.schema}\`\n- Migration role: \`${config.migratorUser}\`\n- Tables: ${target.tableCount}\n- Columns: ${target.columnCount}\n- Indexes: ${target.indexCount} (expected ${generated.expectedIndexCount})\n- Foreign keys: ${target.foreignKeyCount}\n- CHECK constraints: ${target.checkCount}\n- Insert order: ${order.map((name) => `\`${name}\``).join(" -> ")}\n\n## Consistency verification\n\n| Table | Rows | Columns | SQLite indexes | PostgreSQL indexes | FKs | Full-row hash | Key-field hash |\n|---|---:|---:|---:|---:|---:|---|---|\n${rows}\n\nAll row hashes are calculated after normalizing booleans, JSON key order, UUID case, UTC timestamps, dates, integers, and bigint strings. Hashes are reported only as match results in this table; no sensitive row values are included.\n\n## Key business table mapping\n\n- Requested \`scheduled_tasks\`: actual table \`scheduled_export_tasks\`.\n- Requested \`execution_records\`: actual tables \`scheduled_export_runs\` and \`scheduled_export_run_events\`.\n- File metadata: \`export_files\`, \`managed_files\`, \`file_lifecycle_scans\`, \`file_lifecycle_items\`, \`file_lifecycle_protected_files\`, \`file_quarantine_records\`.\n- Audit: \`operation_audit_events\`.\n- Mabang: \`mabang_account_profiles\`, \`mabang_filter_option_cache\`, scheduled task/run tables.\n\n## Result\n\n- Successful migrations: ${validation.tables.filter((table) => table.fullHashMatch && table.keyHashMatch).length}/${source.tableCount} tables.\n- Failed migrations: ${validation.failures.length}.\n- Failures: ${validation.failures.length ? validation.failures.map((failure) => `\`${failure}\``).join(", ") : "None"}.\n- Schema conversion: completed.\n- Data conversion: completed.\n- Index and constraint conversion: completed.\n- Full-row and key-field hash parity: ${validation.ok ? "passed" : "failed"}.\n\n## Risks before formal migration\n\n1. F3 proves schema and data portability, not business Repository compatibility; that belongs to F4.\n2. A formal migration requires stopping the web service and scheduler before the final snapshot.\n3. PostgreSQL timestamp and collation behavior must be covered by Repository-level tests.\n4. Identity sequences must be reset after explicit historical IDs are loaded.\n5. Physical files remain outside the database and require a separate file-integrity plan.\n6. PostgreSQL production permissions and backup/restore must be rechecked during the formal cutover.\n`;
+  return `# PostgreSQL Migration Test Report (F3)\n\nDate: 2026-07-20\nStatus: ${validation.ok ? "PASS" : "FAIL"}\n\n## Safety boundary\n\n- Source: official SQLite online-backup snapshot, opened read-only.\n- Target: \`${config.testDatabase}.${config.schema}\` only.\n- \`${config.database}\` was not connected to or modified by the F3 migration runner.\n- Production SQLite schema and rows were not modified.\n- Files, environment variables, and credentials were not migrated.\n- Active production provider remains \`sqlite\`.\n\n## Source inventory\n\n- SQLite version: ${source.sqliteVersion}\n- Source main database size at snapshot start: ${snapshot.sourceBytes} bytes\n- Snapshot size: ${snapshot.snapshotBytes} bytes\n- Snapshot SHA-256: \`${snapshot.snapshotHash}\`\n- Snapshot integrity: ${snapshot.integrity}\n- Snapshot foreign-key violations: ${snapshot.foreignKeyViolations}\n- Tables: ${source.tableCount}\n- Columns: ${source.columnCount}\n- Rows: ${source.rowCount}\n- Raw SQLite indexes: ${source.indexCount}\n- Logical foreign keys: ${logicalForeignKeyCount(source)}\n\n## Target inventory\n\n- PostgreSQL endpoint: ${config.host}:${config.port}\n- Database: \`${config.testDatabase}\`\n- Schema: \`${config.schema}\`\n- Migration role: \`${config.migratorUser}\`\n- Tables: ${target.tableCount}\n- Columns: ${target.columnCount}\n- Indexes: ${target.indexCount} (expected ${generated.expectedIndexCount})\n- Foreign keys: ${target.foreignKeyCount}\n- CHECK constraints: ${target.checkCount}\n- Insert order: ${order.map((name) => `\`${name}\``).join(" -> ")}\n\n## Consistency verification\n\n| Table | Rows | Columns | SQLite indexes | PostgreSQL indexes | FKs | Full-row hash | Key-field hash |\n|---|---:|---:|---:|---:|---:|---|---|\n${rows}\n\nRows are read with bounded SQLite iterator batches and PostgreSQL cursors. The order-independent \`sha256-multiset-v1\` digests normalize booleans, JSON key order, UUID case, UTC timestamps, dates, integers, and bigint strings while retaining row-count and duplicate sensitivity. Hashes are reported only as match results; no sensitive row values are included.\n\n## Key business table mapping\n\n- Requested \`scheduled_tasks\`: actual table \`scheduled_export_tasks\`.\n- Requested \`execution_records\`: actual tables \`scheduled_export_runs\` and \`scheduled_export_run_events\`.\n- File metadata: \`export_files\`, \`managed_files\`, \`file_lifecycle_scans\`, \`file_lifecycle_items\`, \`file_lifecycle_protected_files\`, \`file_quarantine_records\`.\n- Audit: \`operation_audit_events\`.\n- Mabang: \`mabang_account_profiles\`, \`mabang_filter_option_cache\`, scheduled task/run tables.\n\n## Result\n\n- Successful migrations: ${validation.tables.filter((table) => table.fullHashMatch && table.keyHashMatch).length}/${source.tableCount} tables.\n- Failed migrations: ${validation.failures.length}.\n- Failures: ${validation.failures.length ? validation.failures.map((failure) => `\`${failure}\``).join(", ") : "None"}.\n- Schema conversion: completed.\n- Data conversion: completed with bounded in-memory batches.\n- Index and constraint conversion: completed.\n- Full-row and key-field hash parity: ${validation.ok ? "passed" : "failed"}.\n\n## Risks before formal migration\n\n1. F3 proves schema and data portability, not business Repository compatibility; that belongs to F4.\n2. A formal migration requires stopping the web service and scheduler before the final snapshot.\n3. PostgreSQL timestamp and collation behavior must be covered by Repository-level tests.\n4. Identity sequences must be reset after explicit historical IDs are loaded.\n5. Physical files remain outside the database and require a separate file-integrity plan.\n6. PostgreSQL production permissions and backup/restore must be rechecked during the formal cutover.\n`;
 }
 
-export async function runF3Migration({ rootDir = process.cwd(), writeReports = false } = {}) {
+export async function runF3Migration({
+  rootDir = process.cwd(),
+  writeReports = false,
+  apply = false,
+  confirmedDatabase = null,
+} = {}) {
   loadLocalEnv(rootDir);
   const activeProvider = String(process.env.DATABASE_PROVIDER || "sqlite").trim().toLowerCase();
   if (activeProvider !== "sqlite") throw new Error("F3 requires DATABASE_PROVIDER=sqlite");
   const runtime = resolveRuntimeConfig({ bootstrapRoot: rootDir, env: process.env });
   const config = loadPostgresqlF1Config({ rootDir });
+  assertF3ExecutionApproval({ apply, confirmedDatabase }, config);
   const provider = createPostgresqlProvider(config, { database: "test", role: "migrator" });
   assertMigrationTestTarget(config, provider);
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "commerce-ops-f3-"));
@@ -205,12 +294,19 @@ export async function runF3Migration({ rootDir = process.cwd(), writeReports = f
     const snapshot = await createSqliteMigrationSnapshot({ sourcePath: runtime.databasePath, destinationPath: snapshotPath });
     if (snapshot.integrity !== "ok" || snapshot.foreignKeyViolations !== 0) throw new Error("F3 SQLite snapshot integrity check failed");
     snapshotDatabase = openReadOnlySqliteSnapshot(snapshotPath);
-    const source = inspectSqliteSchema(snapshotDatabase);
+    const source = inspectSqliteSchema(snapshotDatabase, { verifyUuidValues: true });
     const generated = buildPostgresqlSchema(source, { schema: config.schema });
-    const rowsByTable = new Map(source.tables.map((table) => [table.name, readNormalizedTableRows(snapshotDatabase, table)]));
-    const order = await resetAndMigrate({ provider, config, source, generated, rowsByTable });
-    const target = await inspectPostgresqlTarget(provider, source, config);
-    const validation = validateMigration({ source, generated, rowsByTable, target });
+    const requestedBatchRows = process.env.POSTGRES_F3_BATCH_ROWS;
+    const migration = await resetAndMigrate({
+      provider,
+      config,
+      source,
+      generated,
+      snapshotDatabase,
+      requestedBatchRows,
+    });
+    const target = await inspectPostgresqlTarget(provider, source, config, requestedBatchRows);
+    const validation = validateMigration({ source, generated, sourceTables: migration.sourceTables, target });
     if (!validation.ok) throw new Error(`F3 migration consistency failed: ${validation.failures.join(",")}`);
     const result = {
       status: "PASS",
@@ -219,6 +315,7 @@ export async function runF3Migration({ rootDir = process.cwd(), writeReports = f
       source: {
         sqliteVersion: source.sqliteVersion,
         tableCount: source.tableCount,
+        viewCount: source.viewCount,
         columnCount: source.columnCount,
         rowCount: source.rowCount,
         indexCount: source.indexCount,
@@ -233,6 +330,15 @@ export async function runF3Migration({ rootDir = process.cwd(), writeReports = f
         indexCount: target.indexCount,
         foreignKeyCount: target.foreignKeyCount,
         checkCount: target.checkCount,
+        viewCount: target.viewCount,
+      },
+      transfer: {
+        boundedMemory: true,
+        sourceReadMode: "sqlite-iterator-batches",
+        targetReadMode: "postgresql-cursor-batches",
+        digest: "sha256-multiset-v1",
+        requestedBatchRows: resolveF3BatchRows(requestedBatchRows, 1),
+        maximumBindParameters: MAX_BIND_PARAMETERS,
       },
       validation: {
         ok: validation.ok,
@@ -241,9 +347,32 @@ export async function runF3Migration({ rootDir = process.cwd(), writeReports = f
       },
     };
     if (writeReports) {
+      const reportDate = new Date().toISOString().slice(0, 10);
+      const schemaReport = schemaConversionReport({ source, generated, snapshot })
+        .replace("Date: 2026-07-20", `Date: ${reportDate}`)
+        .replace(`- Tables: ${source.tableCount}\n- Columns:`, `- Tables: ${source.tableCount}\n- Views: ${source.viewCount}\n- Columns:`)
+        .replace(
+          "| UUID-like `id`/`*_id` TEXT | `uuid` | Validate RFC-compatible UUID text | Future platform IDs must not be guessed as UUIDs |",
+          "| Snapshot-proven UUID `id`/`*_id` TEXT | `uuid` | Use UUID only when all current non-null values and FK-linked columns are compatible; otherwise preserve text | Future incompatible values must block migration or update the versioned type contract |",
+        )
+        .replace(
+          "- Explicit and partial indexes are recreated after data loading.",
+          "- Explicit and partial indexes are recreated after data loading; the approved Price Control singleton expression index is translated explicitly.\n- SQLite views are dependency-ordered and recreated after tables, constraints, and indexes.",
+        );
+      const dataReport = migrationReport({
+        source,
+        snapshot,
+        generated,
+        validation,
+        target,
+        config,
+        order: migration.order,
+      })
+        .replace("Date: 2026-07-20", `Date: ${reportDate}`)
+        .replace(`- CHECK constraints: ${target.checkCount}\n- Insert order:`, `- CHECK constraints: ${target.checkCount}\n- Views: ${target.viewCount}\n- Insert order:`);
       await fs.writeFile(path.join(rootDir, "docs", "postgresql-f3-schema.sql"), `${generated.sql}\n`, "utf8");
-      await fs.writeFile(path.join(rootDir, "docs", "postgresql-schema-conversion-report.md"), schemaConversionReport({ source, generated, snapshot }), "utf8");
-      await fs.writeFile(path.join(rootDir, "docs", "postgresql-migration-test-report.md"), migrationReport({ source, snapshot, generated, validation, target, config, order }), "utf8");
+      await fs.writeFile(path.join(rootDir, "docs", "postgresql-schema-conversion-report.md"), schemaReport, "utf8");
+      await fs.writeFile(path.join(rootDir, "docs", "postgresql-migration-test-report.md"), dataReport, "utf8");
     }
     return result;
   } finally {
@@ -256,7 +385,15 @@ export async function runF3Migration({ rootDir = process.cwd(), writeReports = f
 
 async function main() {
   const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const result = await runF3Migration({ rootDir, writeReports: true });
+  const confirmation = process.argv.slice(2)
+    .find((value) => value.startsWith("--confirm-database="))
+    ?.slice("--confirm-database=".length) || null;
+  const result = await runF3Migration({
+    rootDir,
+    writeReports: true,
+    apply: process.argv.includes("--apply"),
+    confirmedDatabase: confirmation,
+  });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 

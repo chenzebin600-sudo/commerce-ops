@@ -4,6 +4,13 @@ Status: shared framework baseline
 Scope: Agent contracts, registration, and task integration only. No production
 business Agent is registered or executed in this phase.
 
+Successor implementation: `COMMERCE-OPS-DAILY-REPORT-AGENT-V2.md` introduces
+the first approved production runtime while preserving this V1 contract.
+`COMMERCE-OPS-AI-AGENT-FOUNDATION-1.1.md` adds source-Agent Gateway tracing
+and the standard Agent-produced operational recommendation envelope.
+`COMMERCE-OPS-AI-AGENT-FOUNDATION-1.3.md` supersedes direct production
+Framework construction with the mandatory `AgentRuntime` boundary.
+
 ## 1. Agent Definition
 
 Every Agent definition is immutable, versioned, and contains these required
@@ -58,6 +65,10 @@ API. Created requests remain pending with
 3. validate responses against the registered output schema;
 4. enforce tool permissions and human approval;
 5. transition the existing Foundation task and append its audit evidence.
+
+Daily Report Agent V2 is that first approved runtime. It uses
+`execution_runtime=daily_report_agent_v2`, stays read/recommend-only, and does
+not create a second queue or lifecycle.
 
 ## 4. Database and API Impact
 

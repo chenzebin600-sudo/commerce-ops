@@ -2,7 +2,7 @@
 
 ## Scope and snapshot
 
-This E2 report prepares a future migration; it does not install PostgreSQL, create PostgreSQL tables, connect a driver, dual-write, or modify formal SQLite data. Base row-count evidence was captured from the configured formal database on 2026-07-16 after `PRAGMA integrity_check = ok`; the additive schema inventory was reconciled through formal migration 022 on 2026-07-28. Row counts are planning evidence rather than a live operational dashboard.
+This E2 report prepares a future migration; it does not install PostgreSQL, create PostgreSQL tables, connect a driver, dual-write, or modify formal SQLite data. Base row-count evidence was captured from the configured formal database on 2026-07-16 after `PRAGMA integrity_check = ok`; the additive schema inventory was reconciled through formal migration 028 on 2026-08-06. Row counts are planning evidence rather than a live operational dashboard.
 
 ## Current tables
 
@@ -48,6 +48,16 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 | `product_listing_publish_records` | 0 | future platform publication history | `id` | listing draft `RESTRICT`; no platform calls are active in this release |
 | `product_image_generation_tasks` | 0 | AI image plan and generation task history | `id` | SKU `RESTRICT`, listing draft `SET NULL`; prompt/context snapshots retained |
 | `product_image_generation_items` | 0 | per-slot AI image generation state | `id` | task `CASCADE`; unique task plus slot key |
+| `price_control_sync_runs` | 0 | price-control source run history | `id` | Foundation source run `SET NULL`; one running synchronization at a time |
+| `price_control_source_batches` | 0 | approved source-batch evidence | `apply_no` | sync run `RESTRICT`; country and effective-time lookup |
+| `price_control_price_snapshots` | 0 | normalized approved price snapshots | `id` | sync run and source batch `RESTRICT`; unique batch plus price key |
+| `product_sku_current_prices` | 0 | latest effective control prices | `price_key` | source batch and snapshot `RESTRICT`; country/SKU/platform/shop/price-type grain |
+| `product_price_change_events` | 0 | deterministic control-price change history | `id` | sync run/source batch `RESTRICT`, Foundation task `SET NULL`; unique change fingerprint |
+| `price_control_automation_settings` | 1 | price-control schedule and notification config | `id` | DingTalk robot `SET NULL`; singleton settings row and due-run index |
+| `commerce_shop_registry` | 139 | canonical marketplace shop registry | `id` | growth shop `SET NULL`; unique platform plus provider shop ID |
+| `commerce_shop_account_bindings` | 139 | shop-to-integration-account capabilities | `(shop_id, account_id, source_system)` | shop/account `RESTRICT`; explicit source system and active state |
+| `price_control_repricing_plans` | 0 | human-confirmed repricing execution plans | `id` | source round/account `RESTRICT`; expiring preview and execution state |
+| `price_control_repricing_items` | 0 | immutable repricing preview targets and outcomes | `id` | plan/change/shop `RESTRICT`; unique plan plus provider change ID |
 | `growth_source_batches` | 0 | growth source evidence | `id` | export file `RESTRICT`; unique source type plus idempotency key |
 | `growth_order_raw_rows` | 0 | privacy-minimized order source rows | `id` | batch `RESTRICT`; unique batch plus source row |
 | `growth_order_headers` | 0 | canonical order facts | `id` | shop/batches `RESTRICT`; unique versioned business key |
@@ -107,6 +117,8 @@ Growth radar source scope/header/redaction documents, raw row values/types, mapp
 
 Foundation source, account, capability, owner, warehouse, identity, source-run and task evidence documents are JSON text and must become validated `jsonb`. Credential ownership remains in the original account profile or sidecar; `foundation_integration_accounts` contains only typed references and bounded non-secret metadata. Preserve task idempotency keys, state versions, immutable events, lease uniqueness and the confirmed/excluded identity states.
 
+Commerce shop source metadata and account capabilities are JSON text and must become validated `jsonb`. Repricing assignments, provider metadata, parsed commands, warnings, selected item IDs, results, preview payloads, and old/new values must also become `jsonb`. Preserve the server-side preview token/fingerprint boundary, the plan/item `RESTRICT` relationships, and the one `(plan_id, provider_change_id)` identity.
+
 Mabang image collection interface profiles are redacted JSON text and must become `jsonb`. The image resource layer stores only metadata and a safe relative path in the database; image bytes remain in the unified file layer. Preserve the unique SHA-256 constraint and the `(asset_id, product_id)` link identity.
 
 ### Date and timezone
@@ -154,7 +166,7 @@ Runtime-only dialect operations are now located under `lib/data/sqlite`; `script
 ## Migration sequence
 
 1. Freeze schema changes and create a verified SQLite backup plus file manifest.
-2. Build PostgreSQL migrations from the twenty-one recorded SQLite migrations through 022, preserving keys, checks, indexes, and delete behavior.
+2. Build PostgreSQL migrations from every recorded SQLite migration through 035, preserving keys, checks, indexes, and delete behavior.
 3. Create PostgreSQL adapters behind the existing Provider/Repository contracts; keep SQLite as the active provider.
 4. Import reference/config tables: accounts and DingTalk configs, preserving encrypted bytes.
 5. Import task/run/event history, then export/file and lifecycle relationships in FK order.
@@ -183,3 +195,55 @@ The current database does **not** contain normalized Mabang orders, order items,
 - Add a PostgreSQL provider in a separate node without changing the SQLite provider.
 - Produce dry-run DDL and reconciliation scripts against test copies only.
 - Do not begin formal data movement until all repository contract tests pass for both adapters.
+## Customer-service control plane (additive migration 033 / Shadow 016)
+
+The customer-service module adds the following encrypted control-plane tables. Browser credentials and Playwright storage state remain outside PostgreSQL.
+
+`cs_channel_accounts`, `cs_channel_shop_bindings`, `cs_worker_nodes`,
+`cs_worker_account_leases`, `cs_ingest_events`, `cs_conversations`, `cs_messages`,
+`cs_message_observations`, `cs_panel_snapshots`, `cs_context_snapshots`,
+`cs_suggestions`, `cs_suggestion_evidence`, `cs_suggestion_reviews`,
+`cs_worker_commands`, and `cs_send_actions`.
+
+The current additive product-package synchronization contract also includes
+`product_package_sync_runs`.
+
+## Shared Product Knowledge (additive migration 035 / Shadow 018)
+
+The shared Product Domain owns staged imports, governed claims and immutable
+consumer releases. Customer Service and Listing read published consumer views;
+they do not copy or mutate Product Core truth. Offline candidates, unresolved
+mappings, unread sources, conflicts and unapproved rows are fail-closed.
+
+Candidate ingestion and review use `product_knowledge_import_batches`,
+`product_knowledge_candidates`, and `product_knowledge_reviews`. Approved,
+versioned assets use `product_knowledge_claims`,
+`product_knowledge_claim_scopes`, and `product_accessory_relations`. Customer-
+service-specific content remains separately owned in
+`customer_service_policy_versions` and `customer_service_playbook_versions`.
+Runtime retrieval is pinned to immutable `product_knowledge_releases` and
+the typed release membership tables `product_knowledge_release_items`,
+`product_accessory_release_items`, `customer_service_policy_release_items`,
+and `customer_service_playbook_release_items`; draft or merely approved rows
+are not a runtime knowledge source. Publishing requires a different actor from
+the release creator and revalidates every approved entity and candidate digest
+inside the publication transaction.
+
+## Profit Analysis (additive migrations 034 and 036 / Shadow 017 and 019)
+
+Profit Analysis keeps immutable calculation runs in `profit_runs`, normalized
+provider finance evidence in `profit_finance_transactions`, and one governed
+shop result per run in `profit_shop_results`. PostgreSQL must preserve the
+platform-specific contract version, source and cost coverage statuses, exact
+numeric amounts, currency separation, evidence JSON, and the run/result
+foreign-key boundaries. Missing order or cost evidence remains partial rather
+than becoming zero.
+
+Profit and Expense reuse the same normalized provider-bill facts in
+`profit_finance_transactions`; bill rows are never copied into a second expense
+ledger. Advertising wallet/account rows that do not exist in the provider bill
+are stored separately in `profit_expense_transactions`. Audited local-date
+results are materialized in `profit_shop_daily_expenses`, one row per platform,
+canonical shop, and marketplace-local transaction date. Incomplete wallet,
+pagination, date, or Summary evidence remains partial and keeps
+`expense_value` null rather than being represented as zero.

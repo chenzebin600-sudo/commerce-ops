@@ -1,0 +1,2025 @@
+{
+  "status": "PASS",
+  "productionProvider": "sqlite",
+  "target": "commerce_ops_shadow",
+  "migration": {
+    "version": "004_incremental_sync_control.sql",
+    "sha256": "eee1525b422cbbc6cebba3bcf6534c6b1870ab59ff2555a8d7b80d0be62c44b1",
+    "status": "ALREADY_APPLIED"
+  },
+  "baseline": {
+    "path": "<workspace>\\tmp\\postgresql-shadow-phase1\\commerce-ops-shadow-source.sqlite",
+    "time": "2026-08-05T12:20:45.780Z",
+    "sha256": "46704f2d4f2c6792cedb870658a8fdb020bb4a2b3edba33a0e12e0424f8c11db"
+  },
+  "snapshot": {
+    "path": "<workspace>\\tmp\\postgresql-incremental-sync\\commerce-ops-incremental-20260806022032-07b95bd3.sqlite",
+    "time": "2026-08-06T02:20:47.373Z",
+    "sha256": "8e36b5438ce1c10ff3fed00957ba4e9156643ff7986faf150a04dcc0e2456a8d",
+    "sourceBytes": 3113512960,
+    "snapshotBytes": 3113541632,
+    "snapshotHash": "8e36b5438ce1c10ff3fed00957ba4e9156643ff7986faf150a04dcc0e2456a8d",
+    "integrity": "ok",
+    "foreignKeyViolations": 0,
+    "readOnly": true,
+    "reused": true
+  },
+  "sync": {
+    "batchId": "62d92fe3-bfce-41d5-ada0-2d728769cee9",
+    "mode": "INCREMENTAL",
+    "tables": [
+      {
+        "table": "dingtalk_robot_configs",
+        "domain": "dependency",
+        "examined": 1,
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 4,
+        "targetCount": 4
+      },
+      {
+        "table": "foundation_source_systems",
+        "domain": "task",
+        "examined": 1,
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 7,
+        "targetCount": 7
+      },
+      {
+        "table": "foundation_warehouses",
+        "domain": "task",
+        "examined": 29,
+        "inserted": 0,
+        "updated": 29,
+        "skipped": 0,
+        "sourceCount": 29,
+        "targetCount": 29
+      },
+      {
+        "table": "growth_country_mapping_sets",
+        "domain": "dependency",
+        "examined": 1,
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 2,
+        "targetCount": 2
+      },
+      {
+        "table": "growth_shops",
+        "domain": "sales",
+        "examined": 70,
+        "inserted": 69,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 200,
+        "targetCount": 200
+      },
+      {
+        "table": "mabang_account_profiles",
+        "domain": "dependency",
+        "examined": 1,
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 2,
+        "targetCount": 2
+      },
+      {
+        "table": "operation_audit_events",
+        "domain": "audit",
+        "examined": 203,
+        "inserted": 166,
+        "updated": 37,
+        "skipped": 0,
+        "sourceCount": 42197,
+        "targetCount": 42197
+      },
+      {
+        "table": "product_detail_preferences",
+        "domain": "product",
+        "examined": 1,
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 1,
+        "targetCount": 1
+      },
+      {
+        "table": "product_import_batches",
+        "domain": "product",
+        "examined": 1,
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 5,
+        "targetCount": 5
+      },
+      {
+        "table": "product_media_assets",
+        "domain": "product",
+        "examined": 26,
+        "inserted": 0,
+        "updated": 26,
+        "skipped": 0,
+        "sourceCount": 6583,
+        "targetCount": 6583
+      },
+      {
+        "table": "foundation_identity_links",
+        "domain": "task",
+        "examined": 24983,
+        "inserted": 0,
+        "updated": 24983,
+        "skipped": 0,
+        "sourceCount": 24983,
+        "targetCount": 24983
+      },
+      {
+        "table": "foundation_integration_accounts",
+        "domain": "task",
+        "examined": 1,
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 3,
+        "targetCount": 3
+      },
+      {
+        "table": "foundation_owners",
+        "domain": "task",
+        "examined": 21,
+        "inserted": 0,
+        "updated": 21,
+        "skipped": 0,
+        "sourceCount": 22,
+        "targetCount": 22
+      },
+      {
+        "table": "growth_warehouse_country_mappings",
+        "domain": "sales",
+        "examined": 29,
+        "inserted": 0,
+        "updated": 29,
+        "skipped": 0,
+        "sourceCount": 29,
+        "targetCount": 29
+      },
+      {
+        "table": "product_categories",
+        "domain": "product",
+        "examined": 2,
+        "inserted": 0,
+        "updated": 2,
+        "skipped": 0,
+        "sourceCount": 78,
+        "targetCount": 78
+      },
+      {
+        "table": "product_import_rows",
+        "domain": "product",
+        "examined": 2,
+        "inserted": 0,
+        "updated": 2,
+        "skipped": 0,
+        "sourceCount": 21981,
+        "targetCount": 21981
+      },
+      {
+        "table": "scheduled_export_tasks",
+        "domain": "dependency",
+        "examined": 3,
+        "inserted": 0,
+        "updated": 3,
+        "skipped": 0,
+        "sourceCount": 4,
+        "targetCount": 4
+      },
+      {
+        "table": "foundation_account_capabilities",
+        "domain": "task",
+        "examined": 10,
+        "inserted": 0,
+        "updated": 10,
+        "skipped": 0,
+        "sourceCount": 10,
+        "targetCount": 10
+      },
+      {
+        "table": "foundation_source_runs",
+        "domain": "task",
+        "examined": 15,
+        "inserted": 14,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 20,
+        "targetCount": 20
+      },
+      {
+        "table": "product_models",
+        "domain": "product",
+        "examined": 1,
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 6500,
+        "targetCount": 6500
+      },
+      {
+        "table": "product_package_rows",
+        "domain": "product",
+        "examined": 2,
+        "inserted": 0,
+        "updated": 2,
+        "skipped": 0,
+        "sourceCount": 21714,
+        "targetCount": 21714
+      },
+      {
+        "table": "scheduled_export_runs",
+        "domain": "dependency",
+        "examined": 4,
+        "inserted": 3,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 19,
+        "targetCount": 19
+      },
+      {
+        "table": "export_files",
+        "domain": "dependency",
+        "examined": 4,
+        "inserted": 2,
+        "updated": 2,
+        "skipped": 0,
+        "sourceCount": 22,
+        "targetCount": 22
+      },
+      {
+        "table": "product_skus",
+        "domain": "product",
+        "examined": 5,
+        "inserted": 0,
+        "updated": 5,
+        "skipped": 0,
+        "sourceCount": 18347,
+        "targetCount": 18347
+      },
+      {
+        "table": "foundation_tasks",
+        "domain": "task",
+        "examined": 159,
+        "inserted": 124,
+        "updated": 35,
+        "skipped": 0,
+        "sourceCount": 376,
+        "targetCount": 376
+      },
+      {
+        "table": "growth_source_batches",
+        "domain": "sales",
+        "examined": 3,
+        "inserted": 2,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 13,
+        "targetCount": 13
+      },
+      {
+        "table": "product_ai_contents",
+        "domain": "product",
+        "examined": 0,
+        "inserted": 0,
+        "updated": 0,
+        "skipped": 0,
+        "sourceCount": 0,
+        "targetCount": 0
+      },
+      {
+        "table": "product_cost_snapshots",
+        "domain": "product",
+        "examined": 1,
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 18602,
+        "targetCount": 18602
+      },
+      {
+        "table": "product_field_override_events",
+        "domain": "product",
+        "examined": 2,
+        "inserted": 0,
+        "updated": 2,
+        "skipped": 0,
+        "sourceCount": 102,
+        "targetCount": 102
+      },
+      {
+        "table": "product_field_overrides",
+        "domain": "product",
+        "examined": 1,
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 81,
+        "targetCount": 81
+      },
+      {
+        "table": "product_images",
+        "domain": "product",
+        "examined": 1,
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 1,
+        "targetCount": 1
+      },
+      {
+        "table": "product_import_files",
+        "domain": "product",
+        "examined": 1,
+        "inserted": 0,
+        "updated": 1,
+        "skipped": 0,
+        "sourceCount": 5,
+        "targetCount": 5
+      },
+      {
+        "table": "product_inventory_snapshots",
+        "domain": "product",
+        "examined": 2,
+        "inserted": 0,
+        "updated": 2,
+        "skipped": 0,
+        "sourceCount": 21978,
+        "targetCount": 21978
+      },
+      {
+        "table": "product_media_links",
+        "domain": "product",
+        "examined": 33764,
+        "inserted": 0,
+        "updated": 0,
+        "skipped": 33764
+      },
+      {
+        "table": "product_packaging_profiles",
+        "domain": "product",
+        "examined": 2,
+        "inserted": 0,
+        "updated": 2,
+        "skipped": 0,
+        "sourceCount": 18347,
+        "targetCount": 18347
+      },
+      {
+        "table": "product_sku_lifecycle",
+        "domain": "product",
+        "examined": 2,
+        "inserted": 0,
+        "updated": 2,
+        "skipped": 0,
+        "sourceCount": 18347,
+        "targetCount": 18347
+      },
+      {
+        "table": "product_sku_lifecycle_events",
+        "domain": "product",
+        "examined": 18131,
+        "inserted": 0,
+        "updated": 18131,
+        "skipped": 0,
+        "sourceCount": 18393,
+        "targetCount": 18393
+      },
+      {
+        "table": "foundation_task_events",
+        "domain": "task",
+        "examined": 161,
+        "inserted": 126,
+        "updated": 35,
+        "skipped": 0,
+        "sourceCount": 384,
+        "targetCount": 384
+      },
+      {
+        "table": "foundation_task_leases",
+        "domain": "task",
+        "examined": 0,
+        "inserted": 0,
+        "updated": 0,
+        "skipped": 0,
+        "sourceCount": 0,
+        "targetCount": 0
+      },
+      {
+        "table": "growth_inventory_raw_rows",
+        "domain": "inventory",
+        "examined": 81721,
+        "inserted": 81721,
+        "updated": 0,
+        "skipped": 0,
+        "sourceCount": 81721,
+        "targetCount": 81721
+      },
+      {
+        "table": "growth_inventory_snapshots",
+        "domain": "inventory",
+        "examined": 40204,
+        "inserted": 20155,
+        "updated": 20049,
+        "skipped": 0,
+        "sourceCount": 81703,
+        "targetCount": 81703
+      },
+      {
+        "table": "growth_order_headers",
+        "domain": "sales",
+        "examined": 2456,
+        "inserted": 372,
+        "updated": 2084,
+        "skipped": 0,
+        "sourceCount": 80140,
+        "targetCount": 80140
+      },
+      {
+        "table": "growth_order_raw_rows",
+        "domain": "sales",
+        "examined": 150813,
+        "inserted": 150813,
+        "updated": 0,
+        "skipped": 0,
+        "sourceCount": 150813,
+        "targetCount": 150813
+      },
+      {
+        "table": "growth_shop_source_mappings",
+        "domain": "sales",
+        "examined": 195,
+        "inserted": 69,
+        "updated": 126,
+        "skipped": 0,
+        "sourceCount": 200,
+        "targetCount": 200
+      },
+      {
+        "table": "growth_order_lines",
+        "domain": "sales",
+        "examined": 3441,
+        "inserted": 425,
+        "updated": 3016,
+        "skipped": 0,
+        "sourceCount": 116293,
+        "targetCount": 116293
+      },
+      {
+        "table": "growth_sku_warehouse_sales_metrics",
+        "domain": "inventory",
+        "examined": 40204,
+        "inserted": 20155,
+        "updated": 20049,
+        "skipped": 0,
+        "sourceCount": 80265,
+        "targetCount": 80265
+      },
+      {
+        "table": "growth_order_inventory_links",
+        "domain": "sales",
+        "examined": 232574,
+        "inserted": 116712,
+        "updated": 115862,
+        "skipped": 0,
+        "sourceCount": 461288,
+        "targetCount": 461288
+      }
+    ],
+    "rowsExamined": 629254,
+    "rowsInserted": 390928,
+    "rowsUpdated": 204562,
+    "rowsSkipped": 33764,
+    "observability": {
+      "agentRuns": 3,
+      "toolInvocations": 15,
+      "gatewayCalls": 6
+    }
+  },
+  "validation": {
+    "status": "PASS",
+    "sourceSnapshotTime": "2026-08-06T02:20:47.373Z",
+    "sourceSnapshotSha256": "8e36b5438ce1c10ff3fed00957ba4e9156643ff7986faf150a04dcc0e2456a8d",
+    "direction": "sqlite-to-postgresql-shadow",
+    "readOnlyValidation": true,
+    "deleteSyncSupported": false,
+    "tables": [
+      {
+        "table": "dingtalk_robot_configs",
+        "domain": "dependency",
+        "source": 4,
+        "target": 4,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "foundation_source_systems",
+        "domain": "task",
+        "source": 7,
+        "target": 7,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "foundation_warehouses",
+        "domain": "task",
+        "source": 29,
+        "target": 29,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "growth_country_mapping_sets",
+        "domain": "dependency",
+        "source": 2,
+        "target": 2,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "growth_shops",
+        "domain": "sales",
+        "source": 200,
+        "target": 200,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "mabang_account_profiles",
+        "domain": "dependency",
+        "source": 2,
+        "target": 2,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "operation_audit_events",
+        "domain": "audit",
+        "source": 42197,
+        "target": 42197,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_detail_preferences",
+        "domain": "product",
+        "source": 1,
+        "target": 1,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_import_batches",
+        "domain": "product",
+        "source": 5,
+        "target": 5,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_media_assets",
+        "domain": "product",
+        "source": 6583,
+        "target": 6583,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "foundation_identity_links",
+        "domain": "task",
+        "source": 24983,
+        "target": 24983,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "foundation_integration_accounts",
+        "domain": "task",
+        "source": 3,
+        "target": 3,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "foundation_owners",
+        "domain": "task",
+        "source": 22,
+        "target": 22,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "growth_warehouse_country_mappings",
+        "domain": "sales",
+        "source": 29,
+        "target": 29,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_categories",
+        "domain": "product",
+        "source": 78,
+        "target": 78,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_import_rows",
+        "domain": "product",
+        "source": 21981,
+        "target": 21981,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "scheduled_export_tasks",
+        "domain": "dependency",
+        "source": 4,
+        "target": 4,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "foundation_account_capabilities",
+        "domain": "task",
+        "source": 10,
+        "target": 10,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "foundation_source_runs",
+        "domain": "task",
+        "source": 20,
+        "target": 20,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_models",
+        "domain": "product",
+        "source": 6500,
+        "target": 6500,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_package_rows",
+        "domain": "product",
+        "source": 21714,
+        "target": 21714,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "scheduled_export_runs",
+        "domain": "dependency",
+        "source": 19,
+        "target": 19,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "export_files",
+        "domain": "dependency",
+        "source": 22,
+        "target": 22,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_skus",
+        "domain": "product",
+        "source": 18347,
+        "target": 18347,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "foundation_tasks",
+        "domain": "task",
+        "source": 376,
+        "target": 376,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "growth_source_batches",
+        "domain": "sales",
+        "source": 13,
+        "target": 13,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_ai_contents",
+        "domain": "product",
+        "source": 0,
+        "target": 0,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_cost_snapshots",
+        "domain": "product",
+        "source": 18602,
+        "target": 18602,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_field_override_events",
+        "domain": "product",
+        "source": 102,
+        "target": 102,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_field_overrides",
+        "domain": "product",
+        "source": 81,
+        "target": 81,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_images",
+        "domain": "product",
+        "source": 1,
+        "target": 1,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_import_files",
+        "domain": "product",
+        "source": 5,
+        "target": 5,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_inventory_snapshots",
+        "domain": "product",
+        "source": 21978,
+        "target": 21978,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_media_links",
+        "domain": "product",
+        "source": 33764,
+        "target": 33764,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_packaging_profiles",
+        "domain": "product",
+        "source": 18347,
+        "target": 18347,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_sku_lifecycle",
+        "domain": "product",
+        "source": 18347,
+        "target": 18347,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "product_sku_lifecycle_events",
+        "domain": "product",
+        "source": 18393,
+        "target": 18393,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "foundation_task_events",
+        "domain": "task",
+        "source": 384,
+        "target": 384,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "foundation_task_leases",
+        "domain": "task",
+        "source": 0,
+        "target": 0,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "growth_inventory_raw_rows",
+        "domain": "inventory",
+        "source": 81721,
+        "target": 81721,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "growth_inventory_snapshots",
+        "domain": "inventory",
+        "source": 81703,
+        "target": 81703,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "growth_order_headers",
+        "domain": "sales",
+        "source": 80140,
+        "target": 80140,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "growth_order_raw_rows",
+        "domain": "sales",
+        "source": 150813,
+        "target": 150813,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "growth_shop_source_mappings",
+        "domain": "sales",
+        "source": 200,
+        "target": 200,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "growth_order_lines",
+        "domain": "sales",
+        "source": 116293,
+        "target": 116293,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "growth_sku_warehouse_sales_metrics",
+        "domain": "inventory",
+        "source": 80265,
+        "target": 80265,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      },
+      {
+        "table": "growth_order_inventory_links",
+        "domain": "sales",
+        "source": 461288,
+        "target": 461288,
+        "countMatch": true,
+        "targetExcess": 0,
+        "sourceMissing": 0,
+        "deleteSyncSupported": false
+      }
+    ],
+    "business": {
+      "productSkus": {
+        "source": 18347,
+        "target": 18347,
+        "match": true
+      },
+      "orderHeaders": {
+        "source": 80140,
+        "target": 80140,
+        "match": true
+      },
+      "orderLines": {
+        "source": 116293,
+        "target": 116293,
+        "match": true
+      },
+      "inventorySnapshots": {
+        "source": 81703,
+        "target": 81703,
+        "match": true
+      },
+      "tasks": {
+        "source": 376,
+        "target": 376,
+        "match": true
+      },
+      "auditEvents": {
+        "source": 42197,
+        "target": 42197,
+        "match": true
+      }
+    },
+    "samples": {
+      "product_skus": [
+        {
+          "offset": 0,
+          "primaryKey": {
+            "id": "000594ed-d9b0-4b56-a8a1-bed4f25f1821"
+          },
+          "match": true,
+          "source": {
+            "id": "000594ed-d9b0-4b56-a8a1-bed4f25f1821",
+            "source_sku": "T3FZ1710153",
+            "normalized_sku": "马来|T3FZ1710153",
+            "source_main_sku": null,
+            "updated_at": "2026-07-21T07:00:09.663Z"
+          },
+          "target": {
+            "id": "000594ed-d9b0-4b56-a8a1-bed4f25f1821",
+            "source_sku": "T3FZ1710153",
+            "normalized_sku": "马来|T3FZ1710153",
+            "source_main_sku": null,
+            "updated_at": "2026-07-21T07:00:09.663Z"
+          }
+        },
+        {
+          "offset": 4825,
+          "primaryKey": {
+            "id": "4337677e-c8b6-4556-9db7-9404546e62fd"
+          },
+          "match": true,
+          "source": {
+            "id": "4337677e-c8b6-4556-9db7-9404546e62fd",
+            "source_sku": "T3SS0050723",
+            "normalized_sku": "泰国|T3SS0050723",
+            "source_main_sku": "SS0723",
+            "updated_at": "2026-07-21T07:00:01.925Z"
+          },
+          "target": {
+            "id": "4337677e-c8b6-4556-9db7-9404546e62fd",
+            "source_sku": "T3SS0050723",
+            "normalized_sku": "泰国|T3SS0050723",
+            "source_main_sku": "SS0723",
+            "updated_at": "2026-07-21T07:00:01.925Z"
+          }
+        },
+        {
+          "offset": 9173,
+          "primaryKey": {
+            "id": "7ee0147e-6485-43da-873c-b8efacfe9f01"
+          },
+          "match": true,
+          "source": {
+            "id": "7ee0147e-6485-43da-873c-b8efacfe9f01",
+            "source_sku": "P5SS0511350",
+            "normalized_sku": "菲律宾|P5SS0511350",
+            "source_main_sku": "SS1350",
+            "updated_at": "2026-07-21T06:59:59.787Z"
+          },
+          "target": {
+            "id": "7ee0147e-6485-43da-873c-b8efacfe9f01",
+            "source_sku": "P5SS0511350",
+            "normalized_sku": "菲律宾|P5SS0511350",
+            "source_main_sku": "SS1350",
+            "updated_at": "2026-07-21T06:59:59.787Z"
+          }
+        },
+        {
+          "offset": 10516,
+          "primaryKey": {
+            "id": "919489df-6f0b-420b-8193-7dca36b076b0"
+          },
+          "match": true,
+          "source": {
+            "id": "919489df-6f0b-420b-8193-7dca36b076b0",
+            "source_sku": "T3DD0710051",
+            "normalized_sku": "泰国|T3DD0710051",
+            "source_main_sku": "DD0051",
+            "updated_at": "2026-07-21T07:00:01.876Z"
+          },
+          "target": {
+            "id": "919489df-6f0b-420b-8193-7dca36b076b0",
+            "source_sku": "T3DD0710051",
+            "normalized_sku": "泰国|T3DD0710051",
+            "source_main_sku": "DD0051",
+            "updated_at": "2026-07-21T07:00:01.876Z"
+          }
+        },
+        {
+          "offset": 14619,
+          "primaryKey": {
+            "id": "ca8eb4ed-d17a-4318-a96a-663b1a6ea428"
+          },
+          "match": true,
+          "source": {
+            "id": "ca8eb4ed-d17a-4318-a96a-663b1a6ea428",
+            "source_sku": "T5FF2563117",
+            "normalized_sku": "马来|T5FF2563117",
+            "source_main_sku": "FF3117",
+            "updated_at": "2026-07-21T07:00:10.517Z"
+          },
+          "target": {
+            "id": "ca8eb4ed-d17a-4318-a96a-663b1a6ea428",
+            "source_sku": "T5FF2563117",
+            "normalized_sku": "马来|T5FF2563117",
+            "source_main_sku": "FF3117",
+            "updated_at": "2026-07-21T07:00:10.517Z"
+          }
+        },
+        {
+          "offset": 17893,
+          "primaryKey": {
+            "id": "f9540e49-2c49-4120-960d-1ab6b876a493"
+          },
+          "match": true,
+          "source": {
+            "id": "f9540e49-2c49-4120-960d-1ab6b876a493",
+            "source_sku": "T4SS0281157",
+            "normalized_sku": "越南|T4SS0281157",
+            "source_main_sku": "SS1157",
+            "updated_at": "2026-07-21T07:00:13.212Z"
+          },
+          "target": {
+            "id": "f9540e49-2c49-4120-960d-1ab6b876a493",
+            "source_sku": "T4SS0281157",
+            "normalized_sku": "越南|T4SS0281157",
+            "source_main_sku": "SS1157",
+            "updated_at": "2026-07-21T07:00:13.212Z"
+          }
+        },
+        {
+          "offset": 18346,
+          "primaryKey": {
+            "id": "ffff91d6-f385-4229-9f04-612c3f370248"
+          },
+          "match": true,
+          "source": {
+            "id": "ffff91d6-f385-4229-9f04-612c3f370248",
+            "source_sku": "T4FF2091374",
+            "normalized_sku": "越南|T4FF2091374",
+            "source_main_sku": "FF1374",
+            "updated_at": "2026-07-21T07:00:16.441Z"
+          },
+          "target": {
+            "id": "ffff91d6-f385-4229-9f04-612c3f370248",
+            "source_sku": "T4FF2091374",
+            "normalized_sku": "越南|T4FF2091374",
+            "source_main_sku": "FF1374",
+            "updated_at": "2026-07-21T07:00:16.441Z"
+          }
+        }
+      ],
+      "growth_order_headers": [
+        {
+          "offset": 0,
+          "primaryKey": {
+            "id": "00010527-c87c-4dd2-8c51-e08a82f3b806"
+          },
+          "match": true,
+          "source": {
+            "id": "00010527-c87c-4dd2-8c51-e08a82f3b806",
+            "source_order_id": "20213587251109266639709049",
+            "source_shop_name": "Senyonnoy",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "00010527-c87c-4dd2-8c51-e08a82f3b806",
+            "source_order_id": "20213587251109266639709049",
+            "source_shop_name": "Senyonnoy",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        },
+        {
+          "offset": 1042,
+          "primaryKey": {
+            "id": "03163564-2f3a-465c-8b86-95dfd0eb1c71"
+          },
+          "match": true,
+          "source": {
+            "id": "03163564-2f3a-465c-8b86-95dfd0eb1c71",
+            "source_order_id": "20213392721104809250942446",
+            "source_shop_name": "A planet",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "03163564-2f3a-465c-8b86-95dfd0eb1c71",
+            "source_order_id": "20213392721104809250942446",
+            "source_shop_name": "A planet",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        },
+        {
+          "offset": 16804,
+          "primaryKey": {
+            "id": "354d445d-828b-43fc-bebe-8d2427247828"
+          },
+          "match": true,
+          "source": {
+            "id": "354d445d-828b-43fc-bebe-8d2427247828",
+            "source_order_id": "20216090901114408740192498",
+            "source_shop_name": "REAIM_Philippines PH",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "354d445d-828b-43fc-bebe-8d2427247828",
+            "source_order_id": "20216090901114408740192498",
+            "source_shop_name": "REAIM_Philippines PH",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        },
+        {
+          "offset": 40070,
+          "primaryKey": {
+            "id": "80189ab7-231a-4eb6-a708-90e81787fe41"
+          },
+          "match": true,
+          "source": {
+            "id": "80189ab7-231a-4eb6-a708-90e81787fe41",
+            "source_order_id": "6976947101116185542369404",
+            "source_shop_name": "FINDER-TOOL",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "80189ab7-231a-4eb6-a708-90e81787fe41",
+            "source_order_id": "6976947101116185542369404",
+            "source_shop_name": "FINDER-TOOL",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        },
+        {
+          "offset": 48259,
+          "primaryKey": {
+            "id": "9a159092-1cea-4d3e-a971-ec813dc0d4e1"
+          },
+          "match": true,
+          "source": {
+            "id": "9a159092-1cea-4d3e-a971-ec813dc0d4e1",
+            "source_order_id": "20211496582779152694072464",
+            "source_shop_name": "Tixx ID B",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "9a159092-1cea-4d3e-a971-ec813dc0d4e1",
+            "source_order_id": "20211496582779152694072464",
+            "source_shop_name": "Tixx ID B",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        },
+        {
+          "offset": 79005,
+          "primaryKey": {
+            "id": "fc8de587-280c-4062-8083-41db8e445562"
+          },
+          "match": true,
+          "source": {
+            "id": "fc8de587-280c-4062-8083-41db8e445562",
+            "source_order_id": "20216236611116937953261661",
+            "source_shop_name": "Suminoe PRO",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-05T02:18:17.900Z"
+          },
+          "target": {
+            "id": "fc8de587-280c-4062-8083-41db8e445562",
+            "source_order_id": "20216236611116937953261661",
+            "source_shop_name": "Suminoe PRO",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-05T02:18:17.900Z"
+          }
+        },
+        {
+          "offset": 80139,
+          "primaryKey": {
+            "id": "ffffa2c0-c26b-4b00-8a29-651f82d5a5fd"
+          },
+          "match": true,
+          "source": {
+            "id": "ffffa2c0-c26b-4b00-8a29-651f82d5a5fd",
+            "source_order_id": "20216063191113973732434337",
+            "source_shop_name": "REAlM Official Store-PH",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "ffffa2c0-c26b-4b00-8a29-651f82d5a5fd",
+            "source_order_id": "20216063191113973732434337",
+            "source_shop_name": "REAlM Official Store-PH",
+            "order_status": "已发货",
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        }
+      ],
+      "growth_order_lines": [
+        {
+          "offset": 0,
+          "primaryKey": {
+            "id": "000039ad-6eb9-452a-bec8-952399568c10"
+          },
+          "match": true,
+          "source": {
+            "id": "000039ad-6eb9-452a-bec8-952399568c10",
+            "order_header_id": "bd01f757-b04b-44ea-978c-2d3fcda0802b",
+            "source_sku": "T4FF0782713",
+            "quantity": 1,
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "000039ad-6eb9-452a-bec8-952399568c10",
+            "order_header_id": "bd01f757-b04b-44ea-978c-2d3fcda0802b",
+            "source_sku": "T4FF0782713",
+            "quantity": 1,
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        },
+        {
+          "offset": 29134,
+          "primaryKey": {
+            "id": "4086f0a7-ceca-4707-a2ec-f8c962cc4040"
+          },
+          "match": true,
+          "source": {
+            "id": "4086f0a7-ceca-4707-a2ec-f8c962cc4040",
+            "order_header_id": "871a3e08-18ec-4da5-b78e-c5e14895d9d3",
+            "source_sku": "T4FF2041159",
+            "quantity": 1,
+            "effective_status": "invalid_cancelled",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "4086f0a7-ceca-4707-a2ec-f8c962cc4040",
+            "order_header_id": "871a3e08-18ec-4da5-b78e-c5e14895d9d3",
+            "source_sku": "T4FF2041159",
+            "quantity": 1,
+            "effective_status": "invalid_cancelled",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        },
+        {
+          "offset": 41308,
+          "primaryKey": {
+            "id": "5b14fa2f-e03f-4589-a2fa-14175b1619be"
+          },
+          "match": true,
+          "source": {
+            "id": "5b14fa2f-e03f-4589-a2fa-14175b1619be",
+            "order_header_id": "3ce0a71e-d30e-4ebc-992a-d50f4dbe40a4",
+            "source_sku": "T4FF2552682",
+            "quantity": 1,
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "5b14fa2f-e03f-4589-a2fa-14175b1619be",
+            "order_header_id": "3ce0a71e-d30e-4ebc-992a-d50f4dbe40a4",
+            "source_sku": "T4FF2552682",
+            "quantity": 1,
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        },
+        {
+          "offset": 49216,
+          "primaryKey": {
+            "id": "6c8a0bba-a7e5-48e4-b7fc-50e2b3a86873"
+          },
+          "match": true,
+          "source": {
+            "id": "6c8a0bba-a7e5-48e4-b7fc-50e2b3a86873",
+            "order_header_id": "011ba1d3-7f6b-43b1-9a3f-768e3f0c9d7f",
+            "source_sku": "T3FF1370498",
+            "quantity": 1,
+            "effective_status": "invalid_cancelled",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "6c8a0bba-a7e5-48e4-b7fc-50e2b3a86873",
+            "order_header_id": "011ba1d3-7f6b-43b1-9a3f-768e3f0c9d7f",
+            "source_sku": "T3FF1370498",
+            "quantity": 1,
+            "effective_status": "invalid_cancelled",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        },
+        {
+          "offset": 58146,
+          "primaryKey": {
+            "id": "80388e43-9f8c-4661-9589-2f824ddcee20"
+          },
+          "match": true,
+          "source": {
+            "id": "80388e43-9f8c-4661-9589-2f824ddcee20",
+            "order_header_id": "71eb7aed-fe2e-4c66-8b31-8d1e75eeb340",
+            "source_sku": "T3CC2160316",
+            "quantity": 1,
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "80388e43-9f8c-4661-9589-2f824ddcee20",
+            "order_header_id": "71eb7aed-fe2e-4c66-8b31-8d1e75eeb340",
+            "source_sku": "T3CC2160316",
+            "quantity": 1,
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        },
+        {
+          "offset": 106666,
+          "primaryKey": {
+            "id": "eaef9fc4-1c6f-472d-9554-4e6f852841fb"
+          },
+          "match": true,
+          "source": {
+            "id": "eaef9fc4-1c6f-472d-9554-4e6f852841fb",
+            "order_header_id": "02046b20-7206-463e-86b7-ce581d336c17",
+            "source_sku": "T4FF2042641",
+            "quantity": 1,
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "eaef9fc4-1c6f-472d-9554-4e6f852841fb",
+            "order_header_id": "02046b20-7206-463e-86b7-ce581d336c17",
+            "source_sku": "T4FF2042641",
+            "quantity": 1,
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        },
+        {
+          "offset": 116292,
+          "primaryKey": {
+            "id": "ffffd742-809e-4581-b500-1710b494ebcc"
+          },
+          "match": true,
+          "source": {
+            "id": "ffffd742-809e-4581-b500-1710b494ebcc",
+            "order_header_id": "26217085-f42e-4e6d-af48-78a6280de9c0",
+            "source_sku": "P1GG0880224",
+            "quantity": 1,
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          },
+          "target": {
+            "id": "ffffd742-809e-4581-b500-1710b494ebcc",
+            "order_header_id": "26217085-f42e-4e6d-af48-78a6280de9c0",
+            "source_sku": "P1GG0880224",
+            "quantity": 1,
+            "effective_status": "valid",
+            "updated_at": "2026-08-01T08:30:05.838Z"
+          }
+        }
+      ],
+      "growth_inventory_snapshots": [
+        {
+          "offset": 0,
+          "primaryKey": {
+            "id": "0000c01a-609f-4236-ad9e-825d7b23d586"
+          },
+          "match": true,
+          "source": {
+            "id": "0000c01a-609f-4236-ad9e-825d7b23d586",
+            "batch_id": "8b2a06d5-9a00-4098-aa8f-a3a86bf21566",
+            "source_sku": "T4DD0881269",
+            "warehouse_name": "菲律宾AAA-C仓-1308",
+            "available_quantity": -4,
+            "created_at": "2026-08-05T02:27:09.845Z"
+          },
+          "target": {
+            "id": "0000c01a-609f-4236-ad9e-825d7b23d586",
+            "batch_id": "8b2a06d5-9a00-4098-aa8f-a3a86bf21566",
+            "source_sku": "T4DD0881269",
+            "warehouse_name": "菲律宾AAA-C仓-1308",
+            "available_quantity": -4,
+            "created_at": "2026-08-05T02:27:09.845Z"
+          }
+        },
+        {
+          "offset": 10796,
+          "primaryKey": {
+            "id": "21effae2-db11-4dcf-9c5f-e925e8db3b29"
+          },
+          "match": true,
+          "source": {
+            "id": "21effae2-db11-4dcf-9c5f-e925e8db3b29",
+            "batch_id": "255e7ad1-c53f-4fe2-a08e-5a6d5fbed1bf",
+            "source_sku": "T5FF2453184",
+            "warehouse_name": "越南MLT-F仓-1308",
+            "available_quantity": 0,
+            "created_at": "2026-07-25T01:23:27.227Z"
+          },
+          "target": {
+            "id": "21effae2-db11-4dcf-9c5f-e925e8db3b29",
+            "batch_id": "255e7ad1-c53f-4fe2-a08e-5a6d5fbed1bf",
+            "source_sku": "T5FF2453184",
+            "warehouse_name": "越南MLT-F仓-1308",
+            "available_quantity": 0,
+            "created_at": "2026-07-25T01:23:27.227Z"
+          }
+        },
+        {
+          "offset": 39921,
+          "primaryKey": {
+            "id": "7cd50707-6aa5-4e09-83ed-e1b328ff1085"
+          },
+          "match": true,
+          "source": {
+            "id": "7cd50707-6aa5-4e09-83ed-e1b328ff1085",
+            "batch_id": "da010703-2188-41d5-a6fa-0ca31adbbb19",
+            "source_sku": "T5FF1951739",
+            "warehouse_name": "印尼极兔-FB仓-1308",
+            "available_quantity": 0,
+            "created_at": "2026-08-06T01:14:11.622Z"
+          },
+          "target": {
+            "id": "7cd50707-6aa5-4e09-83ed-e1b328ff1085",
+            "batch_id": "da010703-2188-41d5-a6fa-0ca31adbbb19",
+            "source_sku": "T5FF1951739",
+            "warehouse_name": "印尼极兔-FB仓-1308",
+            "available_quantity": 0,
+            "created_at": "2026-08-06T01:14:11.622Z"
+          }
+        },
+        {
+          "offset": 40851,
+          "primaryKey": {
+            "id": "7fc38485-acc7-432a-9219-c6c225bfc264"
+          },
+          "match": true,
+          "source": {
+            "id": "7fc38485-acc7-432a-9219-c6c225bfc264",
+            "batch_id": "8b2a06d5-9a00-4098-aa8f-a3a86bf21566",
+            "source_sku": "T3FZ1710151",
+            "warehouse_name": "泰国科捷-F仓-1308",
+            "available_quantity": 17,
+            "created_at": "2026-08-05T02:27:09.845Z"
+          },
+          "target": {
+            "id": "7fc38485-acc7-432a-9219-c6c225bfc264",
+            "batch_id": "8b2a06d5-9a00-4098-aa8f-a3a86bf21566",
+            "source_sku": "T3FZ1710151",
+            "warehouse_name": "泰国科捷-F仓-1308",
+            "available_quantity": 17,
+            "created_at": "2026-08-05T02:27:09.845Z"
+          }
+        },
+        {
+          "offset": 57614,
+          "primaryKey": {
+            "id": "b46f18b2-8d78-4756-8ec5-fdca787381b3"
+          },
+          "match": true,
+          "source": {
+            "id": "b46f18b2-8d78-4756-8ec5-fdca787381b3",
+            "batch_id": "8b2a06d5-9a00-4098-aa8f-a3a86bf21566",
+            "source_sku": "T4FF1411867",
+            "warehouse_name": "印尼极兔-FB仓-1308",
+            "available_quantity": 0,
+            "created_at": "2026-08-05T02:27:09.845Z"
+          },
+          "target": {
+            "id": "b46f18b2-8d78-4756-8ec5-fdca787381b3",
+            "batch_id": "8b2a06d5-9a00-4098-aa8f-a3a86bf21566",
+            "source_sku": "T4FF1411867",
+            "warehouse_name": "印尼极兔-FB仓-1308",
+            "available_quantity": 0,
+            "created_at": "2026-08-05T02:27:09.845Z"
+          }
+        },
+        {
+          "offset": 72241,
+          "primaryKey": {
+            "id": "e1f5e5fc-925f-4ae9-b496-fc74a7d2f7f9"
+          },
+          "match": true,
+          "source": {
+            "id": "e1f5e5fc-925f-4ae9-b496-fc74a7d2f7f9",
+            "batch_id": "255e7ad1-c53f-4fe2-a08e-5a6d5fbed1bf",
+            "source_sku": "T5DD1162337",
+            "warehouse_name": "印尼云雀-C仓-1308",
+            "available_quantity": 0,
+            "created_at": "2026-07-25T01:23:27.227Z"
+          },
+          "target": {
+            "id": "e1f5e5fc-925f-4ae9-b496-fc74a7d2f7f9",
+            "batch_id": "255e7ad1-c53f-4fe2-a08e-5a6d5fbed1bf",
+            "source_sku": "T5DD1162337",
+            "warehouse_name": "印尼云雀-C仓-1308",
+            "available_quantity": 0,
+            "created_at": "2026-07-25T01:23:27.227Z"
+          }
+        },
+        {
+          "offset": 81702,
+          "primaryKey": {
+            "id": "fffe9e1d-8bfc-442b-83db-e88046b2eca6"
+          },
+          "match": true,
+          "source": {
+            "id": "fffe9e1d-8bfc-442b-83db-e88046b2eca6",
+            "batch_id": "8b2a06d5-9a00-4098-aa8f-a3a86bf21566",
+            "source_sku": "T3FF0031262",
+            "warehouse_name": "马来易企通-F仓-1308",
+            "available_quantity": 410,
+            "created_at": "2026-08-05T02:27:09.845Z"
+          },
+          "target": {
+            "id": "fffe9e1d-8bfc-442b-83db-e88046b2eca6",
+            "batch_id": "8b2a06d5-9a00-4098-aa8f-a3a86bf21566",
+            "source_sku": "T3FF0031262",
+            "warehouse_name": "马来易企通-F仓-1308",
+            "available_quantity": 410,
+            "created_at": "2026-08-05T02:27:09.845Z"
+          }
+        }
+      ],
+      "foundation_tasks": [
+        {
+          "offset": 0,
+          "primaryKey": {
+            "id": "02e36c51-43bb-4b72-8365-adcd3a486416"
+          },
+          "match": true,
+          "source": {
+            "id": "02e36c51-43bb-4b72-8365-adcd3a486416",
+            "domain": "product",
+            "task_kind": "price_control_change_review",
+            "state": "READY",
+            "priority": "P1",
+            "updated_at": "2026-08-05T16:57:39.176Z"
+          },
+          "target": {
+            "id": "02e36c51-43bb-4b72-8365-adcd3a486416",
+            "domain": "product",
+            "task_kind": "price_control_change_review",
+            "state": "READY",
+            "priority": "P1",
+            "updated_at": "2026-08-05T16:57:39.176Z"
+          }
+        },
+        {
+          "offset": 5,
+          "primaryKey": {
+            "id": "08d08fd8-eef1-4379-9de4-a6d013559f00"
+          },
+          "match": true,
+          "source": {
+            "id": "08d08fd8-eef1-4379-9de4-a6d013559f00",
+            "domain": "product",
+            "task_kind": "price_control_change_review",
+            "state": "READY",
+            "priority": "P1",
+            "updated_at": "2026-08-05T16:57:59.111Z"
+          },
+          "target": {
+            "id": "08d08fd8-eef1-4379-9de4-a6d013559f00",
+            "domain": "product",
+            "task_kind": "price_control_change_review",
+            "state": "READY",
+            "priority": "P1",
+            "updated_at": "2026-08-05T16:57:59.111Z"
+          }
+        },
+        {
+          "offset": 174,
+          "primaryKey": {
+            "id": "foundation:task:147dbdc4276b04901a88d9ad0b9cbf1c"
+          },
+          "match": true,
+          "source": {
+            "id": "foundation:task:147dbdc4276b04901a88d9ad0b9cbf1c",
+            "domain": "mabang_images",
+            "task_kind": "image_batch:full_initial",
+            "state": "SUCCEEDED",
+            "priority": "P2",
+            "updated_at": "2026-07-28T05:47:00.522Z"
+          },
+          "target": {
+            "id": "foundation:task:147dbdc4276b04901a88d9ad0b9cbf1c",
+            "domain": "mabang_images",
+            "task_kind": "image_batch:full_initial",
+            "state": "SUCCEEDED",
+            "priority": "P2",
+            "updated_at": "2026-07-28T05:47:00.522Z"
+          }
+        },
+        {
+          "offset": 188,
+          "primaryKey": {
+            "id": "foundation:task:25210ca859f3daae465ef80fdc7fade8"
+          },
+          "match": true,
+          "source": {
+            "id": "foundation:task:25210ca859f3daae465ef80fdc7fade8",
+            "domain": "mabang_images",
+            "task_kind": "image_batch:full_initial",
+            "state": "SUCCEEDED",
+            "priority": "P2",
+            "updated_at": "2026-07-28T05:47:00.205Z"
+          },
+          "target": {
+            "id": "foundation:task:25210ca859f3daae465ef80fdc7fade8",
+            "domain": "mabang_images",
+            "task_kind": "image_batch:full_initial",
+            "state": "SUCCEEDED",
+            "priority": "P2",
+            "updated_at": "2026-07-28T05:47:00.205Z"
+          }
+        },
+        {
+          "offset": 315,
+          "primaryKey": {
+            "id": "foundation:task:be517bc2a5bc960b445de2143687a83f"
+          },
+          "match": true,
+          "source": {
+            "id": "foundation:task:be517bc2a5bc960b445de2143687a83f",
+            "domain": "mabang_images",
+            "task_kind": "image_batch:full_initial",
+            "state": "SUCCEEDED",
+            "priority": "P2",
+            "updated_at": "2026-07-28T05:47:00.461Z"
+          },
+          "target": {
+            "id": "foundation:task:be517bc2a5bc960b445de2143687a83f",
+            "domain": "mabang_images",
+            "task_kind": "image_batch:full_initial",
+            "state": "SUCCEEDED",
+            "priority": "P2",
+            "updated_at": "2026-07-28T05:47:00.461Z"
+          }
+        },
+        {
+          "offset": 332,
+          "primaryKey": {
+            "id": "foundation:task:d171059c451b42c8765d5c800b5a5584"
+          },
+          "match": true,
+          "source": {
+            "id": "foundation:task:d171059c451b42c8765d5c800b5a5584",
+            "domain": "mabang_images",
+            "task_kind": "image_batch:full_initial",
+            "state": "SUCCEEDED",
+            "priority": "P2",
+            "updated_at": "2026-07-28T05:47:00.063Z"
+          },
+          "target": {
+            "id": "foundation:task:d171059c451b42c8765d5c800b5a5584",
+            "domain": "mabang_images",
+            "task_kind": "image_batch:full_initial",
+            "state": "SUCCEEDED",
+            "priority": "P2",
+            "updated_at": "2026-07-28T05:47:00.063Z"
+          }
+        },
+        {
+          "offset": 375,
+          "primaryKey": {
+            "id": "foundation:task:ffe1c46e76e2e2c5d03d95fe91cf40e6"
+          },
+          "match": true,
+          "source": {
+            "id": "foundation:task:ffe1c46e76e2e2c5d03d95fe91cf40e6",
+            "domain": "mabang_images",
+            "task_kind": "image_batch:full_initial",
+            "state": "SUCCEEDED",
+            "priority": "P2",
+            "updated_at": "2026-07-28T05:46:59.913Z"
+          },
+          "target": {
+            "id": "foundation:task:ffe1c46e76e2e2c5d03d95fe91cf40e6",
+            "domain": "mabang_images",
+            "task_kind": "image_batch:full_initial",
+            "state": "SUCCEEDED",
+            "priority": "P2",
+            "updated_at": "2026-07-28T05:46:59.913Z"
+          }
+        }
+      ],
+      "operation_audit_events": [
+        {
+          "offset": 0,
+          "primaryKey": {
+            "id": "0000c1f2-94f6-4a6c-90dc-7bf42e0da93b"
+          },
+          "match": true,
+          "source": {
+            "id": "0000c1f2-94f6-4a6c-90dc-7bf42e0da93b",
+            "request_id": "7d9ba9f2-bcc7-4ac8-8fc3-becb7f9cd1c5",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T11:07:24.098Z"
+          },
+          "target": {
+            "id": "0000c1f2-94f6-4a6c-90dc-7bf42e0da93b",
+            "request_id": "7d9ba9f2-bcc7-4ac8-8fc3-becb7f9cd1c5",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T11:07:24.098Z"
+          }
+        },
+        {
+          "offset": 14466,
+          "primaryKey": {
+            "id": "576d2c17-32aa-4220-81ca-eb4293031d63"
+          },
+          "match": true,
+          "source": {
+            "id": "576d2c17-32aa-4220-81ca-eb4293031d63",
+            "request_id": "1a50eead-92f1-4abc-a297-937caabe1e16",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T11:16:25.160Z"
+          },
+          "target": {
+            "id": "576d2c17-32aa-4220-81ca-eb4293031d63",
+            "request_id": "1a50eead-92f1-4abc-a297-937caabe1e16",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T11:16:25.160Z"
+          }
+        },
+        {
+          "offset": 18508,
+          "primaryKey": {
+            "id": "6fc7a938-c11a-4acd-b7b9-b4a5313d5df8"
+          },
+          "match": true,
+          "source": {
+            "id": "6fc7a938-c11a-4acd-b7b9-b4a5313d5df8",
+            "request_id": "90f89701-657d-4538-8967-a50946065541",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T12:06:57.639Z"
+          },
+          "target": {
+            "id": "6fc7a938-c11a-4acd-b7b9-b4a5313d5df8",
+            "request_id": "90f89701-657d-4538-8967-a50946065541",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T12:06:57.639Z"
+          }
+        },
+        {
+          "offset": 21098,
+          "primaryKey": {
+            "id": "7f643de3-168a-4bcf-9ddd-2e0850d0530d"
+          },
+          "match": true,
+          "source": {
+            "id": "7f643de3-168a-4bcf-9ddd-2e0850d0530d",
+            "request_id": "003c0f52-267a-4865-8ea0-b99db2cc439a",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T11:15:00.774Z"
+          },
+          "target": {
+            "id": "7f643de3-168a-4bcf-9ddd-2e0850d0530d",
+            "request_id": "003c0f52-267a-4865-8ea0-b99db2cc439a",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T11:15:00.774Z"
+          }
+        },
+        {
+          "offset": 32236,
+          "primaryKey": {
+            "id": "c30225d4-3e70-48a6-b328-dc9f9676d762"
+          },
+          "match": true,
+          "source": {
+            "id": "c30225d4-3e70-48a6-b328-dc9f9676d762",
+            "request_id": "5c409d81-ce75-4787-be98-33e0dffc26ec",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T11:43:13.713Z"
+          },
+          "target": {
+            "id": "c30225d4-3e70-48a6-b328-dc9f9676d762",
+            "request_id": "5c409d81-ce75-4787-be98-33e0dffc26ec",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T11:43:13.713Z"
+          }
+        },
+        {
+          "offset": 35641,
+          "primaryKey": {
+            "id": "d7c86c6d-05a7-4cea-94d6-6d89de89a6b2"
+          },
+          "match": true,
+          "source": {
+            "id": "d7c86c6d-05a7-4cea-94d6-6d89de89a6b2",
+            "request_id": "275fefcd-88f6-472a-b9c8-78f76fc5c2a2",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T11:28:57.198Z"
+          },
+          "target": {
+            "id": "d7c86c6d-05a7-4cea-94d6-6d89de89a6b2",
+            "request_id": "275fefcd-88f6-472a-b9c8-78f76fc5c2a2",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T11:28:57.198Z"
+          }
+        },
+        {
+          "offset": 42196,
+          "primaryKey": {
+            "id": "fffe3b93-c751-4e6f-91f9-91aa616ba21b"
+          },
+          "match": true,
+          "source": {
+            "id": "fffe3b93-c751-4e6f-91f9-91aa616ba21b",
+            "request_id": "06123763-234b-43fa-b579-8099fa08839c",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T10:51:17.874Z"
+          },
+          "target": {
+            "id": "fffe3b93-c751-4e6f-91f9-91aa616ba21b",
+            "request_id": "06123763-234b-43fa-b579-8099fa08839c",
+            "module": "mabang",
+            "action": "mabang_images.linked",
+            "status": "success",
+            "occurred_at": "2026-07-24T10:51:17.874Z"
+          }
+        }
+      ]
+    },
+    "sampleCount": 42,
+    "sampleFailures": 0,
+    "countFailures": 0,
+    "businessFailures": 0,
+    "switchReady": false,
+    "switchBlockedBy": [
+      "remaining SQLite-only runtime boundaries",
+      "production cutover has not been approved",
+      "DELETE synchronization is intentionally not implemented"
+    ]
+  },
+  "validationId": "ebe1fa64-528a-40c9-9693-598d70210f56",
+  "state": {
+    "id": "sqlite-to-postgresql-shadow",
+    "source_provider": "sqlite",
+    "target_provider": "postgresql_shadow",
+    "stage": "READY",
+    "migration_snapshot_time": "2026-08-05T12:20:45.780Z",
+    "source_snapshot_sha256": "46704f2d4f2c6792cedb870658a8fdb020bb4a2b3edba33a0e12e0424f8c11db",
+    "last_sync_started_at": "2026-08-06T02:27:17.065Z",
+    "last_sync_completed_at": "2026-08-06T02:28:59.052Z",
+    "last_successful_batch_id": "62d92fe3-bfce-41d5-ada0-2d728769cee9",
+    "sync_failure_count": "0",
+    "last_validation_at": "2026-08-06T02:29:03.464Z",
+    "last_validation_status": "PASS",
+    "is_switch_ready": false,
+    "paused": false,
+    "pause_reason": null,
+    "revision": "4",
+    "created_at": "2026-08-06T02:25:00.875Z",
+    "updated_at": "2026-08-06T02:29:03.464Z"
+  },
+  "identity": {
+    "database": "commerce_ops_shadow",
+    "username": "commerce_migrator",
+    "schema": "app",
+    "read_only": "off"
+  }
+}

@@ -6,6 +6,8 @@ export const CONNECTOR_OPERATIONS = Object.freeze([
   "get_shop",
   "get_orders",
   "get_order_items",
+  "get_finance_transactions",
+  "get_expense_transactions",
   "ready_to_ship",
   "get_products",
   "update_product",
@@ -45,6 +47,8 @@ export class BaseConnector {
   getShop(_input) { throw new ConnectorCapabilityError(this.platform.type, "get_shop"); }
   getOrders(_input) { throw new ConnectorCapabilityError(this.platform.type, "get_orders"); }
   getOrderItems(_input) { throw new ConnectorCapabilityError(this.platform.type, "get_order_items"); }
+  getFinanceTransactions(_input) { throw new ConnectorCapabilityError(this.platform.type, "get_finance_transactions"); }
+  getExpenseTransactions(_input) { throw new ConnectorCapabilityError(this.platform.type, "get_expense_transactions"); }
   readyToShip(_input) { throw new ConnectorCapabilityError(this.platform.type, "ready_to_ship"); }
   getProducts(_input) { throw new ConnectorCapabilityError(this.platform.type, "get_products"); }
   updateProduct(_input) { throw new ConnectorCapabilityError(this.platform.type, "update_product"); }

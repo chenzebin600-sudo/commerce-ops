@@ -28,6 +28,15 @@ Enabled Gateway capabilities:
 - `get_order_items` with a PII-minimized detail field list
 - `get_products` (maximum 20 products per page)
 - `get_inventory`
+- `get_finance_transactions`, implemented as the official Payment API
+  `generate_income_report` → `get_income_report` XLSX flow. The
+  downloaded XLSX URL must use an allowlisted Shopee HTTPS host and is bounded
+  to 64 MiB before country-specific parsing.
+
+Income-statement access is separately controlled by the Shopee application and
+shop authorization. A healthy `get_shop` call does not prove that Payment API
+report generation is enabled. Profit calculation therefore fails closed and
+keeps manual XLSX import available when the relay or provider denies the report.
 
 Shopee write capabilities and authorization/token endpoints are not registered.
 The Gateway global write switch remains an additional fail-closed control.
@@ -59,6 +68,7 @@ GET /api/platform/orders?platform=shopee&shop_id=<shop_id>&created_after=<ISO>&l
 GET /api/platform/order-items?platform=shopee&shop_id=<shop_id>&order_id=<order_sn>
 GET /api/platform/products?platform=shopee&shop_id=<shop_id>&limit=20&offset=0
 GET /api/platform/inventory?platform=shopee&shop_id=<shop_id>&limit=20&offset=0
+GET /api/platform/finance-transactions?platform=shopee&shop_id=<shop_id>&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
 ```
 
 Other modules and Agent tools must use these routes or the Gateway service, not

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>乐聊 AI 辅助回复</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">COMMERCE OPS · PHASE 1</p>
+        <h1>乐聊 AI 辅助回复</h1>
+        <p class="subtitle">结构化业务事实、双阶段质量检查；只有明确批准后才会发送。</p>
+      </div>
+      <form action="/actions/collect" method="post">
+        <button class="primary" type="submit" {% if collecting %}disabled{% endif %}>
+          {% if collecting %}正在采集…{% else %}立即采集{% endif %}
+        </button>
+      </form>
+    </header>
+
+    <main>
+      <section class="metrics" aria-label="运行概况">
+        <article><span>店铺</span><strong>{{ stats.shops }}</strong></article>
+        <article><span>客户</span><strong>{{ stats.customers }}</strong></article>
+        <article><span>待处理</span><strong>{{ stats.pending }}</strong></article>
+        <article><span>AI 建议</span><strong>{{ stats.suggestions }}</strong></article>
+        <article><span>填入队列</span><strong>{{ stats.assistant_queue }}</strong></article>
+        <article><span>批准发送队列</span><strong>{{ stats.review_queue }}</strong></article>
+        <article><span>人工反馈</span><strong>{{ stats.feedback_count }}</strong></article>
+      </section>
+
+      {% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+      {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+      {% if not llm_enabled %}
+        <div class="alert warning">尚未配置 LLM；消息会正常采集，AI 回复栏显示未启用。</div>
+      {% endif %}
+      {% if not human_send_enabled %}
+        <div class="alert warning">人工批准发送功能已关闭；仍可生成、编辑和保存质量反馈。</div>
+      {% endif %}
+
+      <section class="toolbar">
+        <nav aria-label="消息状态">
+          <a href="/?view=review" class="{% if view == 'review' %}active{% endif %}">连续审核</a>
+          <a href="/?status=pending" class="{% if status == 'pending' %}active{% endif %}">待处理</a>
+          <a href="/?status=processed" class="{% if status == 'processed' %}active{% endif %}">已处理</a>
+          <a href="/?status=all" class="{% if status == 'all' %}active{% endif %}">全部</a>
+        </nav>
+        <form method="get" action="/">
+          <input type="hidden" name="status" value="{{ status }}">
+          <input name="q" value="{{ query }}" placeholder="搜索店铺、客户或消息" maxlength="100">
+          <button class="secondary" type="submit">搜索</button>
+        </form>
+      </section>
+
+      <section class="worklist" aria-label="消息列表">
+        {% for item in items %}
+          <article class="message-card {% if item.is_processed %}processed{% endif %}" data-review-card data-risk="{{ item.suggestion_risk_level or 'low' }}">
+            <div class="identity">
+              <div>
+                <span class="label">店铺</span>
+                <h2>{{ item.shop_name }}</h2>
+                <p>{{ item.platform or '未知平台' }}{% if item.region %} · {{ item.region }}{% endif %}</p>
+              </div>
+              <div>
+                <span class="label">客户</span>
+                <h3>{{ item.customer_name }}</h3>
+                <p>{{ item.sent_at or '时间未知' }}</p>
+              </div>
+              <span class="status {% if item.is_processed %}done{% else %}pending{% endif %}">
+                {% if item.is_processed %}已处理{% else %}待处理{% endif %}
+              </span>
+            </div>
+            <div class="reply-grid">
+              <section>
+                <span class="label">原始消息</span>
+                <p class="message-text">{{ item.original_message }}</p>
+              </section>
+              <section class="ai-panel">
+                <span class="label">AI 回复建议</span>
+                {% if item.assistant_task_status %}<small>队列：{{ item.assistant_task_status }}</small>{% endif %}
+                {% if item.suggestion_status == 'ready' %}
+                  <div class="quality-row">
+                    <span class="risk {{ item.suggestion_risk_level or 'low' }}">{{ item.suggestion_risk_level or '未分级' }}</span>
+                    <span>{{ item.suggestion_intent or 'general' }}</span>
+                    <span>{{ item.suggestion_quality_status or '未校验' }}</span>
+                  </div>
+                  {% if not item.suggestion_quality_status %}
+                    <p class="quality-issues">这是升级前生成的建议，必须先重新生成并通过新版质量校验。</p>
+                  {% endif %}
+                  {% if view == 'review' %}
+                    <form class="review-form" method="post" action="/messages/{{ item.message_id }}/feedback">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <input type="hidden" name="confirm_send" value="HUMAN_CONFIRMED_SEND">
+                      <textarea name="approved_content" maxlength="4000" aria-label="审核后的回复内容">{{ item.latest_feedback_content or item.ai_reply }}</textarea>
+                      {% if item.suggestion_quality_issues %}
+                        <p class="quality-issues">需注意：{{ item.suggestion_quality_issues | join('、') }}</p>
+                      {% endif %}
+                      <div class="review-actions">
+                        <button class="secondary save-feedback" type="submit">保存修改</button>
+                        <button class="primary approve-send" type="submit"
+                                formaction="/messages/{{ item.message_id }}/approve-send"
+                                {% if not human_send_enabled or not item.suggestion_quality_status %}disabled{% endif %}>
+                          批准并发送
+                        </button>
+                      </div>
+                    </form>
+                  {% else %}
+                    <p class="message-text">{{ item.ai_reply }}</p>
+                  {% endif %}
+                  <small>{{ item.suggestion_model }}{% if item.review_action_status %} · 发送：{{ item.review_action_status }}{% endif %}</small>
+                {% elif item.suggestion_status == 'error' %}
+                  <p class="muted">生成失败：{{ item.suggestion_error }}</p>
+                {% elif item.suggestion_status == 'disabled' %}
+                  <p class="muted">LLM 未启用</p>
+                {% else %}
+                  <p class="muted">等待生成</p>
+                {% endif %}
+              </section>
+            </div>
+            <footer>
+              <form class="regenerate-form" action="/messages/{{ item.message_id }}/suggest{% if view == 'review' %}?view=review{% endif %}" method="post">
+                <button class="secondary" type="submit">重新生成建议</button>
+              </form>
+              {% if not item.is_processed %}
+                <form action="/messages/{{ item.message_id }}/processed" method="post">
+                  <button class="primary" type="submit">标记已处理</button>
+                </form>
+              {% endif %}
+            </footer>
+          </article>
+        {% else %}
+          <div class="empty">
+            <h2>{% if view == 'review' %}没有等待审核的 AI 建议{% else %}这里还没有消息{% endif %}</h2>
+            <p>{% if view == 'review' %}已提交的发送任务会由助手完成安全校验；稍后刷新查看下一条。{% else %}先运行首次登录，再点击“立即采集”。{% endif %}</p>
+          </div>
+        {% endfor %}
+      </section>
+    </main>
+    {% if view == 'review' %}
+      <div class="shortcut-bar">
+        <strong>连续审核</strong>
+        <span>Ctrl + Alt + Enter 批准并发送</span>
+        <span>Ctrl + Alt + R 重新生成</span>
+      </div>
+      <script>
+        (() => {
+          const card = document.querySelector('[data-review-card]');
+          const reviewForm = card?.querySelector('.review-form');
+          const sendButton = card?.querySelector('.approve-send');
+          const regenerateForm = card?.querySelector('.regenerate-form');
+          const requestSend = () => {
+            if (!reviewForm || !sendButton || sendButton.disabled) return;
+            const risk = card.dataset.risk || 'low';
+            if (risk === 'high' && !window.confirm(
+              '这是高风险场景。确认已完整核对订单、政策和回复内容，并发送给当前客户？'
+            )) return;
+            reviewForm.action = sendButton.formAction;
+            reviewForm.requestSubmit();
+          };
+          sendButton?.addEventListener('click', (event) => {
+            event.preventDefault();
+            requestSend();
+          });
+          document.addEventListener('keydown', (event) => {
+            if (!(event.ctrlKey && event.altKey)) return;
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              requestSend();
+            } else if (event.key.toLowerCase() === 'r' && regenerateForm) {
+              event.preventDefault();
+              regenerateForm.requestSubmit();
+            }
+          });
+        })();
+      </script>
+    {% endif %}
+  </body>
+</html>

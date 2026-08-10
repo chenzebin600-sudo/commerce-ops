@@ -49,6 +49,19 @@ test("F1 config rejects weak, shared and unsafe role settings", async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
+test("F1 config requires a readable CA when TLS is enabled", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "postgres-f1-tls-"));
+  await writeConfig(root, { POSTGRES_SSL: "true" });
+  assert.throws(() => loadPostgresqlF1Config({ rootDir: root, env: {} }), /POSTGRES_SSL_CA_FILE is required/);
+  const caFile = path.join(root, "root.crt");
+  await fs.writeFile(caFile, "test-ca");
+  await writeConfig(root, { POSTGRES_SSL: "true", POSTGRES_SSL_CA_FILE: caFile });
+  const config = loadPostgresqlF1Config({ rootDir: root, env: {} });
+  assert.equal(config.ssl, true);
+  assert.equal(config.sslCaFile, caFile);
+  await fs.rm(root, { recursive: true, force: true });
+});
+
 test("F1 SQL grants only the required roles, schema and default privileges", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "postgres-f1-sql-"));
   const secrets = await writeConfig(root);

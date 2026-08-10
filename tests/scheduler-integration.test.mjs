@@ -105,8 +105,8 @@ test("mock login, orders, filter, Excel and DingTalk produce success", async () 
   assert.equal(persisted.sourceScope.dateFrom, result.paymentStartDate);
   assert.equal(persisted.sourceScope.dateTo, result.paymentEndDate);
   assert.equal(context.db.getRunDetails(run.id).events.some((event) => event.stage === "persist_collected_data" && event.status === "success"), true);
-  assert.equal(audit.queryEvents({ action: "mabang.task.execution.success" }).total, 1);
-  assert.equal(audit.queryEvents({ action: "mabang.dingtalk.notify.success" }).total, 1);
+  assert.equal((await audit.queryEvents({ action: "mabang.task.execution.success" })).total, 1);
+  assert.equal((await audit.queryEvents({ action: "mabang.dingtalk.notify.success" })).total, 1);
   assert.ok((await fs.stat(path.join(context.exportRoot, context.db.getExportFile(result.exportFileId).relativePath))).size > 0);
   context.db.close();
 });
@@ -248,7 +248,7 @@ test("DingTalk failure produces partial_success and keeps Excel", async () => {
   assert.equal(result.status, "partial_success");
   assert.equal(result.notificationStatus, "failed");
   assert.equal(result.fileStatus, "available");
-  assert.equal(audit.queryEvents({ action: "mabang.dingtalk.notify.failed" }).total, 1);
+  assert.equal((await audit.queryEvents({ action: "mabang.dingtalk.notify.failed" })).total, 1);
   context.db.close();
 });
 
@@ -261,7 +261,7 @@ test("login failure is recorded without infinite retry", async () => {
   assert.equal(result.status, "failed");
   assert.equal(result.errorStage, "mabang_login");
   assert.equal(result.retryCount, 0);
-  assert.equal(audit.queryEvents({ action: "mabang.task.execution.failed" }).total, 1);
+  assert.equal((await audit.queryEvents({ action: "mabang.task.execution.failed" })).total, 1);
   context.db.close();
 });
 
@@ -333,6 +333,8 @@ test("database restart preserves tasks and recovers stale runs", () => {
   const run = context.db.createRun({ taskId: context.task.id, triggerType: "manual", scheduledRunAt: new Date("2026-07-14T00:37:00Z") });
   context.db.claimRun(run.id);
   context.db.updateRun(run.id, { startedAt: "2026-07-14T00:00:00.000Z" });
+  context.db.db.prepare("UPDATE scheduled_export_runs SET updated_at=? WHERE id=?")
+    .run("2026-07-14T00:00:00.000Z", run.id);
   context.db.close();
   const reopened = new SchedulerDatabase({ databasePath: context.dbPath, migrationsDir: path.resolve("migrations") });
   reopened.migrate();
@@ -369,5 +371,98 @@ test("scheduler creates and executes one due scheduled run", async () => {
   assert.equal(executed.length, 1);
   assert.equal(context.db.listRuns()[0].triggerType, "scheduled");
   assert.notEqual(context.db.getTask(context.task.id).nextRunAt, "2026-07-14T00:30:00.000Z");
+  context.db.close();
+});
+
+test("scheduler renews its lease while a long task is running", async () => {
+  const context = setup({ withRobot: false });
+  const run = context.db.createRun({
+    taskId: context.task.id,
+    triggerType: "manual",
+    scheduledRunAt: new Date("2026-07-14T00:40:00Z"),
+  });
+  const originalAcquireLease = context.db.acquireLease.bind(context.db);
+  let leaseAcquisitions = 0;
+  context.db.acquireLease = (...args) => {
+    leaseAcquisitions += 1;
+    return originalAcquireLease(...args);
+  };
+  const executor = {
+    executeRun: async (runId) => {
+      context.db.claimRun(runId);
+      await new Promise((resolve) => setTimeout(resolve, 130));
+      return context.db.updateRun(runId, { status: "success", finishedAt: new Date().toISOString() });
+    },
+  };
+  const service = new MabangSchedulerService({
+    db: context.db,
+    executor,
+    exportRoot: context.exportRoot,
+    schedulerLeaseMs: 90,
+  });
+
+  const executed = await service.tick();
+
+  assert.equal(executed, true);
+  assert.equal(context.db.getRun(run.id).status, "success");
+  assert.ok(leaseAcquisitions >= 3);
+  context.db.close();
+});
+
+test("executor heartbeats a run during a long stage", async () => {
+  const context = setup({ withRobot: false });
+  const worker = successfulWorker();
+  const originalTouchRun = context.db.touchRun.bind(context.db);
+  let heartbeats = 0;
+  context.db.touchRun = (...args) => {
+    heartbeats += 1;
+    return originalTouchRun(...args);
+  };
+  const executor = createTaskExecutor({
+    db: context.db,
+    runWorker: async (payload) => {
+      if (payload.action === "orders") await new Promise((resolve) => setTimeout(resolve, 100));
+      return worker(payload);
+    },
+    exportRoot: context.exportRoot,
+    retryDelays: [],
+    runHeartbeatIntervalMs: 30,
+  });
+  const run = context.db.createRun({
+    taskId: context.task.id,
+    triggerType: "manual",
+    scheduledRunAt: new Date("2026-07-14T00:41:00Z"),
+  });
+
+  const result = await executor.executeRun(run.id);
+
+  assert.equal(result.status, "success");
+  assert.ok(heartbeats >= 2);
+  context.db.close();
+});
+
+test("scheduler recovers a stale run on a later tick, not only at startup", async () => {
+  const context = setup({ withRobot: false });
+  const current = new Date("2026-07-14T01:00:00.000Z");
+  const run = context.db.createRun({
+    taskId: context.task.id,
+    triggerType: "manual",
+    scheduledRunAt: new Date("2026-07-14T00:40:00.000Z"),
+  });
+  context.db.claimRun(run.id);
+  context.db.db.prepare("UPDATE scheduled_export_runs SET updated_at=? WHERE id=?")
+    .run("2026-07-14T00:50:00.000Z", run.id);
+  const service = new MabangSchedulerService({
+    db: context.db,
+    executor: { executeRun: async () => null },
+    exportRoot: context.exportRoot,
+    staleRunThresholdMs: 5 * 60 * 1000,
+    now: () => current,
+  });
+
+  await service.tick();
+
+  assert.equal(context.db.getRun(run.id).status, "failed");
+  assert.equal(context.db.getRun(run.id).errorCode, "PROCESS_RESTART");
   context.db.close();
 });

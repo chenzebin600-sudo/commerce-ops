@@ -1,0 +1,32 @@
+{
+  "id": "command-contract-example",
+  "accountId": "central-account-example",
+  "conversationId": "central-conversation-example",
+  "triggerMessageId": "central-message-example",
+  "suggestionId": "suggestion-example",
+  "commandType": "FILL_DRAFT",
+  "payload": {
+    "contractVersion": "CS_FILL_DRAFT_V1",
+    "route": {
+      "externalConversationId": "liaoliao-conversation-example",
+      "externalMessageId": "liaoliao-message-example",
+      "shopExternalId": "liaoliao-shop-example",
+      "shopName": "Example Shop",
+      "customerExternalId": "liaoliao-customer-example",
+      "customerDisplayName": "Example Customer"
+    },
+    "draft": "Thanks for your message. I am checking the verified details now.",
+    "expected": {
+      "centralTriggerMessageId": "central-message-example",
+      "externalMessageId": "liaoliao-message-example",
+      "contextDigest": "example-context-digest",
+      "draftContentDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "safety": {
+      "automaticSend": false,
+      "requireCurrentConversation": true,
+      "requireLatestInboundMessage": true,
+      "requireEmptyOrSameEditor": true
+    }
+  }
+}

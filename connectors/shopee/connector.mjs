@@ -1,6 +1,7 @@
 import { BaseConnector } from "../base/connector.mjs";
 import { ShopeeOrdersApi } from "./orders.mjs";
 import { ShopeeProductsApi } from "./products.mjs";
+import { ShopeeFinanceApi } from "./finance.mjs";
 
 const CAPABILITIES = Object.freeze([
   "get_shop",
@@ -8,6 +9,8 @@ const CAPABILITIES = Object.freeze([
   "get_order_items",
   "get_products",
   "get_inventory",
+  "get_finance_transactions",
+  "get_expense_transactions",
 ]);
 
 export class ShopeeConnector extends BaseConnector {
@@ -19,6 +22,7 @@ export class ShopeeConnector extends BaseConnector {
     this.relayClient = relayClient;
     this.orders = new ShopeeOrdersApi(relayClient, { shopId: shop.sellerId, clock });
     this.products = new ShopeeProductsApi(relayClient, { shopId: shop.sellerId, modelConcurrency });
+    this.finance = new ShopeeFinanceApi(relayClient, { shopId: shop.sellerId, countryCode: shop.country });
   }
 
   async getShop() {
@@ -47,4 +51,6 @@ export class ShopeeConnector extends BaseConnector {
   getOrderItems(input) { this.assertCapability("get_order_items"); return this.orders.getOrderItems(input); }
   getProducts(input) { this.assertCapability("get_products"); return this.products.getProducts(input); }
   getInventory(input) { this.assertCapability("get_inventory"); return this.products.getInventory(input); }
+  getFinanceTransactions(input) { this.assertCapability("get_finance_transactions"); return this.finance.getTransactions(input); }
+  getExpenseTransactions(input) { this.assertCapability("get_expense_transactions"); return this.finance.getExpenseTransactions(input); }
 }

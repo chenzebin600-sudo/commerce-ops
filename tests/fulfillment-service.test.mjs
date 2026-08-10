@@ -50,7 +50,7 @@ test("fulfillment dashboard proxy permits only fixed local read routes", async (
   assert.equal(calls.length, 3);
 });
 
-test("fulfillment dashboard summary uses full database history and groups shops, trends and queues", () => {
+test("fulfillment dashboard summary uses full database history and groups shops, trends and queues", async () => {
   const repository = new FulfillmentRepository();
   const addPreview = repository.db.prepare(`INSERT INTO fulfillment_previews
     (id,status,shop_id,shop_name,channel_id,channel_name,confirmation_hash,expires_at,created_at)
@@ -73,7 +73,7 @@ test("fulfillment dashboard summary uses full database history and groups shops,
   repository.db.prepare(`INSERT INTO fulfillment_tracking_recoveries
     (order_key,batch_id,display_order_id,shop_id,status,submitted_at,next_check_at,deadline_at)
     VALUES ('s1:o4','b1','O4','s1','waiting_tracking','2026-07-29T02:00:00.000Z','2026-07-29T02:05:00.000Z','2026-07-30T02:00:00.000Z')`).run();
-  const summary = repository.getDashboardSummary({
+  const summary = await repository.getDashboardSummary({
     todayStartIso:"2026-07-28T16:00:00.000Z", trendStartIso:"2026-07-27T16:00:00.000Z", endIso:"2026-07-29T08:00:00.000Z",
     dayWindows:[
       { date:"2026-07-28",fromIso:"2026-07-27T16:00:00.000Z",toIso:"2026-07-28T16:00:00.000Z" },
@@ -142,7 +142,7 @@ test("fulfillment order concurrency cannot be configured above two", () => {
   }}), /1-2/);
 });
 
-test("legacy verify failure with a tracking number migrates to distribution recovery", () => {
+test("legacy verify failure with a tracking number migrates to distribution recovery", async () => {
   const repository = new FulfillmentRepository();
   repository.db.prepare(`INSERT INTO fulfillment_previews
     (id,status,shop_id,shop_name,channel_id,channel_name,confirmation_hash,expires_at,created_at)
@@ -159,12 +159,12 @@ test("legacy verify failure with a tracking number migrates to distribution reco
   repository.db.prepare("INSERT INTO fulfillment_idempotency (order_key,batch_id,status,completed_at) VALUES (?,?,?,?)")
     .run("legacy:o1","b-legacy","needs_attention","2026-07-31T00:01:00.000Z");
 
-  assert.equal(repository.migratePendingTrackingRecoveries({
+  assert.equal(await repository.migratePendingTrackingRecoveries({
     nowIso:"2026-07-31T00:02:00.000Z",checkSeconds:300,deadlineHours:24,
   }), 1);
-  const migrated = repository.getBatch("b-legacy").orders[0];
+  const migrated = (await repository.getBatch("b-legacy")).orders[0];
   assert.equal(migrated.errorCode, "DISTRIBUTION_PENDING");
-  assert.equal(repository.listTrackingRecoveries(10, config.shopId)[0].status, "waiting_tracking");
+  assert.equal((await repository.listTrackingRecoveries(10, config.shopId))[0].status, "waiting_tracking");
   repository.close();
 });
 
@@ -208,7 +208,7 @@ test("tracking recovery waits, resets only once, then distributes an existing tr
   const preview = await service.createPreview();
   const batch = await service.confirmPreview(preview.previewId, preview.confirmationToken);
   assert.equal(batch.orders[0].errorCode, "TRACKING_NUMBER_PENDING");
-  assert.equal(repository.listTrackingRecoveries(10, config.shopId)[0].resetCount, 0);
+  assert.equal((await repository.listTrackingRecoveries(10, config.shopId))[0].resetCount, 0);
 
   currentMs += 2 * 60000;
   assert.equal((await service.recoverPendingTrackingNumbers()).results[0].status, "waiting_tracking");
@@ -229,35 +229,35 @@ test("tracking recovery waits, resets only once, then distributes an existing tr
   assert.equal(completed.results[0].status, "completed");
   assert.equal(completed.results[0].trackingNumberMasked, "2016****0083");
   assert.equal(distributeCalls, 1);
-  assert.equal(service.getBatch(batch.id).orders[0].status, "success");
-  assert.equal(repository.listTrackingRecoveries(10, config.shopId)[0].status, "completed");
+  assert.equal((await service.getBatch(batch.id)).orders[0].status, "success");
+  assert.equal((await repository.listTrackingRecoveries(10, config.shopId))[0].status, "completed");
   repository.close();
 });
 
 test("tracking recovery stops automatically after its 24-hour deadline", async () => {
   const repository = new FulfillmentRepository();
   const submittedAt = "2026-07-28T00:00:00.000Z";
-  repository.registerTrackingRecovery({ orderKey:"2021485965:late", batchId:"missing-batch", displayOrderId:"LATE-1",
+  await repository.registerTrackingRecovery({ orderKey:"2021485965:late", batchId:"missing-batch", displayOrderId:"LATE-1",
     shopId:config.shopId, submittedAt, nextCheckAt:submittedAt, deadlineAt:"2026-07-29T00:00:00.000Z" });
   const service = new FulfillmentService({ config:{ ...config,trackingRecoveryCheckSeconds:60,trackingRecoveryResetMinutes:30,
     trackingRecoveryDeadlineHours:24 }, repository, source:{}, executor:{}, trackingRecovery:{ inspect:async()=>{ throw new Error("must not inspect"); } },
     now:()=>new Date("2026-07-29T00:00:01.000Z") });
   const result = await service.recoverPendingTrackingNumbers();
   assert.deepEqual(result.results, [{ orderId:"LATE-1", status:"manual_attention", errorCode:"TRACKING_APPROVAL_TIMEOUT" }]);
-  assert.equal(repository.listTrackingRecoveries(10, config.shopId)[0].status, "manual_attention");
+  assert.equal((await repository.listTrackingRecoveries(10, config.shopId))[0].status, "manual_attention");
   repository.close();
 });
 
-test("tracking recovery can be restricted to one explicit order", () => {
+test("tracking recovery can be restricted to one explicit order", async () => {
   const repository = new FulfillmentRepository();
   const dueAt = "2026-07-29T00:00:00.000Z";
-  for (const orderId of ["ONLY-1", "OTHER-2"]) repository.registerTrackingRecovery({
+  for (const orderId of ["ONLY-1", "OTHER-2"]) await repository.registerTrackingRecovery({
     orderKey:`${config.shopId}:${orderId}`, batchId:`batch-${orderId}`, displayOrderId:orderId,
     shopId:config.shopId, submittedAt:dueAt, nextCheckAt:dueAt, deadlineAt:"2026-07-30T00:00:00.000Z",
   });
-  const due = repository.listDueTrackingRecoveries(dueAt, 5, config.shopId, "ONLY-1");
+  const due = await repository.listDueTrackingRecoveries(dueAt, 5, config.shopId, "ONLY-1");
   assert.deepEqual(due.map((item) => item.displayOrderId), ["ONLY-1"]);
-  const beforeScheduledTime = repository.listDueTrackingRecoveries("2026-07-28T00:00:00.000Z", 5, config.shopId, "ONLY-1");
+  const beforeScheduledTime = await repository.listDueTrackingRecoveries("2026-07-28T00:00:00.000Z", 5, config.shopId, "ONLY-1");
   assert.deepEqual(beforeScheduledTime.map((item) => item.displayOrderId), ["ONLY-1"]);
   repository.close();
 });
@@ -313,10 +313,10 @@ test("preview exposes inventory and rejects out-of-stock orders", async () => {
   repository.close();
 });
 
-test("shared scan records use the same shop and inventory safety rules as a normal preview", () => {
+test("shared scan records use the same shop and inventory safety rules as a normal preview", async () => {
   const repository = new FulfillmentRepository();
   const service = new FulfillmentService({ config,repository,source:{ listPending:async()=>{ throw new Error("not used"); } },executor:{} });
-  const preview = service.createPreviewFromRecords([
+  const preview = await service.createPreviewFromRecords([
     order,
     { ...order,订单编号:"M-2",交易编号:"S-2",商品库存:0 },
     { ...order,订单编号:"M-3",交易编号:"S-3",店铺名:"Toko Penguin" },
@@ -532,13 +532,13 @@ test("asynchronous confirmation returns a queued batch before Mabang reading fin
     timings:{ prepare:10,submitRequest:20,trackingWait:30,distributionRequest:40,distributionWait:50,total:150 } }) };
   const service = new FulfillmentService({ config:{ ...config,realSubmitEnabled:true },repository,source,executor });
   const preview = await service.createPreview();
-  const queued = service.enqueuePreview(preview.previewId, preview.confirmationToken);
+  const queued = await service.enqueuePreview(preview.previewId, preview.confirmationToken);
   assert.equal(queued.status, "queued");
   await new Promise((resolve)=>setImmediate(resolve));
-  assert.equal(service.getBatch(queued.id).status, "running");
+  assert.equal((await service.getBatch(queued.id)).status, "running");
   releaseRead();
   await service.waitForIdle();
-  const finished = service.getBatch(queued.id);
+  const finished = await service.getBatch(queued.id);
   assert.equal(finished.status, "success");
   assert.equal(finished.orders[0].timings.trackingWait, 30);
   assert.equal(Number.isInteger(finished.orders[0].timings.executorTotal), true);
@@ -661,7 +661,7 @@ test("manual review recheck keeps the lock while SKU warehouses still differ", a
   await assert.rejects(service.recheckManualReview("S-1", { run:async()=>{ preflightCalls += 1; } }),
     { code:"MULTI_WAREHOUSE_REQUIRES_REVIEW" });
   assert.equal(preflightCalls,0);
-  assert.equal(repository.getManualReview(config.shopId,"S-1")?.errorCode,"MULTI_WAREHOUSE_REQUIRES_REVIEW");
+  assert.equal((await repository.getManualReview(config.shopId,"S-1"))?.errorCode,"MULTI_WAREHOUSE_REQUIRES_REVIEW");
   repository.close();
 });
 
@@ -685,12 +685,12 @@ test("automatic manual-review recovery requires two passes and never submits whi
   const first = await service.autoRecoverManualReviews({ records:[order] });
   assert.deepEqual(first.firstPass,[{ orderId:"S-1",passCount:1 }]);
   assert.equal(first.released.length,0);
-  assert.equal(repository.getManualReview(config.shopId,"S-1")?.errorCode,"MULTI_WAREHOUSE_REQUIRES_REVIEW");
+  assert.equal((await repository.getManualReview(config.shopId,"S-1"))?.errorCode,"MULTI_WAREHOUSE_REQUIRES_REVIEW");
 
   const second = await service.autoRecoverManualReviews({ records:[order] });
   assert.deepEqual(second.released,[{ orderId:"S-1",previousErrorCode:"MULTI_WAREHOUSE_REQUIRES_REVIEW" }]);
-  assert.equal(repository.getManualReview(config.shopId,"S-1"),null);
-  assert.equal(repository.getBatch(failed.id).orders[0].status,"released");
+  assert.equal(await repository.getManualReview(config.shopId,"S-1"),null);
+  assert.equal((await repository.getBatch(failed.id)).orders[0].status,"released");
   assert.equal(executorCalls,1);
   assert.equal(preflightCalls,2);
   const nextPreview = await service.createPreview();
@@ -725,11 +725,11 @@ test("startup quarantine converts the latest inventory-unknown failure into manu
   const preview = await service.createPreview();
   const failed = await service.confirmPreview(preview.previewId, preview.confirmationToken);
   repository.db.prepare(`UPDATE fulfillment_batch_orders SET error_code='INVENTORY_UNKNOWN_BEFORE_SUBMIT' WHERE batch_id=?`).run(failed.id);
-  assert.equal(repository.quarantineFailedOrders("INVENTORY_UNKNOWN_BEFORE_SUBMIT", "2026-07-29T06:00:00.000Z"), 1);
-  const quarantined = repository.getBatch(failed.id);
+  assert.equal(await repository.quarantineFailedOrders("INVENTORY_UNKNOWN_BEFORE_SUBMIT", "2026-07-29T06:00:00.000Z"), 1);
+  const quarantined = await repository.getBatch(failed.id);
   assert.equal(quarantined.orders[0].status, "needs_attention");
-  assert.equal(repository.isCompleted(quarantined.orders[0].orderKey), true);
-  assert.equal(repository.quarantineFailedOrders("INVENTORY_UNKNOWN_BEFORE_SUBMIT", "2026-07-29T06:01:00.000Z"), 0);
+  assert.equal(await repository.isCompleted(quarantined.orders[0].orderKey), true);
+  assert.equal(await repository.quarantineFailedOrders("INVENTORY_UNKNOWN_BEFORE_SUBMIT", "2026-07-29T06:01:00.000Z"), 0);
   repository.close();
 });
 
@@ -741,8 +741,8 @@ test("only one fulfillment batch can run at a time", async () => {
   const service = new FulfillmentService({ config:{ ...config,realSubmitEnabled:true },repository,source,executor });
   const firstPreview = await service.createPreview();
   const secondPreview = await service.createPreview();
-  service.enqueuePreview(firstPreview.previewId, firstPreview.confirmationToken);
-  assert.throws(() => service.enqueuePreview(secondPreview.previewId, secondPreview.confirmationToken), { code:"BATCH_ALREADY_RUNNING" });
+  await service.enqueuePreview(firstPreview.previewId, firstPreview.confirmationToken);
+  await assert.rejects(() => service.enqueuePreview(secondPreview.previewId, secondPreview.confirmationToken), { code:"BATCH_ALREADY_RUNNING" });
   await new Promise((resolve)=>setImmediate(resolve));
   releaseRead();
   await service.waitForIdle();
@@ -754,13 +754,13 @@ test("restart recovery locks uncertain queued orders for manual attention", asyn
   const service = new FulfillmentService({ config:{ ...config,realSubmitEnabled:true },repository,
     source:{ listPending:async()=>[order] },executor:{} });
   const preview = await service.createPreview();
-  const { batch } = service.createConfirmedBatch(preview.previewId, preview.confirmationToken);
-  const recovered = repository.recoverInterruptedBatches("2026-07-28T00:00:00.000Z");
+  const { batch } = await service.createConfirmedBatch(preview.previewId, preview.confirmationToken);
+  const recovered = await repository.recoverInterruptedBatches("2026-07-28T00:00:00.000Z");
   assert.equal(recovered.length, 1);
   assert.equal(recovered[0].status, "failed");
   assert.equal(recovered[0].orders[0].status, "needs_attention");
   assert.equal(recovered[0].orders[0].errorCode, "SERVICE_RESTARTED_DURING_BATCH");
-  assert.equal(repository.getActiveBatch(), null);
+  assert.equal(await repository.getActiveBatch(), null);
   repository.close();
 });
 
@@ -903,10 +903,10 @@ test("pending preview summaries and scan history survive scheduler status reads"
   const repository = new FulfillmentRepository();
   const service = new FulfillmentService({ config,repository,source:{ listPending:async()=>[order] },executor:{} });
   const preview = await service.createPreview();
-  service.recordScanRun({ startedAt:"2026-07-28T01:00:00.000Z",finishedAt:"2026-07-28T01:00:02.000Z",
+  await service.recordScanRun({ startedAt:"2026-07-28T01:00:00.000Z",finishedAt:"2026-07-28T01:00:02.000Z",
     outcome:"preview_created",message:"已生成预览",eligibleCount:1,excludedCount:0,previewId:preview.previewId });
-  const summaries = service.listPendingPreviewSummaries();
-  const history = service.listRecentScanRuns();
+  const summaries = await service.listPendingPreviewSummaries();
+  const history = await service.listRecentScanRuns();
   assert.equal(summaries[0].previewId, preview.previewId);
   assert.deepEqual(summaries[0].shop, { id:"2021485965",name:"JOJO Mall" });
   assert.equal(summaries[0].eligibleOrderCount, 1);

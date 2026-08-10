@@ -61,6 +61,17 @@ test("Shopee relay client exposes only fixed read operations and forces GET upst
     params: { offset: 0, page_size: 20 },
   });
   assert.equal(requests[0].options.headers["X-Token-Key"], "test-relay-key");
+  await client.call("generate_income_report", {
+    shopId: SHOP.sellerId,
+    params: { release_time_from: 1785513600, release_time_to: 1786118399 },
+  });
+  await client.call("get_income_report", {
+    shopId: SHOP.sellerId,
+    params: { income_report_id: "report-1" },
+  });
+  assert.equal(requests[1].body.api_path, "/api/v2/payment/generate_income_report");
+  assert.equal(requests[2].body.api_path, "/api/v2/payment/get_income_report");
+  assert.equal(requests[1].body.method, "GET");
   await assert.rejects(
     client.call("/api/v2/product/update_price", { shopId: SHOP.sellerId }),
     (error) => error.code === "SHOPEE_RELAY_OPERATION_NOT_ALLOWED" && error.status === 403,

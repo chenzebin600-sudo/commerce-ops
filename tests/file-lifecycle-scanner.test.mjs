@@ -265,7 +265,7 @@ test("a symbolic link is rejected without following it outside the root", async 
   } finally { await close(context); }
 });
 
-for (const directory of [".git", "backups", "chrome-user-data"]) {
+for (const directory of [".git", "backups", "chrome-user-data", "sales-assortment-ai"]) {
   test(`${directory} directories are excluded from lifecycle traversal`, async () => {
     const context = await setup();
     try {

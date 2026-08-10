@@ -1,4 +1,5 @@
 import contextlib
+import gzip
 import json
 import math
 import os
@@ -446,6 +447,43 @@ def collect_inventory_image_pages(payload):
     }
 
 
+def collect_profit_order_references(payload):
+    username, password = require_credentials(payload)
+    references = payload.get("orderReferences") or []
+    if not isinstance(references, list):
+        raise ValueError("orderReferences 必须是订单号数组。")
+    references = list(dict.fromkeys(
+        str(value or "").strip() for value in references if str(value or "").strip()
+    ))
+    if not references or len(references) > 1000:
+        raise ValueError("利润补单一次必须指定 1-1000 个订单号。")
+    client = order_source.MabangClient()
+    client.login(username, password)
+    records = []
+    matched_ids = []
+    missing_references = []
+    for offset in range(0, len(references), 10):
+        chunk = references[offset:offset + 10]
+        chunk_records, chunk_matched, chunk_missing = client.export_order_references_to_records(chunk, "")
+        records.extend(chunk_records)
+        matched_ids.extend(chunk_matched)
+        missing_references.extend(chunk_missing)
+    records = json_safe(records)
+    return {
+        "ok": True,
+        "kind": "orders",
+        "columns": list(order_source.TARGET_FIELDS),
+        "records": records,
+        "summary": {
+            "orders": len(set(matched_ids)),
+            "rows": len(records),
+            "requestedOrders": len(references),
+            "missingOrderReferences": missing_references,
+            "queryType": "profit_order_references",
+        },
+    }
+
+
 def write_xlsx(payload):
     output_path = Path(str(payload.get("outputPath") or "")).resolve()
     allowed_root = Path(os.environ.get("MABANG_EXPORT_DIR") or output_path.parent).resolve()
@@ -544,6 +582,8 @@ def dispatch(payload):
         return collect_orders(payload)
     if action == "fulfillment-orders":
         return collect_fulfillment_orders(payload)
+    if action == "profit-order-references":
+        return collect_profit_order_references(payload)
     if action == "inventory":
         return collect_inventory(payload)
     if action == "fulfillment-inspect":
@@ -565,15 +605,27 @@ def dispatch(payload):
     raise ValueError("不支持的马帮任务类型。")
 
 
+def write_response(result):
+    payload = json.dumps(json_safe(result), ensure_ascii=False).encode("utf-8")
+    if os.environ.get("MABANG_WORKER_RESPONSE_ENCODING") == "gzip":
+        sys.stdout.buffer.write(gzip.compress(payload, compresslevel=1))
+        sys.stdout.buffer.flush()
+        return
+    print(payload.decode("utf-8"), flush=True)
+
+
 def main():
     payload = json.load(sys.stdin)
+    exit_code = 0
     try:
         with contextlib.redirect_stdout(sys.stderr):
             result = dispatch(payload)
-        print(json.dumps(json_safe(result), ensure_ascii=False), flush=True)
     except Exception as error:
-        print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False), flush=True)
-        raise SystemExit(1)
+        result = {"ok": False, "error": str(error)}
+        exit_code = 1
+    write_response(result)
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

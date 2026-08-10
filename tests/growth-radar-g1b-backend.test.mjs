@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
+import { PRODUCT_PACKAGE_SOURCE_SYSTEM } from "../lib/data-foundation/unified-data-contracts.mjs";
 import { createGrowthRadarAccessPolicy } from "../lib/growth-radar/growth-radar-access-policy.mjs";
 import { createGrowthRadarApi } from "../lib/growth-radar/growth-radar-api.mjs";
 import { GrowthRadarService } from "../lib/growth-radar/growth-radar-service.mjs";
@@ -105,6 +106,7 @@ function inventoryRow(sourceRowNumber, sourceSku, warehouseName, overrides = {})
       lockedQuantity: 2,
       inTransitQuantity: 3,
       pendingShipmentQuantity: 1,
+      transferPendingShipmentQuantity: 4,
       productStatus: "active",
       categoryLevel1: "test",
       categoryLevel2: null,
@@ -175,7 +177,7 @@ async function seedProduct(provider) {
   await provider.execute(`INSERT INTO product_skus (
     id,source_system,source_sku,normalized_sku,category_id,source_product_name,source_main_sku,
     source_status_raw,current_source_row_id,first_seen_batch_id,last_seen_batch_id,created_at,updated_at,country_raw,sku_code_normalized
-  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ["g1b-product", "company_product_center", "SKU-OK", "TH|SKU-OK", "g1b-category",
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ["g1b-product", PRODUCT_PACKAGE_SOURCE_SYSTEM, "SKU-OK", "TH|SKU-OK", "g1b-category",
     "Safe test product", "MAIN-OK", "active", "g1b-product-row", "g1b-product-batch", "g1b-product-batch", AT, AT, "TH", "SKU-OK"]);
   await provider.execute("UPDATE product_import_rows SET target_sku_id=? WHERE id=?", ["g1b-product", "g1b-product-row"]);
 }

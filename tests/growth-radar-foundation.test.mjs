@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
+import { PRODUCT_PACKAGE_SOURCE_SYSTEM } from "../lib/data-foundation/unified-data-contracts.mjs";
 import { createGrowthRadarAccessPolicy, GROWTH_RADAR_PERMISSIONS } from "../lib/growth-radar/growth-radar-access-policy.mjs";
 import { growthRadarParseOutputLimit } from "../lib/growth-radar/growth-radar-parser.mjs";
 import { GrowthRadarService } from "../lib/growth-radar/growth-radar-service.mjs";
@@ -20,6 +21,35 @@ test("Growth Radar parser transport scales to the supported workbook row limit",
   assert.equal(growthRadarParseOutputLimit(1000), 128 * 1024 * 1024);
   assert.equal(growthRadarParseOutputLimit(200000), 512 * 1024 * 1024);
   assert.equal(growthRadarParseOutputLimit(1000000), 512 * 1024 * 1024);
+});
+
+test("Growth Radar batches product candidate summaries for large previews", async () => {
+  let bulkCalls = 0;
+  let singleCalls = 0;
+  const service = new GrowthRadarService({
+    repository: {
+      async productCandidateSummaries(skus) {
+        bulkCalls += 1;
+        assert.deepEqual(skus, ["sku-1", "SKU-2"]);
+        return [{ normalizedSku: "SKU-1", candidateCount: 2, countryCount: 1 }];
+      },
+      async productCandidates() {
+        singleCalls += 1;
+        return [];
+      },
+    },
+  });
+
+  const summaries = await service.productCandidateSummaryMap(new Set(["sku-1", "SKU-2"]));
+
+  assert.equal(bulkCalls, 1);
+  assert.equal(singleCalls, 0);
+  assert.deepEqual(summaries.get("SKU-1"), {
+    normalizedSku: "SKU-1",
+    candidateCount: 2,
+    countryCount: 1,
+  });
+  assert.equal(summaries.has("SKU-2"), false);
 });
 
 function normalizedOrder(overrides = {}) {
@@ -67,7 +97,14 @@ function parsedRow(sourceRowNumber, normalized, overrides = {}) {
 function orderWorkbook() {
   const rows = [
     parsedRow(2, normalizedOrder()),
-    parsedRow(3, normalizedOrder({ sourceSku: "SKU-2", platformSku: "PLATFORM-SKU-2", quantity: 2, productName: "Second Product" })),
+    parsedRow(3, normalizedOrder({
+      sourceSku: "SKU-2",
+      platformSku: "PLATFORM-SKU-2",
+      quantity: 2,
+      productName: "Second Product",
+      orderAmount: 100.000004,
+      orderAmountSourceField: "订单核算金额（原始货币）×汇率（原始货币）",
+    })),
     parsedRow(4, normalizedOrder({ sourceOrderId: "ORDER-002", orderStatus: "已作废", cancelledAt: "2026-07-14T10:00:00.000Z", effectiveStatus: "invalid_cancelled", sourceSku: "SKU-1", quantity: 4, orderAmount: 50 })),
     parsedRow(5, normalizedOrder({ sourceOrderId: "ORDER-003", sourceShopName: "Unknown Shop", sourceSku: "SKU-9", platformSku: "PLATFORM-SKU-9", orderAmount: 30 })),
     parsedRow(6, normalizedOrder({ sourceOrderId: "", sourceSku: "" }), {
@@ -103,7 +140,8 @@ function inventoryWorkbook() {
       redactedFields: [], rowHash: "c".repeat(64), parseStatus: "parsed", issueCodes: [], formulaFields: [],
       normalized: {
         sourceSku: "SKU-1", warehouseName: "WH-A", availableQuantity: 12, physicalQuantity: 15,
-        lockedQuantity: 3, inTransitQuantity: null, pendingShipmentQuantity: null,
+        lockedQuantity: 3, inTransitQuantity: null, pendingShipmentQuantity: 2,
+        transferPendingShipmentQuantity: 7,
         productStatus: "正常销售", categoryLevel1: "测试类目", categoryLevel2: null, categoryLevel3: null,
         sourceVisibleSales7d: 5, sourceVisibleSales28d: 18, sourceVisibleSales42d: 25,
         sourceVisibleSalesStatus: "confirmed", sourcePredictedDailySales: 0.5, snapshotAt: AT,
@@ -133,7 +171,7 @@ async function seedProducts(provider) {
       id,source_system,source_sku,normalized_sku,category_id,source_product_name,source_main_sku,
       source_status_raw,current_source_row_id,first_seen_batch_id,last_seen_batch_id,created_at,updated_at,
       country_raw,sku_code_normalized
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [skuId, "company_product_center", sku, `${country}|${sku}`, category,
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [skuId, PRODUCT_PACKAGE_SOURCE_SYSTEM, sku, `${country}|${sku}`, category,
       `Product ${country} ${sku}`, `MAIN-${index}`, "正常销售", rowId, batch, batch, AT, AT, country, sku]);
     await provider.execute("UPDATE product_import_rows SET target_sku_id=? WHERE id=?", [skuId, rowId]);
   }
@@ -227,6 +265,10 @@ test("G1A deterministic growth radar foundation", async (t) => {
     await t.test("13 order preview detects two source shops", () => assert.equal(orderPreview.summary.sourceShopCount, 2));
     await t.test("14 order line amount remains unavailable", () => assert.equal(orderPreview.summary.lineAmountStatus, "unavailable"));
     await t.test("15 current-online coverage is explicitly unavailable", () => assert.equal(orderPreview.summary.currentOnlineStatus, "unavailable"));
+    await t.test("15a direct CNY order amount takes precedence over a rounded fallback", () => {
+      assert.equal(orderPreview.summary.orderAmountConflictCount, 0);
+      assert.equal(orderPreview.issues.some((item) => item.issueCode === "order_amount_conflict"), false);
+    });
 
     await t.test("16 apply creates one auditable source batch", async () => {
       orderApplied = await service.applyPreview("mabang_order", { previewId: orderPreview.previewId, idempotencyKey: ORDER_SHA },
@@ -404,7 +446,11 @@ test("G1A deterministic growth radar foundation", async (t) => {
     });
 
     await t.test("38 inventory snapshot never fabricates sellable stock or days of supply", async () => {
-      const result = await dataAccess.provider.query("SELECT sellable_quantity,sellable_quantity_status,days_of_supply,days_of_supply_status FROM growth_inventory_snapshots");
+      const result = await dataAccess.provider.query(`SELECT pending_shipment_quantity,
+        transfer_pending_shipment_quantity,sellable_quantity,sellable_quantity_status,
+        days_of_supply,days_of_supply_status FROM growth_inventory_snapshots`);
+      assert.equal(result.rows[0].pending_shipment_quantity, 2);
+      assert.equal(result.rows[0].transfer_pending_shipment_quantity, 7);
       assert.equal(result.rows[0].sellable_quantity, null);
       assert.equal(result.rows[0].sellable_quantity_status, "unconfirmed");
       assert.equal(result.rows[0].days_of_supply, null);

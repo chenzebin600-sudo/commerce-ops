@@ -1,0 +1,47 @@
+{
+  "contract": "COMMERCE-OPS-POSTGRESQL-HARDENING-VERIFICATION-1.0.0",
+  "status": "PASS",
+  "verifiedAt": "2026-08-06T12:35:20.826Z",
+  "tls": {
+    "connected": true,
+    "version": "TLSv1.3",
+    "cipher": "TLS_AES_256_GCM_SHA384",
+    "bits": 256,
+    "caSubject": "CN=Commerce Ops PostgreSQL Root CA",
+    "caValidTo": "Aug  6 08:58:06 2036 GMT",
+    "hostsslEnforced": true
+  },
+  "walArchive": {
+    "archived": true,
+    "wal": "000000010000000700000021",
+    "encrypted": true,
+    "decryptedDigestVerified": true,
+    "sourceDigestCompared": true,
+    "archivedCount": "470",
+    "failedCount": "0"
+  },
+  "slowQuery": {
+    "thresholdMs": 500,
+    "logEvidence": "postgresql-2026-08-06.log",
+    "markerObserved": true
+  },
+  "trackIoTiming": true,
+  "pgStatStatements": {
+    "preloaded": true,
+    "installed": {
+      "commerce_ops": {
+        "extname": "pg_stat_statements",
+        "schema": "public"
+      },
+      "commerce_ops_staging": {
+        "extname": "pg_stat_statements",
+        "schema": "public"
+      }
+    },
+    "trackedStatements": 17
+  },
+  "pendingRestart": false,
+  "productionProvider": "sqlite",
+  "sqliteTouched": false,
+  "providerSwitched": false
+}

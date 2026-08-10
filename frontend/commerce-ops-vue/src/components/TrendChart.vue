@@ -12,6 +12,8 @@ type TrendRow = { date: string; ownAmount: number; assortmentDailyAmount: number
 const props = defineProps<{
   rows: TrendRow[];
   comparisonRows?: TrendRow[];
+  currentSeriesLabel?: string;
+  comparisonSeriesLabel?: string;
 }>();
 
 const chartData = computed(() => {
@@ -25,14 +27,14 @@ const chartData = computed(() => {
     };
   }
 
-  const currentByDay = new Map(props.rows.map((row) => [Number(row.date.slice(8, 10)), row]));
-  const previousByDay = new Map((props.comparisonRows || []).map((row) => [Number(row.date.slice(8, 10)), row]));
-  const days = [...new Set([...currentByDay.keys(), ...previousByDay.keys()])].sort((left, right) => left - right);
+  const currentRows = [...props.rows].sort((left, right) => left.date.localeCompare(right.date));
+  const previousRows = [...(props.comparisonRows || [])].sort((left, right) => left.date.localeCompare(right.date));
+  const length = Math.max(currentRows.length, previousRows.length);
   return {
     hasComparison,
-    categories: days.map((day) => `${day}日`),
-    current: days.map((day) => currentByDay.get(day) || null),
-    previous: days.map((day) => previousByDay.get(day) || null),
+    categories: Array.from({ length }, (_, index) => currentRows[index]?.date.slice(5) || `第${index + 1}天`),
+    current: Array.from({ length }, (_, index) => currentRows[index] || null),
+    previous: Array.from({ length }, (_, index) => previousRows[index] || null),
   };
 });
 
@@ -42,7 +44,7 @@ const option = computed(() => {
   const currentAssortment = data.current.map((row) => row?.assortmentDailyAmount ?? null);
   const series: Array<Record<string, unknown>> = [
     {
-      name: data.hasComparison ? "我方 GMV · 本月" : "我方销售额",
+      name: data.hasComparison ? `我方标准化估值 · ${props.currentSeriesLabel || "本月"}` : "我方标准化估值",
       type: "line",
       yAxisIndex: 0,
       smooth: 0.24,
@@ -56,7 +58,7 @@ const option = computed(() => {
       z: 5,
     },
     {
-      name: data.hasComparison ? "货盘金额 · 本月" : "货盘日均额",
+      name: data.hasComparison ? `货盘标准化估值 · ${props.currentSeriesLabel || "本月"}` : "货盘日均标准化估值",
       type: "bar",
       yAxisIndex: 1,
       barMaxWidth: 18,
@@ -68,7 +70,7 @@ const option = computed(() => {
 
   if (data.hasComparison) {
     series.splice(1, 0, {
-      name: "我方 GMV · 上月同期",
+      name: `我方标准化估值 · ${props.comparisonSeriesLabel || "上月同期"}`,
       type: "line",
       yAxisIndex: 0,
       smooth: 0.24,
@@ -82,7 +84,7 @@ const option = computed(() => {
       z: 4,
     });
     series.push({
-      name: "货盘金额 · 上月同期",
+      name: `货盘标准化估值 · ${props.comparisonSeriesLabel || "上月同期"}`,
       type: "bar",
       yAxisIndex: 1,
       barMaxWidth: 18,
@@ -118,14 +120,14 @@ const option = computed(() => {
     yAxis: [
       {
         type: "value",
-        name: "我方 GMV",
+        name: "我方标准化估值",
         nameTextStyle: { color: "#2563eb", fontSize: 10 },
         splitLine: { lineStyle: { color: "#eef2f7" } },
         axisLabel: { color: "#64748b", formatter: (value: number) => value >= 10000 ? `${Math.round(value / 1000)}k` : value },
       },
       {
         type: "value",
-        name: "货盘金额",
+        name: "货盘标准化估值",
         nameTextStyle: { color: "#64748b", fontSize: 10 },
         splitLine: { show: false },
         axisLabel: { color: "#94a3b8", formatter: (value: number) => value >= 1000000 ? `${(value / 1000000).toFixed(1)}m` : value >= 10000 ? `${Math.round(value / 1000)}k` : value },

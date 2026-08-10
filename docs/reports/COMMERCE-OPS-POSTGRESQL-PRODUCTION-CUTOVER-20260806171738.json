@@ -1,0 +1,1385 @@
+{
+  "status": "PASS",
+  "contract": "COMMERCE-OPS-PG-PHASE3D-PRODUCTION-CUTOVER-1.0.0",
+  "runStamp": "20260806171738",
+  "startedAt": "2026-08-06T17:17:38.020Z",
+  "completedAt": "2026-08-06T17:26:40.291Z",
+  "sourceProviderBefore": "sqlite",
+  "productionProviderAfter": "postgres",
+  "target": "commerce_ops",
+  "config": {
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "commerce_ops",
+    "testDatabase": "commerce_ops_migration_test",
+    "schema": "app",
+    "adminUser": "postgres",
+    "migratorUser": "commerce_migrator",
+    "appUser": "commerce_app",
+    "ssl": true,
+    "sslCaFile": "D:\\postgreSQL\\data\\tls\\root.crt",
+    "poolMax": 5,
+    "poolIdleTimeoutMs": 30000,
+    "connectionTimeoutMs": 10000,
+    "statementTimeoutMs": 30000
+  },
+  "preflight": {
+    "status": "PASS",
+    "checks": [
+      {
+        "name": "Persistent provider is SQLite",
+        "status": "PASS"
+      },
+      {
+        "name": "Exact main writer state",
+        "status": "PASS",
+        "evidence": {
+          "state": "FROZEN",
+          "pids": []
+        }
+      },
+      {
+        "name": "Exact scheduler writer state",
+        "status": "PASS",
+        "evidence": {
+          "state": "FROZEN",
+          "pids": []
+        }
+      },
+      {
+        "name": "No active source work",
+        "status": "PASS",
+        "evidence": {
+          "scheduledPendingOrRunning": 0,
+          "priceControlRunning": 0,
+          "repricingExecuting": 0,
+          "foundationSourceRunning": 0,
+          "growthAnalysisRunning": 0,
+          "imageGenerationRunning": 0,
+          "imageBatchRunning": 0,
+          "imageSyncRunning": 0,
+          "lifecycleScanRunning": 0,
+          "totalActive": 0
+        }
+      },
+      {
+        "name": "Candidate state READY/PASS",
+        "status": "PASS"
+      },
+      {
+        "name": "Candidate not prematurely switch-ready",
+        "status": "PASS"
+      },
+      {
+        "name": "No candidate batch/table failures",
+        "status": "PASS"
+      },
+      {
+        "name": "Final snapshot disk capacity",
+        "status": "PASS",
+        "evidence": {
+          "freeBytes": 65076170752,
+          "requiredFreeBytes": 9183501904
+        }
+      }
+    ],
+    "writerState": "FROZEN",
+    "processes": [],
+    "activity": {
+      "scheduledPendingOrRunning": 0,
+      "priceControlRunning": 0,
+      "repricingExecuting": 0,
+      "foundationSourceRunning": 0,
+      "growthAnalysisRunning": 0,
+      "imageGenerationRunning": 0,
+      "imageBatchRunning": 0,
+      "imageSyncRunning": 0,
+      "lifecycleScanRunning": 0,
+      "totalActive": 0
+    },
+    "candidate": {
+      "state": {
+        "id": "sqlite-to-postgresql-production-candidate",
+        "source_provider": "sqlite",
+        "target_provider": "postgresql_production_candidate",
+        "stage": "READY",
+        "migration_snapshot_time": "2026-08-06T14:52:53.325Z",
+        "source_snapshot_sha256": "2d43b0a54d7779c86297982ab1e4b49683753392fc354e4cbfc5ccc23f08d865",
+        "last_sync_started_at": "2026-08-06T15:07:22.592Z",
+        "last_sync_completed_at": "2026-08-06T15:07:27.590Z",
+        "last_successful_batch_id": "27b57ebf-4e10-41b6-9ae4-a4d608f88a50",
+        "sync_failure_count": "0",
+        "last_validation_at": "2026-08-06T15:11:13.014Z",
+        "last_validation_status": "PASS",
+        "is_switch_ready": false,
+        "paused": false,
+        "pause_reason": null,
+        "revision": "4",
+        "created_at": "2026-08-06T15:00:53.167Z",
+        "updated_at": "2026-08-06T15:11:13.014Z"
+      },
+      "tables": 92,
+      "latestValidation": {
+        "id": "c4c341b9-d958-45a6-991a-f209c46136c9",
+        "status": "PASS",
+        "tables_checked": 92,
+        "tables_with_differences": 0,
+        "sample_count": 42,
+        "sample_failures": 0,
+        "created_at": "2026-08-06T15:11:13.014Z"
+      },
+      "runningBatches": 0,
+      "unsuccessfulTables": 0
+    },
+    "sourceFiles": [
+      {
+        "file": "commerce-ops.sqlite",
+        "bytes": 3514535936,
+        "mtimeMs": 1786024195733.9634
+      },
+      {
+        "file": "commerce-ops.sqlite-wal",
+        "bytes": 3473192,
+        "mtimeMs": 1786031499874.9968
+      }
+    ],
+    "freeBytes": 65076170752,
+    "requiredFreeBytes": 9183501904
+  },
+  "writerFreeze": {
+    "status": "PASS",
+    "exactProcessesStopped": []
+  },
+  "retainedSqliteBackup": {
+    "sourceBytes": 3514535936,
+    "snapshotBytes": 3514544128,
+    "snapshotHash": "df5fe80166e7d150b741e5f5253a1e9d2146cfa7ccf95255bd588f9b70cd979f",
+    "integrity": "ok",
+    "foreignKeyViolations": 0,
+    "readOnly": true,
+    "path": "D:\\Projects\\commerce-ops\\storage\\backups\\commerce-ops-pre-postgresql-cutover-20260806171738.sqlite",
+    "relativePath": "storage/backups/commerce-ops-pre-postgresql-cutover-20260806171738.sqlite"
+  },
+  "finalSynchronization": {
+    "status": "PASS",
+    "snapshotSha256": "df5fe80166e7d150b741e5f5253a1e9d2146cfa7ccf95255bd588f9b70cd979f",
+    "source": {
+      "tables": 92,
+      "views": 15,
+      "rows": 3875432,
+      "columns": 1616
+    },
+    "synchronization": {
+      "batchId": "b04e571d-2dae-462c-8f6f-297c5ebbd906",
+      "mode": "FULL_RECONCILE",
+      "tables": [
+        {
+          "table": "dingtalk_robot_configs",
+          "examined": 4,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 4,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "foundation_source_systems",
+          "examined": 7,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 7,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "foundation_warehouses",
+          "examined": 29,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 29,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_country_mapping_sets",
+          "examined": 2,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 2,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_mapping_events",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_rule_sets",
+          "examined": 2,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 2,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_shops",
+          "examined": 200,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 200,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "mabang_account_profiles",
+          "examined": 2,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 2,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "operation_audit_events",
+          "examined": 42277,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 42277,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_detail_preferences",
+          "examined": 1,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 1,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_import_batches",
+          "examined": 5,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 5,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_media_assets",
+          "examined": 6583,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 6583,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "scheduler_leases",
+          "examined": 1,
+          "inserted": 0,
+          "updated": 1,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "schema_migrations",
+          "examined": 27,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 27,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "commerce_shop_registry",
+          "examined": 139,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 139,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "foundation_identity_links",
+          "examined": 24983,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 24983,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "foundation_integration_accounts",
+          "examined": 3,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 3,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "foundation_owners",
+          "examined": 22,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 22,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_warehouse_country_mappings",
+          "examined": 29,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 29,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "mabang_filter_option_cache",
+          "examined": 9469,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 9469,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "mabang_sku_image_sync_runs",
+          "examined": 2,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 2,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "price_control_automation_settings",
+          "examined": 1,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 1,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_categories",
+          "examined": 78,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 78,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_import_rows",
+          "examined": 21981,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 21981,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "scheduled_export_tasks",
+          "examined": 4,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 4,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "commerce_shop_account_bindings",
+          "examined": 139,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 139,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "foundation_account_capabilities",
+          "examined": 10,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 10,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "foundation_source_runs",
+          "examined": 33,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 33,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "mabang_sku_image_batches",
+          "examined": 210,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 210,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_import_issues",
+          "examined": 2153,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 2153,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_models",
+          "examined": 6500,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 6500,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_package_rows",
+          "examined": 21714,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 21714,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "scheduled_export_runs",
+          "examined": 19,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 19,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "export_files",
+          "examined": 22,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 22,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "mabang_sku_image_checkpoints",
+          "examined": 573,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 573,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "mabang_sku_image_discoveries",
+          "examined": 22687,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 22687,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "price_control_sync_runs",
+          "examined": 29,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 29,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_import_field_changes",
+          "examined": 3,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 3,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_skus",
+          "examined": 18347,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 18347,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "scheduled_export_run_events",
+          "examined": 259,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 259,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "file_lifecycle_protected_files",
+          "examined": 2,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 2,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "file_lifecycle_scans",
+          "examined": 1,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 1,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "foundation_tasks",
+          "examined": 376,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 376,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_shop_sku_coverage_snapshots",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_source_batches",
+          "examined": 13,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 13,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "mabang_sku_image_discovery_images",
+          "examined": 40039,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 40039,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "price_control_repricing_plans",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "price_control_source_batches",
+          "examined": 248,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 248,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_ai_contents",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_cost_snapshots",
+          "examined": 18602,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 18602,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_field_override_events",
+          "examined": 102,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 102,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_field_overrides",
+          "examined": 81,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 81,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_images",
+          "examined": 1,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 1,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_import_files",
+          "examined": 5,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 5,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_inventory_snapshots",
+          "examined": 21978,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 21978,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_listing_drafts",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_media_links",
+          "examined": 33764,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 33764,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_packaging_profiles",
+          "examined": 18347,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 18347,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_sku_lifecycle",
+          "examined": 18347,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 18347,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_sku_lifecycle_events",
+          "examined": 18393,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 18393,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "file_lifecycle_items",
+          "examined": 14,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 14,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "foundation_task_events",
+          "examined": 389,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 389,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "foundation_task_leases",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_analysis_runs",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_data_quality_issues",
+          "examined": 36718,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 36718,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_inventory_raw_rows",
+          "examined": 81721,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 81721,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_inventory_snapshots",
+          "examined": 81703,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 81703,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_order_headers",
+          "examined": 80140,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 80140,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_order_raw_rows",
+          "examined": 150813,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 150813,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_shop_sku_observations",
+          "examined": 12023,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 12023,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_shop_source_mappings",
+          "examined": 200,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 200,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "price_control_price_snapshots",
+          "examined": 1288997,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 1288997,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_identity_mappings",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_image_generation_tasks",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_listing_publish_records",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_price_change_events",
+          "examined": 508990,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 508990,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_mapping_issues",
+          "examined": 9356,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 9356,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_order_lines",
+          "examined": 116293,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 116293,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_shop_daily_metrics",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_shop_sku_daily_metrics",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_signals",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_sku_daily_metrics",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_sku_warehouse_daily_metrics",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_sku_warehouse_sales_metrics",
+          "examined": 80265,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 80265,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "managed_files",
+          "examined": 7,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 7,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "price_control_repricing_items",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_image_generation_items",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "product_sku_current_prices",
+          "examined": 617667,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 617667,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "file_quarantine_records",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_focus_items",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_order_inventory_links",
+          "examined": 461288,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 461288,
+          "status": "SUCCEEDED"
+        },
+        {
+          "table": "growth_focus_item_events",
+          "examined": 0,
+          "inserted": 0,
+          "updated": 0,
+          "deleted": 0,
+          "skipped": 0,
+          "status": "SUCCEEDED"
+        }
+      ],
+      "rowsExamined": 3875432,
+      "rowsInserted": 0,
+      "rowsUpdated": 1,
+      "rowsDeleted": 0,
+      "rowsSkipped": 3875431,
+      "observability": {
+        "agentRuns": 3,
+        "toolInvocations": 15,
+        "gatewayCalls": 13
+      },
+      "reconcileDurationMs": 1535
+    },
+    "validation": {
+      "status": "PASS",
+      "tables": 92,
+      "failures": [],
+      "foreignKeys": {
+        "count": 156,
+        "validated": true
+      },
+      "indexes": {
+        "sourceExpected": 319,
+        "target": 319,
+        "match": true
+      },
+      "samples": {
+        "count": 42,
+        "failures": 0,
+        "samples": [
+          {
+            "table": "product_skus",
+            "offset": 0,
+            "primaryKeyHash": "c674863a13b58084ff9afc6eeb3a10066d36c5fa80a7ef5d212f90eac3c6c429",
+            "match": true
+          },
+          {
+            "table": "product_skus",
+            "offset": 4825,
+            "primaryKeyHash": "6c9b30195ba20dc24019d4d154a738b0aeb8db277434235b0ce913d7f62c7c3a",
+            "match": true
+          },
+          {
+            "table": "product_skus",
+            "offset": 9173,
+            "primaryKeyHash": "38bb08ce4d542e52d58b577034e0d6b46fc46064df9c148faf870c7f75718d41",
+            "match": true
+          },
+          {
+            "table": "product_skus",
+            "offset": 10516,
+            "primaryKeyHash": "65b5dfd330cb4162bae71691185399fbba4e56a4f45402b472e7c1572a822d3e",
+            "match": true
+          },
+          {
+            "table": "product_skus",
+            "offset": 14619,
+            "primaryKeyHash": "4a13d0f04fee7d27b99481536fd19770fe7a0c8c4cc3e870ef2a425c310078fd",
+            "match": true
+          },
+          {
+            "table": "product_skus",
+            "offset": 17893,
+            "primaryKeyHash": "619cccf46f7269b7847b78097feae12eb859f1681d6f66bb76b0e638086c3765",
+            "match": true
+          },
+          {
+            "table": "product_skus",
+            "offset": 18346,
+            "primaryKeyHash": "13e150f2e1dd8fe14c58f46745ebdd8fded6d821464dccacb4d72e077e6ce521",
+            "match": true
+          },
+          {
+            "table": "growth_order_headers",
+            "offset": 0,
+            "primaryKeyHash": "be1995f6d7e408a789ef5f52b7a8d03468ef2247365a4b0b1870b65d1635ed92",
+            "match": true
+          },
+          {
+            "table": "growth_order_headers",
+            "offset": 1042,
+            "primaryKeyHash": "00618477579b5adeb1c7f5e310f10ce4dd1697ecdc81ee6739029f682c688de3",
+            "match": true
+          },
+          {
+            "table": "growth_order_headers",
+            "offset": 16804,
+            "primaryKeyHash": "f983dd33b3dbbd64ee207cdf5bd41c89417fe3130d249ee7e05e72b7cc43c136",
+            "match": true
+          },
+          {
+            "table": "growth_order_headers",
+            "offset": 40070,
+            "primaryKeyHash": "d72c923a12f4f57973afb192b4e9b9479a53cf01089be714977170f1b0879ddf",
+            "match": true
+          },
+          {
+            "table": "growth_order_headers",
+            "offset": 48259,
+            "primaryKeyHash": "9efe9ddc505167afd72c610ad63a06f075836da5ad5e26274023e8450f5a6e24",
+            "match": true
+          },
+          {
+            "table": "growth_order_headers",
+            "offset": 79005,
+            "primaryKeyHash": "23637502bba4352bdad3c9d4f25b0fffcbe0dda680c9f27a4b58b96d492651bb",
+            "match": true
+          },
+          {
+            "table": "growth_order_headers",
+            "offset": 80139,
+            "primaryKeyHash": "075ea56d7ca9fa2176e01f6448aeb864e9600eb41ee03b3445074edac5abeac6",
+            "match": true
+          },
+          {
+            "table": "growth_order_lines",
+            "offset": 0,
+            "primaryKeyHash": "928e418e09221c42a00a51fd745dce903384892a75610c88dfcf7864f84dcf14",
+            "match": true
+          },
+          {
+            "table": "growth_order_lines",
+            "offset": 29134,
+            "primaryKeyHash": "798934d6444386abf00f9f94d1215f50b7aa16d38529025da283a0c503e1d20a",
+            "match": true
+          },
+          {
+            "table": "growth_order_lines",
+            "offset": 41308,
+            "primaryKeyHash": "6adc6b4ca93412a067a221a9abdffb4de42f3b0a1a2319871b49aa362bcc1603",
+            "match": true
+          },
+          {
+            "table": "growth_order_lines",
+            "offset": 49216,
+            "primaryKeyHash": "39628f7d7797760a3f1c153bc230935bc1826b937dea22e2a4ba096c9ad75896",
+            "match": true
+          },
+          {
+            "table": "growth_order_lines",
+            "offset": 58146,
+            "primaryKeyHash": "f1ba4ae71da20d6694598807278433e743a6fa19f3d1beacb088a7a26d8ee9c5",
+            "match": true
+          },
+          {
+            "table": "growth_order_lines",
+            "offset": 106666,
+            "primaryKeyHash": "019773e7fed6c2efa036361ab9f5253eaecde38eb78f5eee8f53f30beddf4d6e",
+            "match": true
+          },
+          {
+            "table": "growth_order_lines",
+            "offset": 116292,
+            "primaryKeyHash": "3001967c8dab63df421d7a2be99046e603da1b35d2fc693e55caabfd32c713bf",
+            "match": true
+          },
+          {
+            "table": "growth_inventory_snapshots",
+            "offset": 0,
+            "primaryKeyHash": "e16d0c78184d6a4b03c7fa532baf897c0c86115dc7d003d209b39539fda7a5e0",
+            "match": true
+          },
+          {
+            "table": "growth_inventory_snapshots",
+            "offset": 10796,
+            "primaryKeyHash": "640270064b4bc51b4db111a174a4f229ca800817ca0f79d1f21c7a0f4e54ea03",
+            "match": true
+          },
+          {
+            "table": "growth_inventory_snapshots",
+            "offset": 39921,
+            "primaryKeyHash": "585a90fa114720feb96e44f98cb8bd93a8a50498bae0fb645dbddba7f87ac85a",
+            "match": true
+          },
+          {
+            "table": "growth_inventory_snapshots",
+            "offset": 40851,
+            "primaryKeyHash": "01620aefef1ea3fa186713e7c253703bfc7941bc547c978cb1c92e7fbf0f9006",
+            "match": true
+          },
+          {
+            "table": "growth_inventory_snapshots",
+            "offset": 57614,
+            "primaryKeyHash": "7b781b95b1d9c2709dfd768a29d7c7a68d2168722a537ca07620c0bf8b41bc2b",
+            "match": true
+          },
+          {
+            "table": "growth_inventory_snapshots",
+            "offset": 72241,
+            "primaryKeyHash": "39dcceca83d858a6b72b3a8c506089ecbfe961dadf241ffd6810632630357f85",
+            "match": true
+          },
+          {
+            "table": "growth_inventory_snapshots",
+            "offset": 81702,
+            "primaryKeyHash": "67e3c2322ada5a536e59340a4c46c111c98e2c99654cab860fd61974a6f673af",
+            "match": true
+          },
+          {
+            "table": "foundation_tasks",
+            "offset": 0,
+            "primaryKeyHash": "66e7565317cb0f855ca642baf220a11727ec8acb9efb191d02bb1d23cd2d0316",
+            "match": true
+          },
+          {
+            "table": "foundation_tasks",
+            "offset": 5,
+            "primaryKeyHash": "ecafb28645aa86fa47c687b264dc7ef4240143cadce1f66e21cbedb780d6c20d",
+            "match": true
+          },
+          {
+            "table": "foundation_tasks",
+            "offset": 174,
+            "primaryKeyHash": "25768c50752ea4811d1b6c25c42e93772dd8c7475a33b7cb1fe4ee9d74490029",
+            "match": true
+          },
+          {
+            "table": "foundation_tasks",
+            "offset": 188,
+            "primaryKeyHash": "a6bc4ae4ec3ba7152e7ff31aab7637dc953a749a9543db145f1c7c9af35c07bf",
+            "match": true
+          },
+          {
+            "table": "foundation_tasks",
+            "offset": 315,
+            "primaryKeyHash": "a07782cb1aa4fe9b988fe902fefcd2fc4f2f1501862a1cac8951cf56b99afd34",
+            "match": true
+          },
+          {
+            "table": "foundation_tasks",
+            "offset": 332,
+            "primaryKeyHash": "24661b93698f8870707111fc5c54da5d49ca5f3969bbf4aa3eede6dbe55bd527",
+            "match": true
+          },
+          {
+            "table": "foundation_tasks",
+            "offset": 375,
+            "primaryKeyHash": "711a3673e091d1d931091b906b8ab2d56eed6007cd3d0b781f48dca7689a12ed",
+            "match": true
+          },
+          {
+            "table": "operation_audit_events",
+            "offset": 0,
+            "primaryKeyHash": "9f7b0d8e5e69671911149307c689a6e2d7966805529632906da19fd1183be34d",
+            "match": true
+          },
+          {
+            "table": "operation_audit_events",
+            "offset": 21138,
+            "primaryKeyHash": "c64d32b33b0423cf9e78056ddd75c117d8c46b900498073161b1257f2ac38955",
+            "match": true
+          },
+          {
+            "table": "operation_audit_events",
+            "offset": 24619,
+            "primaryKeyHash": "901ef77c1d7db1a945c90d24323f3b327d38d6291ac7d804090d3650d06ead60",
+            "match": true
+          },
+          {
+            "table": "operation_audit_events",
+            "offset": 27322,
+            "primaryKeyHash": "c0ce01be19a88a8aa05d93ea7b94a1f886815f50351841baf2ff342c5c6d177b",
+            "match": true
+          },
+          {
+            "table": "operation_audit_events",
+            "offset": 27514,
+            "primaryKeyHash": "f727c6920944f7e299c740fb64bb79b5feb8e7d1d6c974af69c6411d37588a39",
+            "match": true
+          },
+          {
+            "table": "operation_audit_events",
+            "offset": 33003,
+            "primaryKeyHash": "ea0b3cea3eab6e10fafdd4cbee3e1d291353356d3a0fc37c4ae95f63fbfa985f",
+            "match": true
+          },
+          {
+            "table": "operation_audit_events",
+            "offset": 42276,
+            "primaryKeyHash": "9674e52d92054ae47575ca81116cad4eeea2a0ecce39a134810d77f2f2c7fd9b",
+            "match": true
+          }
+        ]
+      }
+    },
+    "gates": [
+      {
+        "name": "Formal candidate identity",
+        "status": "PASS",
+        "evidence": "commerce_ops; persistent provider sqlite"
+      },
+      {
+        "name": "Complete source scope",
+        "status": "PASS",
+        "evidence": "92/92 tables, 15 views"
+      },
+      {
+        "name": "Row and digest parity",
+        "status": "PASS",
+        "evidence": "92/92 tables"
+      },
+      {
+        "name": "Bidirectional primary-key EXCEPT",
+        "status": "PASS",
+        "evidence": "zero source-only and target-only keys"
+      },
+      {
+        "name": "Foreign keys, indexes, and views",
+        "status": "PASS",
+        "evidence": "156 validated FKs, 319 indexes, 15 views"
+      },
+      {
+        "name": "Business totals and deterministic samples",
+        "status": "PASS",
+        "evidence": "10 totals, 42 samples"
+      },
+      {
+        "name": "Application role boundary",
+        "status": "PASS",
+        "evidence": "CRUD allowed; CREATE/ownership/system role flags denied"
+      },
+      {
+        "name": "Full write path",
+        "status": "PASS",
+        "evidence": "7 core domains plus provider repositories"
+      },
+      {
+        "name": "Process-scoped health and SQLite rollback",
+        "status": "PASS",
+        "evidence": "candidate child health passed; pinned SQLite startup passed"
+      }
+    ],
+    "report": {
+      "jsonPath": "D:\\Projects\\commerce-ops\\docs\\reports\\COMMERCE-OPS-POSTGRESQL-PRODUCTION-CANDIDATE-20260806172533.json",
+      "markdownPath": "D:\\Projects\\commerce-ops\\docs\\reports\\COMMERCE-OPS-POSTGRESQL-PRODUCTION-CANDIDATE-20260806172533.md"
+    }
+  },
+  "encryptedPostgresqlBackup": {
+    "status": "PASS",
+    "artifact": "commerce-ops-commerce_ops-20260806172534.dump.aes256gcm",
+    "encryptedSha256": "2b10f28cd67e4021b2b157077ac171ca991c3bd52a9358a545e3e08bf6f983f0",
+    "encryptedBytes": 320711353,
+    "encryption": "AES-256-GCM",
+    "plaintextRetained": false
+  },
+  "switchReady": true,
+  "persistentConfig": {
+    "file": ".env.local",
+    "keysUpdated": 8,
+    "databaseProvider": "postgres",
+    "productionMode": true
+  },
+  "supervisor": {
+    "pid": 58148,
+    "logPath": "D:\\Projects\\commerce-ops\\logs\\postgresql-cutover-postgres-20260806171738.log",
+    "provider": "postgres"
+  },
+  "service": {
+    "healthStatus": 200,
+    "processRoles": [
+      "main",
+      "scheduler",
+      "supervisor"
+    ],
+    "processIds": [
+      21468,
+      42268,
+      58148
+    ],
+    "identity": {
+      "database": "commerce_ops",
+      "username": "commerce_app",
+      "read_only": "on"
+    },
+    "schedulerLeaseActive": true,
+    "status": "PASS"
+  },
+  "sqliteProductionModified": false,
+  "externalCallsDuringMigration": 0,
+  "durationMs": 542270,
+  "rollbackBoundary": "SQLite retained backup is the pre-cutover rollback point. PostgreSQL-only writes are not automatically reverse-synchronized."
+}

@@ -38,7 +38,7 @@ const option = computed(() => ({
       return [
         `<strong>${escapeHtml(row.productName)}</strong>`,
         `${escapeHtml(row.country)} · ${escapeHtml(row.categoryL1)}`,
-        `销售额：¥${row.ownAmount.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`,
+        `标准化估值：¥${row.ownAmount.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`,
         `近7日变化：${change}`,
         `近7日排名：${row.current7dRank ?? "—"}（前7日 ${row.previous7dRank ?? "—"}）`,
       ].join("<br>");
@@ -84,9 +84,9 @@ const option = computed(() => ({
 
 <template>
   <div class="product-ranking-view">
-    <div class="ranking-mode"><el-segmented v-model="mode" :options="[{ label: '销售额排行', value: 'amount' }, { label: '近7日变化', value: 'change' }]" /></div>
+    <div class="ranking-mode"><el-segmented v-model="mode" :options="[{ label: '标准化估值排行', value: 'amount' }, { label: '近7日变化', value: 'change' }]" /></div>
     <VChart v-if="topRows.length" class="product-ranking-chart" :option="option" autoresize />
-    <el-empty v-else description="当前筛选无产品销售排行" />
+    <el-empty v-else description="当前筛选无产品标准化估值排行" />
   </div>
 </template>
 

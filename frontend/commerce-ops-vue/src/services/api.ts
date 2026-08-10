@@ -7,8 +7,14 @@ export interface AuthenticationStatus {
 }
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string | null = null,
+    readonly details: unknown = null,
+  ) {
     super(message);
+    this.name = "ApiError";
   }
 }
 
@@ -51,7 +57,8 @@ export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
     const error = payload.error as { message?: string } | string | undefined;
     const responseMessage = typeof payload.message === "string" ? payload.message : "";
     const message = (typeof error === "string" ? error : error?.message) || responseMessage;
-    throw new ApiError(message || `请求失败 (${response.status})`, response.status);
+    const code = typeof payload.code === "string" ? payload.code : null;
+    throw new ApiError(message || `请求失败 (${response.status})`, response.status, code, payload);
   }
   return ((payload.data ?? payload.dashboard ?? payload) as T);
 }

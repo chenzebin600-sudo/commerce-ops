@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { openCompatibilityDataAccess, COMPATIBILITY_REPOSITORY_TABLES } from "../lib/data/compatibility/compatibility-data-access.mjs";
+import { DatabaseProvider, DATABASE_DIALECTS } from "../lib/data/database-provider.mjs";
 import {
   ProviderRecordRepository,
   resolveCompatibilityProviderName,
@@ -14,6 +15,26 @@ import { SchedulerDatabase } from "../lib/mabang-scheduler/db.mjs";
 import { inspectSqliteSchema } from "../lib/postgresql/sqlite-migration.mjs";
 
 const rootDir = path.resolve(import.meta.dirname, "..");
+
+class IntegerBooleanPostgresqlStub extends DatabaseProvider {
+  constructor() {
+    super({ dialect: DATABASE_DIALECTS.POSTGRESQL });
+    this.insertValues = null;
+    this.row = null;
+    this._transactionManager = { run() {} };
+  }
+  get connection() { return {}; }
+  get transactionManager() { return this._transactionManager; }
+  async execute(_text, values) {
+    this.insertValues = values;
+    this.row = { id: values[0], enabled: values[1] };
+    return { rows: [], rowCount: 1 };
+  }
+  async query() { return { rows: this.row ? [this.row] : [] }; }
+  placeholder(index) { return `$${index}`; }
+  transaction(callback) { return callback(this); }
+  close() {}
+}
 
 async function temporaryContext() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "f4-repository-test-"));
@@ -85,6 +106,24 @@ test("compatibility data access exposes repositories for current F4 business tab
   } finally {
     await context.close();
   }
+});
+
+test("F4 preserves boolean semantics for integer-backed PostgreSQL compatibility columns", async () => {
+  const provider = new IntegerBooleanPostgresqlStub();
+  const repository = new ProviderRecordRepository({
+    provider,
+    table: {
+      name: "compatibility_flags",
+      primaryKey: ["id"],
+      columns: [
+        { name: "id", logicalType: "text", pk: true },
+        { name: "enabled", logicalType: "boolean", postgresqlStorageType: "integer", pk: false },
+      ],
+    },
+  });
+  const row = await repository.insert({ id: "flag-1", enabled: true });
+  assert.deepEqual(provider.insertValues, ["flag-1", 1]);
+  assert.deepEqual(row, { id: "flag-1", enabled: true });
 });
 
 test("F4 compatibility layer remains driver-neutral and the runner cannot select production PostgreSQL", async () => {

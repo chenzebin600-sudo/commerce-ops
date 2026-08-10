@@ -359,11 +359,11 @@ test("Growth Radar V2 migrations install the direction and task lifecycle contra
     "020_growth_radar_direction_contract.sql",
     "021_growth_radar_task_lifecycle.sql",
   ]);
-  assert.equal(migrationNames.at(-1), "022_commerce_ops_foundation_v1.sql");
+  assert.equal(migrationNames.includes("032_growth_inventory_transfer_pending_shipment.sql"), true);
   const context = await createContext();
   try {
     const latest = context.db.prepare("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1").get();
-    assert.equal(latest.version, "022_commerce_ops_foundation_v1.sql");
+    assert.equal(latest.version, migrationNames.at(-1));
     const rule = context.db.prepare(`SELECT version,status,metrics_contract_version,parameters_json,
       content_sha256
       FROM growth_rule_sets

@@ -21,7 +21,7 @@ __pycache__/
 data/
 !lib/data/
 !lib/data/**
-storage/
+/storage/
 exports/
 uploads/
 temp/
@@ -38,6 +38,13 @@ logs/
 *.xlsx
 *.xls
 *.csv
+
+# Generated previews and business exports stay local. Keep only the reviewed
+# architecture artifacts that are safe to publish with the source repository.
+/outputs/*
+!/outputs/architecture/
+!/outputs/architecture/**
+!/outputs/Commerce-Ops-Current-Architecture-Report-2026-08-10.docx
 
 # Browser sessions and UI test artifacts
 ui-check/

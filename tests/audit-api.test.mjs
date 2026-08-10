@@ -44,7 +44,7 @@ test("audit APIs are protected by the main access policy", () => {
 
 test("audit list, detail and summary return only serialized safe fields", async () => {
   const { db, audit, api } = fixture();
-  const event = audit.recordAuditEvent({
+  const event = await audit.recordAuditEvent({
     module: "mabang", action: "mabang.orders.fetch", status: "success",
     sourceIp: "203.0.113.8", metadata: { kind: "orders", forbiddenBody: "secret body" },
   });
@@ -64,19 +64,19 @@ test("client-side export audit accepts only fixed allowlisted actions", async ()
   const { db, audit, api } = fixture();
   const accepted = await invoke(api, { method: "POST", path: "/api/audit/client-action", body: { action: "competitor.export.download", password: "not-stored" } });
   assert.equal(accepted.status, 200);
-  assert.equal(audit.queryEvents({ action: "competitor.export.download" }).total, 1);
+  assert.equal((await audit.queryEvents({ action: "competitor.export.download" })).total, 1);
   const rejected = await invoke(api, { method: "POST", path: "/api/audit/client-action", body: { action: "arbitrary.action" } });
   assert.equal(rejected.status, 400);
-  assert.equal(JSON.stringify(audit.queryEvents({})).includes("not-stored"), false);
+  assert.equal(JSON.stringify(await audit.queryEvents({})).includes("not-stored"), false);
   db.close();
 });
 
 test("manual cleanup records itself and deletes only expired audit events", async () => {
   const { db, audit, api } = fixture();
-  audit.recordAuditEvent({ occurredAt: "2025-01-01", module: "auth", action: "auth.logout", status: "success" });
+  await audit.recordAuditEvent({ occurredAt: "2025-01-01", module: "auth", action: "auth.logout", status: "success" });
   const result = await invoke(api, { method: "POST", path: "/api/audit/cleanup" });
   assert.equal(result.status, 200);
   assert.equal(result.body.deleted, 1);
-  assert.equal(audit.queryEvents({ action: "audit.retention.cleanup" }).total, 1);
+  assert.equal((await audit.queryEvents({ action: "audit.retention.cleanup" })).total, 1);
   db.close();
 });

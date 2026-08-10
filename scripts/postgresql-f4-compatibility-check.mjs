@@ -46,6 +46,36 @@ async function exactPostgresqlCounts(provider, schemaName, schema) {
   return counts;
 }
 
+async function postgresqlCompatibilitySchema(provider, schemaName, sourceSchema) {
+  const targetColumns = (await provider.query(`
+    SELECT table_name,column_name,udt_name
+    FROM information_schema.columns
+    WHERE table_schema=$1
+  `, [schemaName])).rows;
+  const targetTypes = new Map(targetColumns.map((column) => [
+    `${column.table_name}.${column.column_name}`,
+    column.udt_name,
+  ]));
+  let integerBackedBooleanColumns = 0;
+  const tables = sourceSchema.tables.map((table) => ({
+    ...table,
+    columns: table.columns.map((column) => {
+      const targetType = targetTypes.get(`${table.name}.${column.name}`) || null;
+      const integerBackedBoolean = column.logicalType === "boolean"
+        && new Set(["int2", "int4", "int8"]).has(targetType);
+      if (integerBackedBoolean) integerBackedBooleanColumns += 1;
+      return integerBackedBoolean
+        ? { ...column, postgresqlStorageType: "integer" }
+        : { ...column, postgresqlStorageType: targetType };
+    }),
+  }));
+  return {
+    ...sourceSchema,
+    tables,
+    integerBackedBooleanColumns,
+  };
+}
+
 async function runSqliteContract() {
   const context = await createSqliteContext();
   try {
@@ -66,7 +96,12 @@ async function runPostgresqlContract() {
     assert.equal(identity.rows[0]?.database, config.testDatabase);
     assert.equal(identity.rows[0]?.username, config.migratorUser);
     const before = await exactPostgresqlCounts(provider, config.schema, schemaContext.schema);
-    const dataAccess = openCompatibilityDataAccess({ provider, schema: schemaContext.schema });
+    const compatibilitySchema = await postgresqlCompatibilitySchema(
+      provider,
+      config.schema,
+      schemaContext.schema,
+    );
+    const dataAccess = openCompatibilityDataAccess({ provider, schema: compatibilitySchema });
     const contract = await runRepositoryCompatibilityContract(dataAccess);
     const after = await exactPostgresqlCounts(provider, config.schema, schemaContext.schema);
     assert.deepEqual(after, before, "F4 PostgreSQL fixtures were not fully cleaned up");
@@ -75,6 +110,7 @@ async function runPostgresqlContract() {
       target: publicPostgresqlF1Config(config),
       rowCountsPreserved: true,
       totalRows: Object.values(after).reduce((sum, value) => sum + Number(value), 0),
+      integerBackedBooleanColumns: compatibilitySchema.integerBackedBooleanColumns,
     };
   } finally {
     await provider.close();
@@ -110,13 +146,19 @@ async function main() {
       role: postgresql.target.migratorUser,
       rowCountsPreserved: postgresql.rowCountsPreserved,
       totalRows: postgresql.totalRows,
+      integerBackedBooleanColumns: postgresql.integerBackedBooleanColumns,
     },
   }, null, 2)}\n`);
 }
 
 main().catch((error) => {
   const code = String(error?.code || "F4_COMPATIBILITY_FAILED").slice(0, 80);
-  const message = String(error?.message || error).split(/\r?\n/)[0].slice(0, 300);
+  const cause = error?.cause;
+  const causeSummary = cause && cause !== error
+    ? `; cause [${String(cause?.code || "UNKNOWN").slice(0, 40)}] ${String(cause?.message || cause).split(/\r?\n/)[0].slice(0, 220)}`
+    : "";
+  const contextSummary = error?.context ? `; context ${String(error.context).slice(0, 100)}` : "";
+  const message = `${String(error?.message || error).split(/\r?\n/)[0]}${contextSummary}${causeSummary}`.slice(0, 400);
   process.stderr.write(`PostgreSQL F4 compatibility check failed [${code}]: ${message}\n`);
   process.exitCode = 1;
 });

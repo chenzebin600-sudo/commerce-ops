@@ -11,6 +11,9 @@ const READ_OPERATIONS = Object.freeze({
   get_item_list: "/api/v2/product/get_item_list",
   get_item_base_info: "/api/v2/product/get_item_base_info",
   get_model_list: "/api/v2/product/get_model_list",
+  generate_income_report: "/api/v2/payment/generate_income_report",
+  get_income_report: "/api/v2/payment/get_income_report",
+  get_wallet_transaction_list: "/api/v2/payment/get_wallet_transaction_list",
 });
 
 function required(value, label) {

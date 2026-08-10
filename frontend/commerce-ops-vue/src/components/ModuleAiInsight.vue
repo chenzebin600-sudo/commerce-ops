@@ -55,7 +55,6 @@ function emphasisSegments(value?: string) {
     </header>
 
     <el-alert v-if="error" type="warning" :closable="false" show-icon :title="error" />
-    <div v-else-if="!configured" class="module-ai-empty">DeepSeek 尚未配置，本模块暂不生成智能分析。</div>
     <div v-else-if="loading && !analysis" class="module-ai-loading">
       <el-skeleton :rows="4" animated />
     </div>
@@ -85,8 +84,9 @@ function emphasisSegments(value?: string) {
       </div>
 
       <div v-if="analysis.dataLimitations.length" class="module-ai-limit">数据边界：{{ analysis.dataLimitations.slice(0, 2).join("；") }}</div>
-      <small class="module-ai-meta">{{ formatDate(generatedAt) }}<template v-if="generatedAt"> · </template>{{ cached ? "缓存结果" : "当前筛选结果" }}</small>
+      <small class="module-ai-meta">{{ formatDate(generatedAt) }}<template v-if="generatedAt"> · </template>{{ cached ? "已保存分析，仅人工重新分析时更新" : "本次人工分析已保存" }}</small>
     </div>
+    <div v-else-if="!configured" class="module-ai-empty">DeepSeek 尚未配置，本模块暂不生成智能分析。</div>
     <div v-else class="module-ai-empty">当前结果没有包含本模块分析，点击“重新分析”生成。</div>
   </section>
 </template>

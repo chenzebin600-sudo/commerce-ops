@@ -179,6 +179,17 @@ test("manual product fields and global detail preferences are stored separately 
     const product = (await service.list({ keyword: "EDIT-001" })).products[0];
     await service.update(product.id, { product_name: "人工名称" }, { operatorLabel: "test", requestId: "edit-request" });
     await service.saveFieldPreference(["sku_code", "product_name", "country_raw"], { operatorLabel: "test" });
+    const defaultTableFields = await service.tableFields();
+    assert.equal(defaultTableFields.fields.filter((field) => field.group === "source_database").length, 62);
+    assert.deepEqual(defaultTableFields.visibleFields, [
+      "summary:country_main_sku",
+      "summary:category_sales_spec",
+      "summary:lifecycle_status",
+      "summary:data_status",
+      "summary:updated_at",
+    ]);
+    await service.saveTableFieldPreference(["summary:lifecycle_status", "source:picture"], { operatorLabel: "test" });
+    assert.deepEqual((await service.tableFields()).visibleFields, ["summary:lifecycle_status", "source:picture"]);
     const detail = await service.detail(product.id);
     assert.equal(detail.sourceFacts.product_name, "中台名称");
     assert.equal(detail.fieldValues.product_name, "人工名称");

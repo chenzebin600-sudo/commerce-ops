@@ -32,6 +32,7 @@ test("module contract documentation contains required caveats and HTTP correlati
 });
 
 test("PostgreSQL readiness covers every formal SQLite table and isolates the driver in the provider", async () => {
+  const driverImportPattern = /(?:from\s+["']|require\(\s*["'])(?:pg|postgres|postgresql)["']/i;
   const document = await fs.readFile(path.resolve("docs/postgresql-readiness.md"), "utf8");
   const migrationSql = (await fs.readdir(path.resolve("migrations")))
     .filter((name) => name.endsWith(".sql"))
@@ -49,14 +50,14 @@ test("PostgreSQL readiness covers every formal SQLite table and isolates the dri
   const productionFiles = ["server.mjs", "scheduler.mjs", "lib/data/data-access.mjs"];
   for (const file of productionFiles) {
     const source = await fs.readFile(path.resolve(file), "utf8");
-    assert.doesNotMatch(source, /from\s+["'](?:pg|postgres|postgresql)["']/i);
+    assert.doesNotMatch(source, driverImportPattern);
   }
   const libraryFiles = (await fs.readdir(path.resolve("lib"), { recursive: true }))
     .filter((name) => name.endsWith(".mjs"));
   const driverImports = [];
   for (const file of libraryFiles) {
     const source = await fs.readFile(path.resolve("lib", file), "utf8");
-    if (/from\s+["'](?:pg|postgres|postgresql)["']/i.test(source)) driverImports.push(file.replaceAll("\\", "/"));
+    if (driverImportPattern.test(source)) driverImports.push(file.replaceAll("\\", "/"));
   }
   assert.deepEqual(driverImports, ["data/postgresql/postgresql-provider.mjs"]);
 });

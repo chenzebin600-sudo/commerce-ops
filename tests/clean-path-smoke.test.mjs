@@ -8,10 +8,16 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const sourceRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const excludedNames = new Set([
-  ".git", ".agents", ".mabang-exports", ".venv-mabang", "node_modules", "storage",
-  "ui-check", "packaged-skills", "design-system", "lazada-images", "lazada-images-th",
+const excludedTopLevelNames = new Set([
+  ".git", ".agents", ".firecrawl", ".mabang-exports", ".venv-mabang",
+  "backups", "exports", "logs", "outputs", "storage", "tmp", "ui-check", "packaged-skills",
+  "design-system", "lazada-images", "lazada-images-th",
 ]);
+const excludedPathNames = new Set(["node_modules"]);
+
+function isRuntimeDatabase(relativePath) {
+  return /(?:^|[\\/])[^\\/]+\.(?:db|sqlite|sqlite3)(?:-(?:shm|wal))?$/i.test(relativePath);
+}
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -46,7 +52,9 @@ test("a clean neutral directory starts without reading the formal runtime", { ti
       const relative = path.relative(sourceRoot, source);
       if (!relative || relative.startsWith("..")) return true;
       const parts = relative.split(path.sep);
-      if (parts.some((part) => excludedNames.has(part))) return false;
+      if (excludedTopLevelNames.has(parts[0])) return false;
+      if (parts.some((part) => excludedPathNames.has(part))) return false;
+      if (isRuntimeDatabase(relative)) return false;
       return !parts.some((part) => part === ".env" || part === ".env.local" || part.endsWith(".log"));
     },
   });
@@ -91,8 +99,10 @@ test("a clean neutral directory starts without reading the formal runtime", { ti
     assert.equal(output.includes(sourceRoot), false);
     assert.equal(await fs.stat(path.join(dataRoot, "test.sqlite")).then(() => true), true);
   } finally {
-    child.kill();
-    await new Promise((resolve) => child.once("exit", resolve));
+    if (child.exitCode === null) {
+      child.kill();
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
     await fs.rm(sandbox, { recursive: true, force: true });
   }
 });

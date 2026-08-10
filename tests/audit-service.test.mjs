@@ -30,10 +30,10 @@ function fixture() {
   return { root, db, audit };
 }
 
-test("successful and failed operations use stable names and generated request ids", () => {
+test("successful and failed operations use stable names and generated request ids", async () => {
   const { db, audit } = fixture();
-  const success = audit.recordAuditEvent({ module: "mabang", action: "mabang.orders.fetch", status: "success" });
-  const failed = audit.recordAuditEvent({ module: "ads", action: "ads.analysis.run", status: "failed", errorCode: "ANALYZE_FAILED" });
+  const success = await audit.recordAuditEvent({ module: "mabang", action: "mabang.orders.fetch", status: "success" });
+  const failed = await audit.recordAuditEvent({ module: "ads", action: "ads.analysis.run", status: "failed", errorCode: "ANALYZE_FAILED" });
   assert.match(success.requestId, /^[0-9a-f-]{36}$/);
   assert.equal(success.action, "mabang.orders.fetch");
   assert.equal(failed.status, "failed");
@@ -41,7 +41,7 @@ test("successful and failed operations use stable names and generated request id
   db.close();
 });
 
-test("audit redaction removes credentials, headers, webhooks, phones, paths and stacks", () => {
+test("audit redaction removes credentials, headers, webhooks, phones, paths and stacks", async () => {
   const { db, audit } = fixture();
   const secretText = [
     "password=hunter2",
@@ -54,7 +54,7 @@ test("audit redaction removes credentials, headers, webhooks, phones, paths and 
     "C:\\Users\\PC\\private\\orders.xlsx",
     "18912341369",
   ].join(" ");
-  const event = audit.recordAuditEvent({
+  const event = await audit.recordAuditEvent({
     module: "security",
     action: "file.upload.rejected",
     status: "failed",
@@ -96,10 +96,10 @@ test("source IP normalization ignores forwarded headers unless the exact proxy i
   assert.throws(() => parseTrustedProxies("proxy.local"), /exact IP/);
 });
 
-test("queries enforce pagination limits and filter by module, time and task id", () => {
+test("queries enforce pagination limits and filter by module, time and task id", async () => {
   const { db, audit } = fixture();
   for (let index = 0; index < 130; index += 1) {
-    audit.recordAuditEvent({
+    await audit.recordAuditEvent({
       occurredAt: new Date(Date.UTC(2026, 6, 1, 0, index)),
       module: index % 2 ? "ads" : "mabang",
       action: index % 2 ? "ads.analysis.run" : "mabang.task.run_now",
@@ -107,36 +107,36 @@ test("queries enforce pagination limits and filter by module, time and task id",
       taskId: index === 40 ? "task_40" : null,
     });
   }
-  assert.equal(audit.queryEvents({ pageSize: 500 }).pageSize, 100);
-  assert.equal(audit.queryEvents({ module: "ads" }).total, 65);
-  assert.equal(audit.queryEvents({ taskId: "task_40" }).total, 1);
-  assert.equal(audit.queryEvents({ start: "2026-07-01T00:30:00Z", end: "2026-07-01T00:39:00Z" }).total, 10);
+  assert.equal((await audit.queryEvents({ pageSize: 500 })).pageSize, 100);
+  assert.equal((await audit.queryEvents({ module: "ads" })).total, 65);
+  assert.equal((await audit.queryEvents({ taskId: "task_40" })).total, 1);
+  assert.equal((await audit.queryEvents({ start: "2026-07-01T00:30:00Z", end: "2026-07-01T00:39:00Z" })).total, 10);
   assert.throws(() => audit.queryEvents({ start: "2025-01-01", end: "2026-07-01" }), /366 days/);
   db.close();
 });
 
-test("audit write failures are fail-open and log only a stable error code", () => {
+test("audit write failures are fail-open and log only a stable error code", async () => {
   const messages = [];
   const audit = new OperationAuditService({
-    database: { prepare() { throw Object.assign(new Error("password=do-not-log"), { code: "SQLITE_READONLY" }); } },
+    repository: { create() { throw Object.assign(new Error("password=do-not-log"), { code: "SQLITE_READONLY" }); } },
     logger: { error(message) { messages.push(message); } },
   });
-  assert.equal(audit.recordSafely({ module: "mabang", action: "mabang.orders.fetch", status: "success" }), null);
+  assert.equal(await audit.recordSafely({ module: "mabang", action: "mabang.orders.fetch", status: "success" }), null);
   assert.deepEqual(messages, ["Audit write failed: SQLITE_READONLY"]);
   assert.equal(messages[0].includes("do-not-log"), false);
 });
 
-test("retention cleanup deletes only expired audit rows and preserves business data", () => {
+test("retention cleanup deletes only expired audit rows and preserves business data", async () => {
   const { db, audit } = fixture();
   const before = {
     tasks: db.db.prepare("SELECT COUNT(*) count FROM scheduled_export_tasks").get().count,
     runs: db.db.prepare("SELECT COUNT(*) count FROM scheduled_export_runs").get().count,
     files: db.db.prepare("SELECT COUNT(*) count FROM export_files").get().count,
   };
-  audit.recordAuditEvent({ occurredAt: "2025-01-01T00:00:00Z", module: "audit", action: "audit.retention.cleanup", status: "success" });
-  audit.recordAuditEvent({ occurredAt: "2026-07-15T00:00:00Z", module: "auth", action: "auth.logout", status: "success" });
-  assert.equal(audit.cleanupExpired({ retentionDays: 180, now: new Date("2026-07-16T00:00:00Z") }), 1);
-  assert.equal(audit.queryEvents({}).total, 1);
+  await audit.recordAuditEvent({ occurredAt: "2025-01-01T00:00:00Z", module: "audit", action: "audit.retention.cleanup", status: "success" });
+  await audit.recordAuditEvent({ occurredAt: "2026-07-15T00:00:00Z", module: "auth", action: "auth.logout", status: "success" });
+  assert.equal(await audit.cleanupExpired({ retentionDays: 180, now: new Date("2026-07-16T00:00:00Z") }), 1);
+  assert.equal((await audit.queryEvents({})).total, 1);
   assert.deepEqual({
     tasks: db.db.prepare("SELECT COUNT(*) count FROM scheduled_export_tasks").get().count,
     runs: db.db.prepare("SELECT COUNT(*) count FROM scheduled_export_runs").get().count,

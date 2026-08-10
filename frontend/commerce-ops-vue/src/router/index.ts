@@ -21,6 +21,24 @@ const routes = [
     meta: { title: "产品中心", subtitle: "管理 SKU 主数据、图片覆盖、生命周期和人工维护记录。" },
   },
   {
+    path: "/product-knowledge",
+    name: "product-knowledge",
+    component: () => import("@/pages/ProductKnowledgePage.vue"),
+    meta: { title: "产品知识库", subtitle: "审核并发布跨客服、上架与运营复用的产品知识版本。" },
+  },
+  {
+    path: "/profit",
+    name: "profit",
+    component: () => import("@/pages/ProfitPage.vue"),
+    meta: { title: "利润分析", subtitle: "按国家、平台与店铺查看 Lazada / Shopee 标价收入、到账收入、成本和利润率。" },
+  },
+  {
+    path: "/price-control",
+    name: "price-control",
+    component: () => import("@/pages/PriceControlPage.vue"),
+    meta: { title: "控价变更", subtitle: "对比已审批控价，定位国家、类目、SKU 与平台价格变化。" },
+  },
+  {
     path: "/mabang-listing",
     name: "mabang-listing",
     component: () => import("@/pages/MabangListingPage.vue"),
@@ -59,16 +77,34 @@ const routes = [
     meta: { title: "增长雷达", subtitle: "识别店铺异常、产品机会和可执行增长任务。" },
   },
   {
+    path: "/platform-connections",
+    name: "platform-connections",
+    component: () => import("@/pages/PlatformConnectionsPage.vue"),
+    meta: { title: "平台 API 接入", subtitle: "集中查看已接入平台 API、当前可调用的店铺与授权健康状态。" },
+  },
+  {
     path: "/audit",
     name: "audit",
     component: () => import("@/pages/AuditPage.vue"),
     meta: { title: "操作记录", subtitle: "追踪关键操作、接口状态、失败原因和关联任务。" },
   },
   {
+    path: "/agent-monitoring",
+    name: "agent-monitoring",
+    component: () => import("@/pages/AgentMonitoringPage.vue"),
+    meta: { title: "Agent 监控中心", subtitle: "查看 Agent 运行健康度、Tool 调用链、Token 与质量评估。" },
+  },
+  {
     path: "/fulfillment",
     name: "fulfillment",
     component: () => import("@/pages/FulfillmentPage.vue"),
     meta: { title: "履约中心", subtitle: "查看订单扫描、自动发货、异常恢复和店铺状态。" },
+  },
+  {
+    path: "/customer-service",
+    name: "customer-service",
+    component: () => import("@/pages/CustomerServicePage.vue"),
+    meta: { title: "客服中心", subtitle: "统一处理乐聊消息，结合业务上下文生成 AI 回复建议并由客服人工确认。" },
   },
   {
     path: "/:module",

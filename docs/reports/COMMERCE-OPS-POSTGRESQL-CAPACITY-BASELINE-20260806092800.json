@@ -1,0 +1,92 @@
+{
+  "contract": "COMMERCE-OPS-POSTGRESQL-CAPACITY-BASELINE-1.0.0",
+  "status": "PASS",
+  "measuredAt": "2026-08-06T09:28:00.366Z",
+  "database": "commerce_ops_staging",
+  "workloadVersion": "isolated-app-dml-1.0.0",
+  "dataset": {
+    "databaseBytes": "1536612031",
+    "schemaChecksum": "f0a369110c036ce4e7d2498fdba4a13755acf649befed1d91d839b1276f88d58",
+    "migrationCount": 6
+  },
+  "workload": {
+    "concurrency": 8,
+    "durationSeconds": 20.023,
+    "transactions": 48991,
+    "operations": 195964,
+    "operationsPerSecond": 9787.127,
+    "errors": []
+  },
+  "latencyMs": {
+    "samples": 48991,
+    "p50": 2.253,
+    "p95": 6.488,
+    "p99": 10.731,
+    "maximum": 582.674
+  },
+  "resources": {
+    "cpuModel": "13th Gen Intel(R) Core(TM) i7-13700H",
+    "cpuLogicalCount": 20,
+    "memoryBytes": 34016759808,
+    "diskTotalBytes": 241286770688,
+    "diskFreeBytes": 101067403264,
+    "diskFreePercent": 41.887,
+    "peakConnectionUtilizationPercent": 3,
+    "walBytes": "23183560",
+    "databaseGrowthBytes": "2768896",
+    "io": {
+      "before": {
+        "database_bytes": "1536612031",
+        "numbackends": 2,
+        "xact_commit": "2774",
+        "xact_rollback": "25",
+        "blks_read": "2383942",
+        "blks_hit": "61587640",
+        "blk_read_time": 0,
+        "blk_write_time": 0,
+        "temp_files": "2",
+        "temp_bytes": "24486859",
+        "deadlocks": "0"
+      },
+      "after": {
+        "database_bytes": "1539380927",
+        "numbackends": 11,
+        "xact_commit": "50759",
+        "xact_rollback": "25",
+        "blks_read": "2384185",
+        "blks_hit": "62312196",
+        "blk_read_time": 0,
+        "blk_write_time": 0,
+        "temp_files": "2",
+        "temp_bytes": "24486859",
+        "deadlocks": "0"
+      }
+    }
+  },
+  "thresholds": {
+    "minimumOperationsPerSecond": 100,
+    "maximumP95TransactionMs": 100,
+    "maximumErrors": 0,
+    "maximumLockWaiters": 0,
+    "minimumDiskFreePercent": 25,
+    "maximumConnectionUtilizationPercent": 70
+  },
+  "gates": {
+    "throughput": true,
+    "latency": true,
+    "errors": true,
+    "locks": true,
+    "disk": true,
+    "connections": true
+  },
+  "applicationRole": "commerce_staging_app",
+  "applicationDdlAllowed": false,
+  "fixtureCleanup": "DROP TABLE app.phase3c_capacity_probe",
+  "approval": {
+    "status": "APPROVED",
+    "owner": "Commerce Ops infrastructure operator"
+  },
+  "productionProvider": "sqlite",
+  "sqliteTouched": false,
+  "providerSwitched": false
+}

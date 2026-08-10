@@ -345,6 +345,14 @@ export function loadSalesAiStatus(signal?: AbortSignal) {
   return apiJson<SalesAssortmentAiStatus>("/api/sales-assortment/ai-status", { signal });
 }
 
+export async function loadSavedSalesAnalysis(signal?: AbortSignal) {
+  const payload = await apiJson<{ analysis: SalesAssortmentAnalysis | null }>(
+    "/api/sales-assortment/analysis",
+    { signal },
+  );
+  return payload.analysis;
+}
+
 export async function analyzeSalesDashboard(filters: {
   periodDays: number;
   dateFrom?: string;

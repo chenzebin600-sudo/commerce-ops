@@ -18,18 +18,47 @@ export interface SalesDashboard {
     sufficient?: boolean;
     comparisonDays?: number;
     comparisonSufficient?: boolean;
+    currentComparisonFrom?: string | null;
+    currentComparisonTo?: string | null;
+    previousComparisonFrom?: string | null;
+    previousComparisonTo?: string | null;
   };
   summary: {
     assortmentDailyAmount: number;
     assortmentAmount: number;
+    assortmentEstimatedAmount?: number;
+    assortmentAmountStatus?: "estimated";
     ownAmount: number;
+    ownEstimatedAmount?: number;
+    ownAmountStatus?: "estimated";
     ownQuantity: number;
     ownShare: number;
+    ownShareStatus?: "estimated";
     dailySalesGap: number;
     gapAmount: number;
+    estimatedGapAmount?: number;
+    gapAmountStatus?: "estimated";
     ownDataDays: number;
     orderCount: number;
     averageOrderValue: number;
+    estimatedAverageOrderValue?: number;
+    averageOrderValueStatus?: "estimated";
+    actualSalesAmount?: number | null;
+    actualSalesAmountAvailability?: "available" | "partial" | "unavailable";
+    actualSalesAmountStatus?: "confirmed" | "partial" | "mixed_currency" | "unconfirmed" | "unavailable";
+    actualSalesAmountCurrency?: string | null;
+    actualSalesAmountsByCurrency?: Record<string, number>;
+    actualSalesOrderCoverage?: {
+      totalOrderCount: number;
+      confirmedOrderCount: number;
+      directOrderCount: number;
+      derivedOrderCount: number;
+      missingAmountOrderCount: number;
+      conflictingAmountOrderCount: number;
+      partialAttributionOrderCount: number;
+      currencyMissingOrderCount: number;
+      missingOrderKeyLineCount: number;
+    };
     skuCount: number;
     storeCount: number;
   };
@@ -114,6 +143,22 @@ export interface StoreSalesTrend {
   points: DailySalesPoint[];
 }
 
+export interface StyleStoreImpact {
+  store: string;
+  country: string;
+  platform: string;
+  manager: string;
+  currentQuantity: number;
+  previousQuantity: number;
+  comparisonDays: number;
+  changeRate: number | null;
+  quantityChange: number;
+  impactQuantity: number;
+  impactScore: number;
+  trendStatus: SalesTrendStatus;
+  priority: "P0" | "P1" | "P2" | "P3";
+}
+
 export interface StyleSalesTrend {
   country: string;
   style: string;
@@ -128,6 +173,7 @@ export interface StyleSalesTrend {
   impactScore: number;
   trendStatus: SalesTrendStatus;
   priority: "P0" | "P1" | "P2" | "P3";
+  storeImpacts: StyleStoreImpact[];
 }
 
 export interface AnomalyGroup<T> {

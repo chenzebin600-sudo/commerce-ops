@@ -4,6 +4,7 @@ import { LazadaClient } from "./client.mjs";
 import { LazadaOrdersApi } from "./orders.mjs";
 import { LazadaProductsApi } from "./products.mjs";
 import { LazadaInventoryApi } from "./inventory.mjs";
+import { LazadaFinanceApi } from "./finance.mjs";
 
 const CAPABILITIES = Object.freeze([
   "authenticate",
@@ -11,6 +12,8 @@ const CAPABILITIES = Object.freeze([
   "get_shop",
   "get_orders",
   "get_order_items",
+  "get_finance_transactions",
+  "get_expense_transactions",
   "ready_to_ship",
   "get_products",
   "update_product",
@@ -36,6 +39,7 @@ export class LazadaConnector extends BaseConnector {
     this.orders = this.client ? new LazadaOrdersApi(this.client) : null;
     this.products = this.client ? new LazadaProductsApi(this.client) : null;
     this.inventory = this.client ? new LazadaInventoryApi(this.client) : null;
+    this.finance = this.client ? new LazadaFinanceApi(this.client) : null;
   }
 
   authenticate({ state }) {
@@ -76,6 +80,8 @@ export class LazadaConnector extends BaseConnector {
 
   getOrders(input) { this.assertCapability("get_orders"); return this.orders.getOrders(input); }
   getOrderItems(input) { this.assertCapability("get_order_items"); return this.orders.getOrderItems(input); }
+  getFinanceTransactions(input) { this.assertCapability("get_finance_transactions"); return this.finance.getTransactions(input); }
+  getExpenseTransactions(input) { this.assertCapability("get_expense_transactions"); return this.finance.getExpenseTransactions(input); }
   readyToShip(input) { this.assertCapability("ready_to_ship"); return this.orders.readyToShip(input); }
   getProducts(input) { this.assertCapability("get_products"); return this.products.getProducts(input); }
   updateProduct(input) { this.assertCapability("update_product"); return this.products.updateProduct(input); }

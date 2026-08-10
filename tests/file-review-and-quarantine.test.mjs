@@ -325,8 +325,8 @@ test("protected files cannot be approved for quarantine", async () => {
   try {
     const item = await addItem(context, { scope: "ad_temp", relativePath: "protected.tmp", classification: "temp_stale", categories: ["temp_stale"], bytes: Buffer.from("temporary") });
     await saveEvidence(context, item, "advertising_temp", { signatureCode: "unknown", mimeType: "application/octet-stream" });
-    context.service.protectItem(item.id);
-    assert.throws(() => context.service.approveQuarantine(item.id), { code: "QUARANTINE_NOT_ELIGIBLE" });
+    await context.service.protectItem(item.id);
+    await assert.rejects(() => context.service.approveQuarantine(item.id), { code: "QUARANTINE_NOT_ELIGIBLE" });
   } finally { await close(context); }
 });
 
@@ -335,7 +335,7 @@ test("historical registered exports cannot be approved for quarantine", async ()
   try {
     const item = await addItem(context, { scope: "main_temp", relativePath: "historical.xlsx", classification: "expired_candidate", categories: ["expired_candidate"], fileId: randomUUID(), bytes: Buffer.from("PK\x03\x04 old") });
     await saveEvidence(context, item, "advertising_temp", { signatureCode: "xlsx_zip" });
-    assert.throws(() => context.service.approveQuarantine(item.id), { code: "QUARANTINE_NOT_ELIGIBLE" });
+    await assert.rejects(() => context.service.approveQuarantine(item.id), { code: "QUARANTINE_NOT_ELIGIBLE" });
   } finally { await close(context); }
 });
 
@@ -345,7 +345,7 @@ test("a managed non-protected file can become a reviewed quarantine candidate af
     const { item } = await registrationFixture(context);
     await context.service.registerItem(item.id);
     context.db.db.prepare("UPDATE file_lifecycle_items SET categories_json='[\"metadata_missing\",\"expired_candidate\"]' WHERE id=?").run(item.id);
-    const approved = context.service.approveQuarantine(item.id);
+    const approved = await context.service.approveQuarantine(item.id);
     assert.equal(approved.reviewStatus, "approved_for_quarantine");
   } finally { await close(context); }
 });
@@ -353,7 +353,7 @@ test("a managed non-protected file can become a reviewed quarantine candidate af
 async function quarantinableFixture(context, name = "stale.tmp") {
   const item = await addItem(context, { scope: "ad_temp", relativePath: name, classification: "temp_stale", categories: ["temp_stale"], bytes: Buffer.from("temporary-test-file") });
   await saveEvidence(context, item, "advertising_temp", { signatureCode: "unknown", mimeType: "application/octet-stream" });
-  context.service.approveQuarantine(item.id);
+  await context.service.approveQuarantine(item.id);
   return item;
 }
 
@@ -415,7 +415,7 @@ test("permanent deletion is rejected while FILE_DELETION_ENABLED is false", asyn
   const context = await setup();
   try {
     const item = await addItem(context, { scope: "ad_output", relativePath: `${randomUUID()}/unknown.json` });
-    assert.throws(() => context.service.rejectPermanentDeletion(item.id), { code: "FILE_DELETION_DISABLED" });
+    await assert.rejects(() => context.service.rejectPermanentDeletion(item.id), { code: "FILE_DELETION_DISABLED" });
   } finally { await close(context); }
 });
 
@@ -524,7 +524,7 @@ test("quarantine list responses hide original paths quarantine paths and hashes"
   try {
     const item = await quarantinableFixture(context);
     await context.service.quarantineItem(item.id);
-    const result = context.service.listQuarantineRecords({});
+    const result = await context.service.listQuarantineRecords({});
     assert.equal("originalRelativePath" in result.records[0], false);
     assert.equal("quarantineRelativePath" in result.records[0], false);
     assert.equal("fileHash" in result.records[0], false);

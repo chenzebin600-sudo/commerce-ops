@@ -1,0 +1,50 @@
+{
+  "login_account": [
+    "input[placeholder='请输入帐号/邮箱']",
+    "input[placeholder*='帐号']",
+    "input[placeholder*='邮箱']"
+  ],
+  "login_password": [
+    "input[placeholder='请输入密码']",
+    "input[type='password']"
+  ],
+  "login_submit": [
+    "button:has-text('登录')"
+  ],
+  "conversation_items": [
+    "div[data-key='convItem']",
+    "[data-conversation-id]",
+    "[data-talk-id]",
+    "[class*='conversation-list'] [role='listitem']",
+    "[class*='ConversationList'] [role='listitem']",
+    "[class*='conversationList'] [role='listitem']"
+  ],
+  "unread_badges": [
+    "sup.ant-badge-count",
+    "[class*='unread']",
+    "[class*='badge']",
+    "[aria-label*='未读']"
+  ],
+  "message_items": [
+    "section.origin-text",
+    "[data-message-id]",
+    "[data-msg-id]",
+    "[class*='message-list'] [class*='message']",
+    "[class*='MessageList'] [class*='message']"
+  ],
+  "reply_editors": [
+    "textarea[placeholder*='请输入消息']",
+    "textarea[placeholder*='请输入']",
+    "textarea[placeholder*='回复']",
+    "[contenteditable='true'][data-placeholder*='请输入']",
+    "[contenteditable='true'][data-placeholder*='回复']",
+    "[class*='input-area'] [contenteditable='true']",
+    "[class*='InputArea'] [contenteditable='true']",
+    "[class*='editor'] [contenteditable='true']",
+    "[contenteditable='true'][role='textbox']"
+  ],
+  "send_buttons": [
+    "button:has-text('发送')",
+    "button[aria-label*='发送']"
+  ]
+}

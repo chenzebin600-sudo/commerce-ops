@@ -9,9 +9,14 @@ import {
   resolveShopeeRelayConfig,
   ShopeeRelayClient,
 } from "./shopee/relay-client.mjs";
+import {
+  resolveShopeeTokenServiceConfig,
+  ShopeeTokenServiceClient,
+} from "./shopee/token-service-client.mjs";
 import { resolveLazadaOAuthConfig } from "../integrations/lazada-oauth/lazada-oauth-service.mjs";
 import { createPlatformGatewayApi } from "../lib/platform-gateway/platform-gateway-api.mjs";
 import { CommercePlatformGatewayService } from "../lib/platform-gateway/platform-gateway-service.mjs";
+import { CommerceShopDirectoryService } from "../lib/shops/commerce-shop-directory-service.mjs";
 
 function enabled(value) {
   return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
@@ -22,9 +27,15 @@ function integer(value, fallback, minimum, maximum) {
   return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
 }
 
-export function createPlatformConnectorRuntime({ env = process.env, rootDir = process.cwd(), fetchImpl = fetch } = {}) {
+export function createPlatformConnectorRuntime({
+  env = process.env,
+  rootDir = process.cwd(),
+  fetchImpl = fetch,
+  shopRepository = null,
+} = {}) {
   const lazadaConfig = resolveLazadaOAuthConfig({ env, rootDir });
   const shopeeRelayConfig = resolveShopeeRelayConfig(env);
+  const shopeeTokenServiceConfig = resolveShopeeTokenServiceConfig(env);
   const encryptionKey = resolveConnectorEncryptionKey(env);
   if (!encryptionKey) {
     const runtimeStatus = () => ({
@@ -92,6 +103,26 @@ export function createPlatformConnectorRuntime({ env = process.env, rootDir = pr
     writeEnabled: enabled(env.COMMERCE_PLATFORM_WRITES_ENABLED),
     refreshSkewMs: integer(env.COMMERCE_PLATFORM_REFRESH_SKEW_SECONDS, 300, 30, 3600) * 1000,
   });
+  const authorizationStatusProviders = new Map();
+  if (shopeeTokenServiceConfig.enabled) {
+    const client = new ShopeeTokenServiceClient({ ...shopeeTokenServiceConfig, fetchImpl });
+    let cache = null;
+    authorizationStatusProviders.set("SHOPEE", {
+      async listShops() {
+        if (cache && cache.expiresAt > Date.now()) return cache.value;
+        const value = await client.listShops();
+        cache = { value, expiresAt: Date.now() + 60_000 };
+        return value;
+      },
+    });
+  }
+  const shopDirectory = shopRepository
+    ? new CommerceShopDirectoryService({
+      repository: shopRepository,
+      platformGatewayService: service,
+      authorizationStatusProviders,
+    })
+    : null;
   const runtimeStatus = () => ({
     enabled: true,
     storage: "sqlite",
@@ -104,10 +135,11 @@ export function createPlatformConnectorRuntime({ env = process.env, rootDir = pr
   });
   return {
     service,
+    shopDirectory,
     repository,
     registry,
     status: runtimeStatus,
-    handleApi: createPlatformGatewayApi({ service, status: runtimeStatus }),
+    handleApi: createPlatformGatewayApi({ service, shopDirectory, status: runtimeStatus }),
     close() { repository.close(); },
   };
 }

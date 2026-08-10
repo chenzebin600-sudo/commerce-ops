@@ -13,7 +13,7 @@ withDefaults(defineProps<{
 <template>
   <article class="metric-card" :class="`tone-${tone}`">
     <span class="metric-label">{{ label }}</span>
-    <strong>{{ value }}</strong>
+    <strong :title="value">{{ value }}</strong>
     <div class="metric-foot">
       <span v-if="trend !== null" class="metric-trend" :class="trend > 0 ? 'up' : trend < 0 ? 'down' : 'flat'">
         <ArrowUpRight v-if="trend > 0" :size="14" />

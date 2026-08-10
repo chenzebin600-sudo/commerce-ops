@@ -1,0 +1,155 @@
+{
+  "contract": "COMMERCE-OPS-POSTGRESQL-AUTOMATED-RESTORE-1.0.0",
+  "status": "PASS",
+  "sourceDatabase": "commerce_ops",
+  "restoreDatabase": "commerce_ops_restore_verify_20260806151326",
+  "startedAt": "2026-08-06T15:13:26.262Z",
+  "completedAt": "2026-08-06T15:18:52.523Z",
+  "durationSeconds": 326.253,
+  "recoveryTimeObjectiveSeconds": 3600,
+  "encryptedDigestVerified": true,
+  "decryptedDigestVerified": true,
+  "schemaMatch": true,
+  "migrationLedgerMatch": true,
+  "businessCountsMatch": true,
+  "invalidForeignKeys": 0,
+  "invalidIndexes": 0,
+  "sourceEvidence": {
+    "identity": {
+      "database": "commerce_ops",
+      "username": "commerce_migrator",
+      "server_version": "18.4",
+      "database_bytes": "3637753535"
+    },
+    "schemas": [
+      {
+        "table_schema": "ai_shadow",
+        "tables": 5
+      },
+      {
+        "table_schema": "app",
+        "tables": 116
+      },
+      {
+        "table_schema": "shadow_meta",
+        "tables": 6
+      }
+    ],
+    "migrations": [
+      {
+        "version": "001_legacy_tables.sql",
+        "sha256": "bacd7014e3d6a43d22c201cf62324a19803992b6f3e61954bae0553b78bd0947"
+      },
+      {
+        "version": "002_ai_observability.sql",
+        "sha256": "240c73c166e7f6c5a61ae4ea97598bc6580274434839640c3903975e65582105"
+      },
+      {
+        "version": "003_legacy_constraints_indexes_views.sql",
+        "sha256": "eb1db9cefb0d211d6bedc4fa107772f0ba01bc944d22ac6c01bb435ff56f723f"
+      },
+      {
+        "version": "004_incremental_sync_control.sql",
+        "sha256": "eee1525b422cbbc6cebba3bcf6534c6b1870ab59ff2555a8d7b80d0be62c44b1"
+      },
+      {
+        "version": "005_fulfillment_provider.sql",
+        "sha256": "719b4b64f555f7ab3f2ea06d89dd3452300a4fec2ab203ec442a1b115339d107"
+      },
+      {
+        "version": "006_price_control_provider.sql",
+        "sha256": "560325698fbfe88023a10c1246431845291e86c4be859d735ee7edc1d96a5859"
+      },
+      {
+        "version": "007_commerce_shop_registry.sql",
+        "sha256": "c7fa2e409418c33d5583c2b565fdb3df4f96dd9ed058cfedeb4ac3ed56322e9b"
+      },
+      {
+        "version": "008_price_control_repricing_workflow.sql",
+        "sha256": "eeb07d9ad91b5d481db18f0240d02b5c7913bce629e165799a914be48bf4a4bb"
+      }
+    ],
+    "counts": {
+      "product_skus": "18347",
+      "order_headers": "80140",
+      "inventory_snapshots": "81703",
+      "tasks": "376",
+      "audit_events": "42277",
+      "agent_runs": "3",
+      "tool_invocations": "15"
+    }
+  },
+  "restoredEvidence": {
+    "identity": {
+      "database": "commerce_ops_restore_verify_20260806151326",
+      "username": "commerce_migrator",
+      "server_version": "18.4",
+      "database_bytes": "3311646399"
+    },
+    "schemas": [
+      {
+        "table_schema": "ai_shadow",
+        "tables": 5
+      },
+      {
+        "table_schema": "app",
+        "tables": 116
+      },
+      {
+        "table_schema": "shadow_meta",
+        "tables": 6
+      }
+    ],
+    "migrations": [
+      {
+        "version": "001_legacy_tables.sql",
+        "sha256": "bacd7014e3d6a43d22c201cf62324a19803992b6f3e61954bae0553b78bd0947"
+      },
+      {
+        "version": "002_ai_observability.sql",
+        "sha256": "240c73c166e7f6c5a61ae4ea97598bc6580274434839640c3903975e65582105"
+      },
+      {
+        "version": "003_legacy_constraints_indexes_views.sql",
+        "sha256": "eb1db9cefb0d211d6bedc4fa107772f0ba01bc944d22ac6c01bb435ff56f723f"
+      },
+      {
+        "version": "004_incremental_sync_control.sql",
+        "sha256": "eee1525b422cbbc6cebba3bcf6534c6b1870ab59ff2555a8d7b80d0be62c44b1"
+      },
+      {
+        "version": "005_fulfillment_provider.sql",
+        "sha256": "719b4b64f555f7ab3f2ea06d89dd3452300a4fec2ab203ec442a1b115339d107"
+      },
+      {
+        "version": "006_price_control_provider.sql",
+        "sha256": "560325698fbfe88023a10c1246431845291e86c4be859d735ee7edc1d96a5859"
+      },
+      {
+        "version": "007_commerce_shop_registry.sql",
+        "sha256": "c7fa2e409418c33d5583c2b565fdb3df4f96dd9ed058cfedeb4ac3ed56322e9b"
+      },
+      {
+        "version": "008_price_control_repricing_workflow.sql",
+        "sha256": "eeb07d9ad91b5d481db18f0240d02b5c7913bce629e165799a914be48bf4a4bb"
+      }
+    ],
+    "counts": {
+      "product_skus": "18347",
+      "order_headers": "80140",
+      "inventory_snapshots": "81703",
+      "tasks": "376",
+      "audit_events": "42277",
+      "agent_runs": "3",
+      "tool_invocations": "15"
+    },
+    "integrity": {
+      "invalid_foreign_keys": 0,
+      "invalid_indexes": 0
+    }
+  },
+  "cleanupPolicy": "automatic exact-prefix database removal",
+  "productionProvider": "sqlite",
+  "sqliteTouched": false,
+  "providerSwitched": false
+}

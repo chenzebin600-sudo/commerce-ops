@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "shardId": "customer-service-pc-01",
+  "maxProcesses": 4,
+  "restartLimit": 5,
+  "runtimeRoot": "runtime/fleet",
+  "accounts": [
+    {
+      "key": "th-home-01",
+      "displayName": "泰国家居乐聊 01",
+      "centralAccountId": "replace-with-commerce-ops-account-id",
+      "workerId": "customer-service-pc-01-th-home-01",
+      "enabled": false
+    }
+  ]
+}

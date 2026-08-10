@@ -7,6 +7,7 @@ import os
 import re
 import sys
 from decimal import Decimal, InvalidOperation
+from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
 from excel_cell_policy import is_unsafe_excel_text
@@ -14,26 +15,19 @@ from excel_cell_policy import is_unsafe_excel_text
 
 ORDER_SHEET_HINTS = ("订单明细", "订单")
 INVENTORY_SHEET_HINTS = ("库存明细", "库存")
+# The source collector owns this non-PII business-field contract. Every field is
+# retained in the raw evidence row; identity/contact fields are removed below
+# before either raw evidence or canonical projections are built.
 ORDER_ALLOWED_HEADERS = frozenset({
-    "订单编号",
-    "交易编号",
-    "交运时间",
-    "店铺名",
-    "平台",
-    "店长",
-    "订单状态",
-    "仓库",
-    "SKU总数量",
-    "SKU",
-    "商品数量",
-    "商品中文名称",
-    "商品销售单价",
-    "订单核算金额（人民币）",
-    "付款时间",
-    "平台SKU",
-    "订单商品名称",
-    "SKU明细",
-    "作废时间",
+    "订单编号", "交易编号", "交运时间", "物流渠道", "店铺名", "平台", "店长", "订单状态", "仓库",
+    "SKU总数量", "所属地区（省/州）", "所属城市", "SKU", "商品数量", "商品库存", "商品中文名称",
+    "货运单号", "付款方式", "SKU明细", "客户账号", "客户姓名", "邮寄地址1(按逗号分隔导出2列)",
+    "商品销售单价", "原始商品销售单价", "商品总金额", "原始运费金额", "运费收入", "原始商品总金额",
+    "订单原始总金额", "订单总金额", "优惠金额（人民币）", "优惠金额（原始货币）", "订单核算金额（人民币）",
+    "订单核算金额（原始货币）", "汇率（原始货币）", "订单商品名称", "采购在途量", "付款时间", "平台SKU",
+    "买家自选物流方式", "最后发货期限", "订单自定义分类", "发货时间", "是否转WMS发货", "退货原因",
+    "退货备注", "作废时间", "作废前状态", "电话1", "电话2", "订单备注", "平台订单仓库", "是否测评",
+    "测评费用", "邮政编码", "tiktok样品订单", "签收时间", "实付金额",
 })
 ORDER_CONTINUATION_HEADERS = (
     "订单编号",
@@ -49,7 +43,7 @@ ORDER_CONTINUATION_HEADERS = (
 )
 PII_ORDER_HEADER_PATTERN = re.compile(
     r"所属地区|所属城市|客户|买家|收件|收货|地址|电话|手机|邮箱|邮编|邮政编码|身份证|证件|联系人|账号|"
-    r"customer|buyer|receiver|recipient|address|phone|mobile|email|postcode|postal|identity|contact|account",
+    r"货运单号|订单备注|退货备注|customer|buyer|receiver|recipient|address|phone|mobile|email|postcode|postal|identity|contact|account",
     re.IGNORECASE,
 )
 NON_PII_ORDER_HEADERS = frozenset({"买家自选物流方式"})
@@ -59,6 +53,8 @@ COLLECTION_METADATA_FIELDS = {
     "结束日期": "dateTo",
     "库存缓存更新时间": "inventorySnapshotAt",
 }
+SOURCE_TIMEZONE = ZoneInfo("Asia/Shanghai")
+UTC = dt.timezone.utc
 
 
 def is_pii_order_header(header):
@@ -121,12 +117,55 @@ def normalized_number(value):
     return int(number) if number == number.to_integral_value() else float(number)
 
 
+def normalized_decimal_text(value):
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip().replace(",", "")
+    if not text:
+        return None
+    text = re.sub(r"^(?:CNY|RMB|¥|￥)\s*", "", text, flags=re.IGNORECASE)
+    try:
+        number = Decimal(text)
+    except InvalidOperation:
+        return None
+    if not number.is_finite():
+        return None
+    return format(number, "f")
+
+
 def normalized_time(value):
     if value is None:
         return None
-    if isinstance(value, (dt.datetime, dt.date, dt.time)):
+    if isinstance(value, dt.datetime):
+        source_time = value.replace(tzinfo=SOURCE_TIMEZONE) if value.tzinfo is None else value
+        return source_time.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    if isinstance(value, (dt.date, dt.time)):
         return value.isoformat()
-    return normalized_text(value)
+    text = normalized_text(value)
+    if text is None:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    source_time = parsed.replace(tzinfo=SOURCE_TIMEZONE) if parsed.tzinfo is None else parsed
+    return source_time.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def normalized_date(value):
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        return value.date().isoformat()
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    text = normalized_text(value)
+    if text is None:
+        return None
+    try:
+        return dt.datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return text
 
 
 def normalized_sales_periods(value):
@@ -170,7 +209,7 @@ def collection_metadata(workbook):
             key = normalized_text(cells[0].value)
             target = COLLECTION_METADATA_FIELDS.get(key)
             if target:
-                result[target] = normalized_time(cells[1].value)
+                result[target] = normalized_date(cells[1].value) if target in ("dateFrom", "dateTo") else normalized_time(cells[1].value)
     return result
 
 
@@ -178,12 +217,28 @@ def order_normalized(raw):
     status = normalized_text(raw.get("订单状态"))
     if status == "已作废":
         effective_status = "invalid_cancelled"
-    elif status == "已发货":
+    elif status in ("已发货", "配货中", "待处理", "已完成"):
         effective_status = "valid"
-    elif status in ("配货中", "待处理", "待审核"):
+    elif status == "待审核":
         effective_status = "pending"
     else:
         effective_status = "unconfirmed"
+    order_amount_cny = normalized_number(raw.get("订单核算金额（人民币）"))
+    order_amount_source_field = "订单核算金额（人民币）" if order_amount_cny is not None else None
+    if order_amount_cny is None:
+        original_currency_amount = normalized_number(raw.get("订单核算金额（原始货币）"))
+        original_currency_exchange_rate = normalized_number(raw.get("汇率（原始货币）"))
+        if (
+            original_currency_amount is not None
+            and original_currency_exchange_rate is not None
+            and original_currency_exchange_rate > 0
+        ):
+            order_amount_cny = normalized_number(
+                Decimal(str(original_currency_amount)) * Decimal(str(original_currency_exchange_rate))
+            )
+            order_amount_source_field = "订单核算金额（原始货币）×汇率（原始货币）"
+    original_product_amount_local = normalized_decimal_text(raw.get("原始商品总金额"))
+    discount_amount_local = normalized_decimal_text(raw.get("优惠金额（原始货币）"))
     return {
         "sourceOrderId": normalized_text(raw.get("订单编号")),
         "platform": normalized_text(raw.get("平台")),
@@ -191,9 +246,11 @@ def order_normalized(raw):
         "orderStatus": status,
         "paidAt": normalized_time(raw.get("付款时间")),
         "cancelledAt": normalized_time(raw.get("作废时间")),
-        "orderCurrency": "CNY" if raw.get("订单核算金额（人民币）") is not None else None,
-        "orderAmount": normalized_number(raw.get("订单核算金额（人民币）")),
-        "orderAmountSourceField": "订单核算金额（人民币）" if raw.get("订单核算金额（人民币）") is not None else None,
+        "orderCurrency": "CNY" if order_amount_cny is not None else None,
+        "orderAmount": order_amount_cny,
+        "orderAmountSourceField": order_amount_source_field,
+        "originalProductAmountLocal": original_product_amount_local,
+        "discountAmountLocal": discount_amount_local,
         "effectiveStatus": effective_status,
         "sourceSku": normalized_text(raw.get("SKU")),
         "platformSku": normalized_text(raw.get("平台SKU")),
@@ -203,8 +260,10 @@ def order_normalized(raw):
         "skuDetail": normalized_text(raw.get("SKU明细")),
         "unitSalePrice": normalized_number(raw.get("商品销售单价")),
         "orderSkuTotal": normalized_number(raw.get("SKU总数量")),
-        "lineAmount": None,
-        "lineAmountStatus": "unavailable",
+        "lineAmount": normalized_number(raw.get("商品总金额")),
+        # The source value is retained, but its currency/basis contract is not
+        # frozen yet, so it cannot be published as confirmed transaction GMV.
+        "lineAmountStatus": "unconfirmed" if normalized_number(raw.get("商品总金额")) is not None else "unavailable",
     }
 
 
@@ -226,9 +285,10 @@ def inventory_normalized(raw):
         "inTransitQuantity": normalized_number(raw.get("在途量"))
         if raw.get("在途量") is not None
         else normalized_number(raw.get("采购在途量")),
-        "pendingShipmentQuantity": normalized_number(raw.get("未发货量"))
-        if raw.get("未发货量") is not None
-        else normalized_number(raw.get("调拨未发货")),
+        # These are two different source facts.  Do not use transfer-pending
+        # quantity as a fallback for ordinary pending shipment quantity.
+        "pendingShipmentQuantity": normalized_number(raw.get("未发货量")),
+        "transferPendingShipmentQuantity": normalized_number(raw.get("分仓调拨未发货量")),
         "sourceVisibleSales7d": sales_7d,
         "sourceVisibleSales28d": sales_28d,
         "sourceVisibleSales42d": sales_42d,
@@ -237,8 +297,8 @@ def inventory_normalized(raw):
         "snapshotAt": normalized_time(raw.get("数据更新时间")) or normalized_time(raw.get("更新时间")),
         "sellableQuantity": None,
         "sellableQuantityStatus": "unconfirmed",
-        "daysOfSupply": None,
-        "daysOfSupplyStatus": "unavailable",
+        "daysOfSupply": normalized_number(raw.get("当前可售天数")),
+        "daysOfSupplyStatus": "confirmed" if normalized_number(raw.get("当前可售天数")) is not None else "unavailable",
     }
 
 
@@ -295,7 +355,7 @@ def parse_workbook(filename, domain, max_rows):
         if domain == "order":
             redacted_indexes = {
                 index for index, header in enumerate(headers)
-                if header not in ORDER_ALLOWED_HEADERS
+                if header not in ORDER_ALLOWED_HEADERS or is_pii_order_header(header)
             }
             pii_filtered_indexes = {
                 index for index, header in enumerate(headers)

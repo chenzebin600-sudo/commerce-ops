@@ -201,9 +201,6 @@ def normalize_platform_sku(value):
     if not text:
         return ""
 
-    if "S" in text:
-        text = text.split("S", 1)[0]
-
     return text.strip()
 
 

@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadLocalEnv } from "../lib/env.mjs";
 import { resolveFulfillmentConfig } from "./config.mjs";
-import { FulfillmentRepository } from "./repository.mjs";
+import { createFulfillmentRepository } from "./repository-factory.mjs";
 import { FulfillmentError, FulfillmentService } from "./service.mjs";
 import { createDisabledFulfillmentExecutor, createMabangFulfillmentExecutor, createMabangFulfillmentPreflight, createMabangFulfillmentScanSource, createMabangFulfillmentSource, createMabangTrackingRecoveryAdapter } from "./mabang-source.mjs";
 import { createApiDocsHtml, createOpenApiDocument } from "./api-docs.mjs";
@@ -17,13 +17,15 @@ import { FulfillmentAgentTools } from "./agent-tools.mjs";
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 loadLocalEnv(rootDir);
 const config = resolveFulfillmentConfig({ rootDir });
-const repository = new FulfillmentRepository(config.databasePath);
-const recoveredBatches = repository.recoverInterruptedBatches(new Date().toISOString());
+const repository = await createFulfillmentRepository({ rootDir, databasePath: config.databasePath });
+const recoveredBatches = repository.readOnly ? [] : await repository.recoverInterruptedBatches(new Date().toISOString());
 if (recoveredBatches.length) console.warn(`Recovered ${recoveredBatches.length} interrupted fulfillment batch(es) as needs_attention.`);
-const quarantinedInventoryOrders = repository.quarantineFailedOrders("INVENTORY_UNKNOWN_BEFORE_SUBMIT", new Date().toISOString());
+const quarantinedInventoryOrders = repository.readOnly ? 0
+  : await repository.quarantineFailedOrders("INVENTORY_UNKNOWN_BEFORE_SUBMIT", new Date().toISOString());
 if (quarantinedInventoryOrders) console.warn(`Moved ${quarantinedInventoryOrders} inventory-unknown order(s) to needs_attention.`);
-const migratedTrackingRecoveries = repository.migratePendingTrackingRecoveries({ nowIso: new Date().toISOString(),
-  checkSeconds: config.trackingRecoveryCheckSeconds, deadlineHours: config.trackingRecoveryDeadlineHours });
+const migratedTrackingRecoveries = repository.readOnly ? 0
+  : await repository.migratePendingTrackingRecoveries({ nowIso: new Date().toISOString(),
+    checkSeconds: config.trackingRecoveryCheckSeconds, deadlineHours: config.trackingRecoveryDeadlineHours });
 if (migratedTrackingRecoveries) console.warn(`Migrated ${migratedTrackingRecoveries} pending tracking order(s) to recovery queue.`);
 const notifier = createWindowsNotifier({ enabled: config.windowsNotificationsEnabled });
 const shopConfigs = config.shops.map((shop) => Object.freeze({ ...config, ...shop }));
@@ -38,15 +40,15 @@ const servicesByShopId = new Map(services.map((shopService) => [shopService.conf
 const service = servicesByShopId.get(config.shopId) || services[0];
 const scanSource = createMabangFulfillmentScanSource({ config, shops: config.shops, rootDir });
 const scheduler = new FulfillmentPreviewScheduler({ config, service, services, scanSource, notifier });
-scheduler.start();
+if (!repository.readOnly) scheduler.start();
 
 function serviceForShop(shopId) {
   const selected = servicesByShopId.get(String(shopId || config.shopId));
   if (!selected) throw new FulfillmentError("SHOP_NOT_CONFIGURED", "店铺未配置或不属于当前印尼店铺范围", 400);
   return selected;
 }
-function serviceForPreview(previewId) {
-  const preview = repository.getPreview(previewId);
+async function serviceForPreview(previewId) {
+  const preview = await repository.getPreview(previewId);
   if (!preview) throw new FulfillmentError("PREVIEW_NOT_FOUND", "预览不存在", 404);
   return serviceForShop(preview.shopId);
 }
@@ -107,6 +109,8 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { success: true, realSubmitEnabled: config.realSubmitEnabled,
+      database: { provider: repository.databaseProviderName, mode: repository.databaseMode,
+        target: repository.databaseTarget, readOnly: repository.readOnly },
       schedulerEnabled: config.schedulerEnabled, schedulerIntervalSeconds: config.schedulerIntervalSeconds,
       autoFulfillEnabled: config.autoFulfillEnabled,
       autoFulfillShops: config.shops.filter((shop) => shop.autoFulfillEnabled)
@@ -122,6 +126,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && (url.pathname === "/docs" || url.pathname === "/docs/")) return sendHtml(res, 200, createApiDocsHtml(config));
     if (req.method === "GET" && url.pathname === "/openapi.json") return send(res, 200, createOpenApiDocument(config));
     if (!authorized(req)) return send(res, 401, { success: false, error: { code: "UNAUTHORIZED", message: "未授权访问" } });
+    if (repository.readOnly && req.method !== "GET") {
+      throw new FulfillmentError("POSTGRES_SHADOW_READ_ONLY",
+        "PostgreSQL Shadow validation mode is read-only; fulfillment writes remain disabled.", 409);
+    }
     if (req.method === "GET" && url.pathname === "/api/fulfillment/agent/status") {
       return send(res, 200, { success: true, data: fulfillmentAgent.status() });
     }
@@ -131,7 +139,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/api/fulfillment/dashboard") {
       const window = dashboardWindows(new Date(), url.searchParams.get("days"));
-      return send(res, 200, { success: true, data: repository.getDashboardSummary(window) });
+      return send(res, 200, { success: true, data: await repository.getDashboardSummary(window) });
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/notifications/test") {
       const result = await notifier.notifyAndWait({ title: "马帮自动发货通知测试", message: "通知功能正常，后台服务可以向当前 Windows 桌面发送提醒。" });
@@ -139,7 +147,7 @@ const server = http.createServer(async (req, res) => {
         error: result.delivered ? undefined : { code: result.code, message: result.message || "Windows 通知未启用" } });
     }
     if (req.method === "GET" && url.pathname === "/api/fulfillment/scheduler") {
-      return send(res, 200, { success: true, data: scheduler.status() });
+      return send(res, 200, { success: true, data: await scheduler.status() });
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/scheduler/scan") {
       try { return send(res, 200, { success: true, data: await scheduler.scanNow() }); }
@@ -147,7 +155,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/manual-reviews/recheck") {
       const payload = await body(req);
-      const schedulerState = scheduler.status();
+      const schedulerState = await scheduler.status();
       if (schedulerState.scanning || schedulerState.activeBatch) {
         throw new FulfillmentError("FULFILLMENT_BUSY", "当前正在扫描或执行发货批次，请稍后重新核对", 409);
       }
@@ -162,15 +170,15 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/api/fulfillment/batches") {
       const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
-      return send(res, 200, { success: true, data: service.listRecentBatches(limit) });
+      return send(res, 200, { success: true, data: await service.listRecentBatches(limit) });
     }
     if (req.method === "GET" && url.pathname === "/api/fulfillment/tracking-recoveries") {
       const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50));
-      const items = repository.listTrackingRecoveries(limit);
+      const items = await repository.listTrackingRecoveries(limit);
       return send(res, 200, { success: true, data: items });
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/tracking-recoveries/check") {
-      const schedulerState = scheduler.status();
+      const schedulerState = await scheduler.status();
       if (schedulerState.scanning || schedulerState.activeBatch) {
         throw new FulfillmentError("FULFILLMENT_BUSY", "当前正在扫描或执行发货批次，请稍后回查运单号", 409);
       }
@@ -195,16 +203,16 @@ const server = http.createServer(async (req, res) => {
       return send(res, 201, { success: true, data: result });
     }
     let match = url.pathname.match(/^\/api\/fulfillment\/previews\/([^/]+)$/);
-    if (req.method === "GET" && match) return send(res, 200, { success: true, data: serviceForPreview(match[1]).getPreview(match[1]) });
+    if (req.method === "GET" && match) return send(res, 200, { success: true, data: await (await serviceForPreview(match[1])).getPreview(match[1]) });
     match = url.pathname.match(/^\/api\/fulfillment\/previews\/([^/]+)\/confirmation-token$/);
-    if (req.method === "POST" && match) return send(res, 200, { success: true, data: serviceForPreview(match[1]).issueConfirmationToken(match[1]) });
+    if (req.method === "POST" && match) return send(res, 200, { success: true, data: await (await serviceForPreview(match[1])).issueConfirmationToken(match[1]) });
     match = url.pathname.match(/^\/api\/fulfillment\/previews\/([^/]+)\/confirm$/);
     if (req.method === "POST" && match) {
-      const payload = await body(req); const result = serviceForPreview(match[1]).enqueuePreview(match[1], payload.confirmationToken);
+      const payload = await body(req); const result = await (await serviceForPreview(match[1])).enqueuePreview(match[1], payload.confirmationToken);
       return send(res, 202, { success: true, data: result });
     }
     match = url.pathname.match(/^\/api\/fulfillment\/batches\/([^/]+)$/);
-    if (req.method === "GET" && match) return send(res, 200, { success: true, data: service.getBatch(match[1]) });
+    if (req.method === "GET" && match) return send(res, 200, { success: true, data: await service.getBatch(match[1]) });
     return send(res, 404, { success: false, error: { code: "NOT_FOUND", message: "接口不存在" } });
   } catch (error) {
     const status = error instanceof FulfillmentError ? error.status : 500;
@@ -215,5 +223,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(config.port, config.host, () => console.log(`Mabang fulfillment API listening on http://${config.host}:${config.port}`));
-function shutdown() { scheduler.stop(); server.close(async () => { await scheduler.waitForIdle(); await Promise.all(services.map((shopService) => shopService.waitForIdle())); repository.close(); process.exit(0); }); }
+function shutdown() { scheduler.stop(); server.close(async () => { await scheduler.waitForIdle(); await Promise.all(services.map((shopService) => shopService.waitForIdle())); await repository.close(); process.exit(0); }); }
 process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);

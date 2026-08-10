@@ -31,7 +31,22 @@ export interface ProductSummary {
   manualOverrideCount: number;
   aiContentCount: number;
   aiContentStatus: string;
+  latestChangeCount: number;
+  sourceDatabaseValues: Record<string, unknown>;
   manualOverrides?: Record<string, unknown>;
+}
+
+export interface ProductTableField {
+  code: string;
+  label: string;
+  group: "summary" | "source_database";
+  sourceColumn: string | null;
+}
+
+export interface ProductTableFieldConfig {
+  fields: ProductTableField[];
+  visibleFields: string[];
+  preferenceRevision: number;
 }
 
 export interface ProductField {
@@ -58,11 +73,30 @@ export interface ProductOverrideEvent {
   occurredAt: string;
 }
 
+export interface ProductMabangImage {
+  linkId: string;
+  assetId: string;
+  sourceSku: string;
+  countryCode: string | null;
+  sourceSystem: string;
+  originalFilename: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  fileSize: number;
+  mediaRole: string;
+  mappingStatus: string;
+  linkedAt: string;
+  isPrimary: boolean;
+}
+
 export interface ProductDetail extends ProductSummary {
   fields: ProductField[];
   visibleFields: string[];
   fieldValues: Record<string, unknown>;
   sourceFieldValues: Record<string, unknown>;
+  sourceDatabaseFields?: Array<{ code: string; label: string; value: unknown }>;
+  mabangImages?: ProductMabangImage[];
   inventories?: ProductInventory[];
   overrideEvents?: ProductOverrideEvent[];
   confirmedAiContent?: {
@@ -127,11 +161,53 @@ export function listProducts(query: ProductQuery) {
 }
 
 export async function loadProductWorkspace() {
-  const [filters, capabilities] = await Promise.all([
+  const [filters, capabilities, tableFields] = await Promise.all([
     apiJson<{ filters: ProductFilters }>("/api/product-center/products/filters"),
     apiJson<{ permissions: Record<string, boolean> }>("/api/product-center/capabilities"),
+    apiJson<ProductTableFieldConfig>("/api/product-center/products/table-fields"),
   ]);
-  return { filters: filters.filters, permissions: capabilities.permissions || {} };
+  return { filters: filters.filters, permissions: capabilities.permissions || {}, tableFields };
+}
+
+export function saveProductTableFieldPreference(visibleFields: string[]) {
+  return apiJson<{ preference: { visibleFields: string[]; revision: number } }>("/api/product-center/products/table-preferences", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ visibleFields }),
+  });
+}
+
+export function loadMabangImageCapabilities() {
+  return apiJson<{ permissions: Record<string, boolean> }>("/api/mabang-images/capabilities");
+}
+
+export function matchMabangProductImages() {
+  return apiJson<{ result: { matchedSkus: number; matchedProducts: number; linksCreated: number; unmatchedSkus: number } }>(
+    "/api/mabang-images/match-products",
+    { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+  );
+}
+
+export function updateMabangImageLink(linkId: string, action: "confirm-gallery" | "confirm-primary" | "reject") {
+  return apiJson<{ link: Record<string, unknown> }>(`/api/mabang-images/links/${encodeURIComponent(linkId)}/${action}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+}
+
+export async function uploadMabangProductImage(productId: string, file: File) {
+  const response = await authorizedFetch(`/api/mabang-images/products/${encodeURIComponent(productId)}/assets`, {
+    method: "POST",
+    headers: {
+      "content-type": file.type,
+      "x-file-name": encodeURIComponent(file.name),
+    },
+    body: file,
+  });
+  const payload = await response.json().catch(() => ({})) as { error?: string };
+  if (!response.ok) throw new Error(payload.error || `图片上传失败 (${response.status})`);
+  return payload;
 }
 
 export async function getProduct(id: string) {

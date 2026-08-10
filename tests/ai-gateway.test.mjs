@@ -88,6 +88,45 @@ test("AI gateway registers versioned prompts and permits reuse inside one module
   });
 });
 
+test("AI gateway traces the source Agent without exposing prompts or outputs", async () => {
+  const logs = [];
+  const gateway = new AiGateway({
+    provider: {
+      name: "fixture",
+      complete: async () => ({
+        success: true,
+        content: "private output",
+        usage: { prompt_tokens: 7, completion_tokens: 3 },
+      }),
+    },
+    logger: (entry) => logs.push(entry),
+  });
+  const result = await gateway.complete({
+    moduleId: MODULE_IDS.SALES_ASSORTMENT,
+    operation: "agent_trace",
+    model: "fixture-model",
+    requestId: "agent-trace-1",
+    agent: {
+      name: "sales.daily-report",
+      version: "2.1.0",
+      taskId: "task-1",
+    },
+    messages: [{ role: "user", content: "private input" }],
+  });
+
+  assert.equal(result.resultStatus, "succeeded");
+  assert.deepEqual(result.agent, {
+    name: "sales.daily-report",
+    version: "2.1.0",
+    taskId: "task-1",
+  });
+  assert.deepEqual(logs[0].agent, result.agent);
+  assert.equal(logs[0].resultStatus, "succeeded");
+  assert.match(result.resultDigest, /^[a-f0-9]{64}$/);
+  assert.equal(logs[0].resultDigest, result.resultDigest);
+  assert.doesNotMatch(JSON.stringify(logs), /private input|private output/);
+});
+
 test("AI gateway rejects incomplete prompt references and cross-module ownership conflicts", async () => {
   const provider = { complete: async () => ({ success: true, content: "ok" }) };
   const promptRegistry = new AiPromptRegistry();
@@ -157,6 +196,7 @@ test("AI audit logger records safe prompt, token, and validation metadata", asyn
     moduleId: MODULE_IDS.PRODUCT_CENTER,
     operation: "generate",
     provider: "deepseek",
+    agent: { name: "sales.daily-report", version: "2.1.0", taskId: "task-audit-1" },
     model: "deepseek-v4-flash",
     promptId: "product.generate",
     promptVersion: "2.1.0",
@@ -165,6 +205,7 @@ test("AI audit logger records safe prompt, token, and validation metadata", asyn
     usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14, cacheHitTokens: 2 },
     outputSchemaId: "product-copy@1",
     outputValid: true,
+    resultDigest: "a".repeat(64),
     durationMs: 25,
     success: true,
     errorCode: null,
@@ -174,7 +215,26 @@ test("AI audit logger records safe prompt, token, and validation metadata", asyn
   assert.equal(records.length, 1);
   assert.equal(records[0].metadata.totalTokens, 14);
   assert.equal(records[0].metadata.promptVersion, "2.1.0");
+  assert.equal(records[0].metadata.agentName, "sales.daily-report");
+  assert.equal(records[0].metadata.agentVersion, "2.1.0");
+  assert.equal(records[0].metadata.agentTaskId, "task-audit-1");
+  assert.equal(records[0].metadata.resultStatus, "succeeded");
+  assert.equal(records[0].metadata.resultDigest, "a".repeat(64));
   assert.doesNotMatch(JSON.stringify(records), /private input|private output/);
+});
+
+test("AI gateway rejects malformed Agent tracing metadata", async () => {
+  const gateway = new AiGateway({
+    provider: { complete: async () => ({ success: true, content: "ok" }) },
+  });
+  await assert.rejects(
+    () => gateway.complete({
+      moduleId: MODULE_IDS.SALES_ASSORTMENT,
+      agent: { name: "Invalid Agent Name", version: "1.0.0" },
+      messages: [],
+    }),
+    { code: "AGENT_CONTRACT_INVALID" },
+  );
 });
 
 test("AI gateway normalizes usage variants and isolates logger failures", async () => {
@@ -240,7 +300,7 @@ test("stable module IDs and compatible API response helpers are additive", () =>
   assert.deepEqual(MODULE_ID_VALUES, [
     "competitor_link", "competitor_keyword", "advertising", "mabang_orders",
     "mabang_inventory", "mabang_listing", "scheduled_exports", "file_management", "operation_audit",
-    "product_center", "sales_assortment", "fulfillment_agent",
+    "product_center", "sales_assortment", "profit", "price_control", "fulfillment_agent", "customer_service", "product_knowledge",
   ]);
   assert.deepEqual(successResponse({ value: 1 }, { requestId: "r1", legacy: { ok: true } }), {
     success: true, data: { value: 1 }, request_id: "r1", error: null, ok: true,

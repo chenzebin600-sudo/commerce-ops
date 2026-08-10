@@ -6,12 +6,15 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { GrowthRadarService } from "../lib/growth-radar/growth-radar-service.mjs";
 import { resolvePythonRuntime } from "../lib/python-runtime.mjs";
+import { SalesAssortmentAnalysisStore } from "../lib/sales-assortment/sales-assortment-analysis-store.mjs";
 import { SalesAssortmentAiService } from "../lib/sales-assortment/sales-assortment-ai-service.mjs";
 import {
   buildSalesAssortmentDailyReport,
+  salesDailyReportScopeFor,
   salesReportDateFor,
 } from "../lib/sales-assortment/sales-assortment-daily-report.mjs";
 import { SalesAssortmentService } from "../lib/sales-assortment/sales-assortment-service.mjs";
+import { LocalStorageProvider } from "../lib/storage/local-storage-provider.mjs";
 
 const root = path.resolve(".");
 const python = resolvePythonRuntime({ appRoot: root, requiredModules: ["openpyxl"] });
@@ -28,17 +31,15 @@ function repositoryFixture() {
       country_normalized: "泰国",
       sku_normalized: "SKU-1",
       warehouse_normalized: "泰国A仓",
-      normalized_payload_json: JSON.stringify({
-        product_name: "测试产品",
-        category_l1: "家居",
-        category_l2: "收纳",
-        style_name: "测试款",
-        main_sku_code: "MAIN-1",
-        cost_cny: 10,
-        cost_local: 50,
-        exchange_rate: 5,
-        price_tier_45: 100,
-      }),
+      product_name: "测试产品",
+      category_l1: "家居",
+      category_l2: "收纳",
+      style_name: "测试款",
+      main_sku_code: "MAIN-1",
+      cost_cny: "10",
+      cost_local: "50",
+      exchange_rate: "5",
+      exchange_direction: null,
     }],
     latestInventoryRows: async () => ({
       batch: { id: "inventory-1" },
@@ -63,18 +64,28 @@ function repositoryFixture() {
       }],
     }),
     currentOrderRows: async () => [{
+      order_header_id: "order-older",
+      order_line_id: "line-older",
       normalized_source_sku: "SKU-1",
       normalized_source_warehouse_name: "泰国A仓",
       quantity: 10,
+      line_amount: null,
+      line_amount_status: "unavailable",
+      order_currency: "CNY",
       product_name: "测试产品",
       paid_at: "2026-07-17 10:00:00",
       platform: "shopee",
       source_shop_name: "测试店",
       raw_values_json: JSON.stringify({ 店长: "张三" }),
     }, {
+      order_header_id: "order-current",
+      order_line_id: "line-current",
       normalized_source_sku: "SKU-1",
       normalized_source_warehouse_name: "泰国A仓",
       quantity: 2,
+      line_amount: null,
+      line_amount_status: "unavailable",
+      order_currency: "CNY",
       product_name: "测试产品",
       paid_at: "2026-07-30 10:00:00",
       platform: "shopee",
@@ -84,7 +95,7 @@ function repositoryFixture() {
   };
 }
 
-test("sales assortment dashboard compares assortment and own sales with one standard CNY price", async () => {
+test("sales assortment dashboard compares assortment and own standardized estimates with one CNY basis", async () => {
   const dashboard = await new SalesAssortmentService({
     repository: repositoryFixture(),
   }).dashboard({ periodDays: 7 });
@@ -94,17 +105,47 @@ test("sales assortment dashboard compares assortment and own sales with one stan
   assert.equal(dashboard.summary.assortmentAmount, 100);
   assert.equal(dashboard.summary.ownQuantity, 2);
   assert.equal(dashboard.summary.ownAmount, 40);
+  assert.equal(dashboard.summary.ownEstimatedAmount, 40);
+  assert.equal(dashboard.summary.ownAmountStatus, "estimated");
+  assert.equal(dashboard.summary.ownShareStatus, "estimated");
+  assert.equal(dashboard.summary.gapAmountStatus, "estimated");
+  assert.equal(dashboard.summary.averageOrderValueStatus, "estimated");
+  assert.equal(dashboard.summary.actualSalesAmount, null);
+  assert.equal(dashboard.summary.actualSalesAmountAvailability, "unavailable");
+  assert.equal(dashboard.summary.actualSalesAmountStatus, "unavailable");
+  assert.equal(dashboard.summary.actualSalesAmountCurrency, null);
+  assert.deepEqual(dashboard.summary.actualSalesOrderCoverage, {
+    totalOrderCount: 1,
+    confirmedOrderCount: 0,
+    directOrderCount: 0,
+    derivedOrderCount: 0,
+    missingAmountOrderCount: 1,
+    conflictingAmountOrderCount: 0,
+    partialAttributionOrderCount: 0,
+    currencyMissingOrderCount: 0,
+    missingOrderKeyLineCount: 0,
+  });
+  assert.deepEqual(dashboard.summary.actualSalesLineCoverage, {
+    totalLineCount: 1,
+    confirmedLineCount: 0,
+    unconfirmedLineCount: 0,
+    unavailableLineCount: 1,
+    currencyMissingLineCount: 0,
+  });
   assert.equal(dashboard.summary.ownShare, 40);
   assert.equal(dashboard.summary.dailySalesGap, 60);
   assert.equal(dashboard.summary.ownDataDays, 1);
   assert.equal(dashboard.topProducts[0].productName, "测试产品");
   assert.equal(dashboard.stores[0].manager, "张三");
   assert.equal(dashboard.storeSalesTrend[0].changeRate, -80);
+  assert.equal(dashboard.storeAnomalies.declines[0].platform, "shopee");
   assert.equal(dashboard.storeSalesTrend[0].impactAmount, 160);
   assert.equal(dashboard.storeSalesTrend[0].trendStatus, "decline");
   assert.equal(dashboard.productSalesRanking[0].rank, 1);
   assert.equal(dashboard.productSalesRanking[0].changeRate, -80);
   assert.equal(dashboard.styleAnomalies.declines[0].impactQuantity, 8);
+  assert.equal(dashboard.styleAnomalies.declines[0].storeImpacts[0].store, "测试店");
+  assert.equal(dashboard.styleAnomalies.declines[0].storeImpacts[0].quantityChange, -8);
   assert.equal(dashboard.businessOpportunities[0].opportunityAmount, 60);
   assert.equal(dashboard.businessOpportunities[0].inventoryValue, 2000);
   assert.equal(dashboard.priorityAlerts.some((item) => item.type === "store_decline"), true);
@@ -112,14 +153,211 @@ test("sales assortment dashboard compares assortment and own sales with one stan
   assert.equal(dashboard.dailyReport.summary.storeAnomalyCount, 1);
   assert.equal(dashboard.dailyReport.delivery.preferred, "dingtalk_interactive_card");
   assert.equal(dashboard.dailyReport.sections.movementWindows.stores7d.declines[0].store, "测试店");
+  assert.deepEqual(dashboard.dailyReport.sections.movementWindows.stores7d.window, {
+    currentFrom: "2026-07-24",
+    currentTo: "2026-07-30",
+    previousFrom: "2026-07-17",
+    previousTo: "2026-07-23",
+  });
+  assert.deepEqual({
+    currentFrom: dashboard.period.currentComparisonFrom,
+    currentTo: dashboard.period.currentComparisonTo,
+    previousFrom: dashboard.period.previousComparisonFrom,
+    previousTo: dashboard.period.previousComparisonTo,
+  }, {
+    currentFrom: "2026-07-24",
+    currentTo: "2026-07-30",
+    previousFrom: "2026-07-17",
+    previousTo: "2026-07-23",
+  });
+  assert.equal(dashboard.dailyReport.sections.movementWindows.styles7d.declines[0].storeImpacts[0].manager, "张三");
   assert.equal(dashboard.trend.length, 7);
   assert.equal(dashboard.contract.aggregationKey, "国家 + 商品中文名称");
-  assert.equal(dashboard.contract.version, "SALES-ASSORTMENT-1.3.0");
+  assert.equal(dashboard.contract.version, "SALES-ASSORTMENT-1.5.0");
   assert.equal(
     dashboard.contract.amountBasis,
-    "我方销售额=订单商品数量×产品包4档价(45%)；货盘金额=库存预测日销量×产品包4档价(45%)×订单有效付款日期天数",
+    "我方标准化估值=订单商品数量×同国家50%目标利润标价；货盘标准化估值=库存预测日销量×同国家50%目标利润标价×订单有效付款日期天数；实际销售额按订单头的订单核算金额（人民币）并以唯一订单ID去重，每单仅计一次",
   );
-  assert.equal(dashboard.contract.dailySalesGapFormula, "(货盘金额-我方销售额)÷我方数据天数");
+  assert.equal(dashboard.contract.listPriceProfitTarget, 50);
+  assert.equal(dashboard.contract.listPriceFormula, "50%目标利润标价=销售成本÷(1-50%)");
+  assert.equal(dashboard.contract.dailySalesGapFormula, "(货盘标准化估值-我方标准化估值)÷我方数据天数");
+});
+
+test("sales assortment rejects invalid source and reversed date ranges instead of silently changing scope", async () => {
+  const service = new SalesAssortmentService({ repository: repositoryFixture() });
+  await assert.rejects(
+    service.sourceRows({ source: "unexpected-source" }),
+    { code: "SALES_ASSORTMENT_INVALID_SOURCE", status: 400 },
+  );
+  await assert.rejects(
+    service.dashboard({ dateFrom: "2026-08-10", dateTo: "2026-08-01" }),
+    { code: "SALES_ASSORTMENT_INVALID_DATE_RANGE", status: 400 },
+  );
+  await assert.rejects(
+    service.dashboard({ dateFrom: "2026-08-01" }),
+    { code: "SALES_ASSORTMENT_INVALID_DATE_RANGE", status: 400 },
+  );
+});
+
+test("sales assortment counts an order header amount once and never sums repeated line amounts", async () => {
+  const repository = repositoryFixture();
+  const rows = await repository.currentOrderRows();
+  repository.currentOrderRows = async () => rows.map((row, index) => ({
+    ...row,
+    order_header_id: "canonical-order-1",
+    order_line_id: `canonical-line-${index + 1}`,
+    source_order_id: "same-transaction",
+    paid_at: "2026-07-30 10:00:00",
+    order_amount: 138.42,
+    order_amount_source_field: "订单核算金额（人民币）",
+    order_currency: "CNY",
+    line_amount: 999,
+    line_amount_status: "unconfirmed",
+  }));
+
+  const dashboard = await new SalesAssortmentService({ repository }).dashboard({ periodDays: 1 });
+
+  assert.equal(dashboard.summary.ownAmount, 240);
+  assert.equal(dashboard.summary.ownAmountStatus, "estimated");
+  assert.equal(dashboard.summary.actualSalesAmount, 138.42);
+  assert.equal(dashboard.summary.actualSalesAmountAvailability, "available");
+  assert.equal(dashboard.summary.actualSalesAmountStatus, "confirmed");
+  assert.equal(dashboard.summary.actualSalesAmountCurrency, "CNY");
+  assert.deepEqual(dashboard.summary.actualSalesAmountsByCurrency, { CNY: 138.42 });
+  assert.equal(dashboard.summary.actualSalesOrderCoverage.totalOrderCount, 1);
+  assert.equal(dashboard.summary.actualSalesOrderCoverage.confirmedOrderCount, 1);
+  assert.equal(dashboard.summary.actualSalesOrderCoverage.directOrderCount, 1);
+  assert.equal(dashboard.summary.actualSalesLineCoverage.confirmedLineCount, 2);
+});
+
+test("sales assortment derives missing CNY order amount from original currency amount and exchange rate", async () => {
+  const repository = repositoryFixture();
+  const rows = await repository.currentOrderRows();
+  repository.currentOrderRows = async () => [{
+    ...rows[1],
+    order_amount: null,
+    order_amount_source_field: null,
+    order_currency: null,
+    raw_values_json: JSON.stringify({
+      店长: "张三",
+      "订单核算金额（原始货币）": 100,
+      "汇率（原始货币）": 1.5,
+    }),
+  }];
+
+  const dashboard = await new SalesAssortmentService({ repository }).dashboard({ periodDays: 7 });
+
+  assert.equal(dashboard.summary.actualSalesAmount, 150);
+  assert.equal(dashboard.summary.actualSalesAmountAvailability, "available");
+  assert.equal(dashboard.summary.actualSalesAmountStatus, "confirmed");
+  assert.equal(dashboard.summary.actualSalesAmountCurrency, "CNY");
+  assert.equal(dashboard.summary.actualSalesOrderCoverage.derivedOrderCount, 1);
+});
+
+test("sales assortment refuses to attribute a whole order amount to a partial product filter match", async () => {
+  const repository = repositoryFixture();
+  const rows = await repository.currentOrderRows();
+  const selected = {
+    ...rows[1],
+    order_header_id: "mixed-product-order",
+    order_line_id: "mixed-product-line-1",
+    order_amount: 120,
+    order_amount_source_field: "订单核算金额（人民币）",
+  };
+  const excluded = {
+    ...selected,
+    order_line_id: "mixed-product-line-2",
+    normalized_source_sku: "SKU-OUTSIDE",
+    source_sku: "SKU-OUTSIDE",
+    product_name: "其他商品",
+  };
+  repository.currentOrderRows = async () => [selected, excluded];
+
+  const dashboard = await new SalesAssortmentService({ repository }).dashboard({
+    periodDays: 7,
+    categoryL1: "家居",
+  });
+
+  assert.equal(dashboard.summary.actualSalesAmount, null);
+  assert.equal(dashboard.summary.actualSalesAmountAvailability, "unavailable");
+  assert.equal(dashboard.summary.actualSalesAmountStatus, "unavailable");
+  assert.equal(dashboard.summary.actualSalesAmountCurrency, null);
+  assert.equal(dashboard.summary.actualSalesOrderCoverage.partialAttributionOrderCount, 1);
+  assert.equal(dashboard.summary.actualSalesOrderCoverage.confirmedOrderCount, 0);
+});
+
+test("sales assortment includes unmatched order lines in unfiltered actual sales coverage", async () => {
+  const repository = repositoryFixture();
+  const rows = await repository.currentOrderRows();
+  const matched = {
+    ...rows[1],
+    order_header_id: "mixed-unfiltered-order",
+    order_line_id: "mixed-unfiltered-line-1",
+    order_amount: 120,
+    order_amount_source_field: "订单核算金额（人民币）",
+  };
+  const unmatched = {
+    ...matched,
+    order_line_id: "mixed-unfiltered-line-2",
+    normalized_source_sku: "SKU-NOT-IN-CURRENT-ASSORTMENT",
+    source_sku: "SKU-NOT-IN-CURRENT-ASSORTMENT",
+    product_name: "订单独有商品",
+  };
+  repository.currentOrderRows = async () => [matched, unmatched];
+
+  const dashboard = await new SalesAssortmentService({ repository }).dashboard({ periodDays: 7 });
+
+  assert.equal(dashboard.summary.actualSalesAmount, 120);
+  assert.equal(dashboard.summary.actualSalesAmountAvailability, "available");
+  assert.equal(dashboard.summary.actualSalesOrderCoverage.confirmedOrderCount, 1);
+  assert.equal(dashboard.summary.actualSalesOrderCoverage.partialAttributionOrderCount, 0);
+});
+
+test("sales assortment exposes a clearly partial subtotal without treating missing order amounts as zero", async () => {
+  const repository = repositoryFixture();
+  const rows = await repository.currentOrderRows();
+  repository.currentOrderRows = async () => [{
+    ...rows[1],
+    order_header_id: "confirmed-order",
+    order_line_id: "confirmed-line",
+    order_amount: 80,
+    order_amount_source_field: "订单核算金额（人民币）",
+  }, {
+    ...rows[1],
+    order_header_id: "missing-order",
+    order_line_id: "missing-line",
+    order_amount: null,
+    order_amount_source_field: null,
+  }];
+
+  const dashboard = await new SalesAssortmentService({ repository }).dashboard({ periodDays: 7 });
+
+  assert.equal(dashboard.summary.actualSalesAmount, 80);
+  assert.equal(dashboard.summary.actualSalesAmountAvailability, "partial");
+  assert.equal(dashboard.summary.actualSalesAmountStatus, "partial");
+  assert.equal(dashboard.summary.actualSalesAmountCurrency, "CNY");
+  assert.equal(dashboard.summary.actualSalesOrderCoverage.totalOrderCount, 2);
+  assert.equal(dashboard.summary.actualSalesOrderCoverage.confirmedOrderCount, 1);
+  assert.equal(dashboard.summary.actualSalesOrderCoverage.missingAmountOrderCount, 1);
+});
+
+test("sales assortment uses canonical order IDs even when transaction identifiers collide", async () => {
+  const repository = repositoryFixture();
+  const rows = await repository.currentOrderRows();
+  repository.currentOrderRows = async () => [80, 20].map((orderAmount, index) => ({
+    ...rows[1],
+    order_header_id: `canonical-order-${index + 1}`,
+    order_line_id: `canonical-line-${index + 1}`,
+    source_order_id: "shared-source-order-id",
+    order_amount: orderAmount,
+    order_amount_source_field: "订单核算金额（人民币）",
+  }));
+
+  const dashboard = await new SalesAssortmentService({ repository }).dashboard({ periodDays: 7 });
+
+  assert.equal(dashboard.summary.actualSalesAmount, 100);
+  assert.equal(dashboard.summary.actualSalesOrderCoverage.totalOrderCount, 2);
+  assert.equal(dashboard.summary.orderCount, 2);
 });
 
 test("sales assortment reuses an unchanged source revision across dashboard projections", async () => {
@@ -143,7 +381,7 @@ test("sales assortment reuses an unchanged source revision across dashboard proj
     service.trend({ periodDays: 28 }),
   ]);
   assert.equal(orderReads, 1);
-  assert.equal(dashboard.contract.version, "SALES-ASSORTMENT-1.3.0");
+  assert.equal(dashboard.contract.version, "SALES-ASSORTMENT-1.5.0");
   assert.equal(Array.isArray(trend), true);
 
   const overview = await service.overview({ periodDays: 7 });
@@ -155,6 +393,16 @@ test("sales assortment reuses an unchanged source revision across dashboard proj
   assert.equal(orderReads, 1);
   await service.dashboard({ periodDays: 7, forceRefresh: true });
   assert.equal(orderReads, 2);
+});
+
+test("sales assortment trend projections do not retain full dashboards in the LRU cache", async () => {
+  const service = new SalesAssortmentService({ repository: repositoryFixture() });
+
+  await service.trend({ dateFrom: "2026-07-01", dateTo: "2026-07-30" });
+  assert.equal(service.dashboardCache.size, 0);
+
+  await service.dashboard({ dateFrom: "2026-07-01", dateTo: "2026-07-30" });
+  assert.equal(service.dashboardCache.size, 1);
 });
 
 test("sales assortment bounds database order reads to the required comparison history", async () => {
@@ -242,19 +490,50 @@ test("sales assortment amount uses distinct valid paid dates in the observation 
 
 test("sales assortment daily report keeps deterministic metrics when AI is unavailable", async () => {
   const dashboard = await new SalesAssortmentService({ repository: repositoryFixture() }).dashboard({ periodDays: 7 });
+  dashboard.dailyReport.sections.movementWindows.styles7d.growth = [{
+    style: "增长款",
+    changeRate: 50,
+    impactQuantity: 5,
+    storeImpacts: [{
+      store: "增长店",
+      manager: "李四",
+      quantityChange: 5,
+      changeRate: 50,
+    }],
+  }];
+  dashboard.dailyReport.sections.inventoryInsights = [{
+    type: "low_stock",
+    country: "泰国",
+    productName: "测试产品",
+    inventoryChange: -12,
+    assortmentAmount: 500,
+    action: "核查库存。",
+  }];
   const report = buildSalesAssortmentDailyReport({ dashboard, generatedAt: new Date("2026-07-30T08:00:00Z") });
 
-  assert.equal(report.version, "SALES-ASSORTMENT-DAILY-1.2.0");
-  assert.match(report.markdown, /我方 GMV/);
-  assert.match(report.markdown, /货盘 GMV/);
+  assert.equal(report.version, "SALES-ASSORTMENT-DAILY-1.5.0");
+  assert.match(report.markdown, /实际销售额：\*\*待确认\*\*/);
+  assert.match(report.markdown, /我方标准化估值/);
+  assert.match(report.markdown, /货盘标准化估值/);
+  assert.doesNotMatch(report.markdown, /我方 GMV|货盘 GMV|GMV 缺口/);
   assert.match(report.markdown, /确定性规则/);
-  assert.match(report.markdown, /店铺近7日趋势/);
+  assert.match(report.markdown, /店铺近7日趋势（最近7天环比前7天）/);
   assert.match(report.markdown, /库存快照变化/);
+  assert.match(report.markdown, /🟢 下滑/);
+  assert.match(report.markdown, /🔴 上涨/);
+  assert.match(report.markdown, /主要影响店铺/);
+  assert.match(report.markdown, /泰国 · 测试产品/);
   assert.equal(report.aiIncluded, false);
 });
 
 test("scheduled sales report always resolves to the previous Shanghai calendar day", () => {
   assert.equal(salesReportDateFor(new Date("2026-08-03T00:30:00.000Z")), "2026-08-02");
+  assert.deepEqual(salesDailyReportScopeFor(new Date("2026-08-03T00:30:00.000Z")), {
+    periodDays: 1,
+    dateFrom: "2026-08-02",
+    dateTo: "2026-08-02",
+    comparisonDays: 7,
+  });
 });
 
 test("sales anomalies rank material business impact ahead of tiny-base percentage swings", async () => {
@@ -272,7 +551,7 @@ test("sales anomalies rank material business impact ahead of tiny-base percentag
   assert.equal(dashboard.storeAnomalies.declines[1].store, "小额店");
 });
 
-test("inventory actions compare the latest two snapshots and carry GMV evidence", async () => {
+test("inventory actions compare the latest two snapshots and carry standardized estimate evidence", async () => {
   const repository = repositoryFixture();
   repository.latestInventoryRows = async () => ({
     batch: { id: "inventory-current", collected_at: "2026-07-30T00:00:00Z" },
@@ -310,6 +589,9 @@ test("sales assortment source viewer exposes operational fields without order PI
           source_warehouse_name: "泰国A仓",
           source_sku: "SKU-1",
           quantity: 2,
+          line_amount: 18,
+          line_amount_status: "unconfirmed",
+          order_currency: "CNY",
           product_name: "测试产品",
           raw_values_json: JSON.stringify({ 店长: "张三", 客户姓名: "不应返回", 电话1: "13800000000" }),
         }] : source === "inventory" ? [{
@@ -322,7 +604,7 @@ test("sales assortment source viewer exposes operational fields without order PI
         }] : [{
           sku_normalized: "SKU-1",
           country_normalized: "泰国",
-          normalized_payload_json: JSON.stringify({ product_name: "测试产品", price_tier_45: 100 }),
+          normalized_payload_json: JSON.stringify({ product_name: "测试产品", cost_cny: 10, cost_local: 50 }),
         }],
       }),
     },
@@ -334,13 +616,17 @@ test("sales assortment source viewer exposes operational fields without order PI
 
   assert.equal(orders.rows[0].manager, "张三");
   assert.equal(orders.rows[0].quantity, 2);
+  assert.equal(orders.rows[0].lineAmount, 18);
+  assert.equal(orders.rows[0].lineAmountStatus, "unconfirmed");
+  assert.equal(orders.rows[0].currency, "CNY");
   assert.equal("客户姓名" in orders.rows[0], false);
   assert.equal("电话1" in orders.rows[0], false);
   assert.equal(inventory.rows[0].predictedDailySales, 5);
-  assert.equal(productPackage.rows[0].priceTier45, 100);
+  assert.equal(productPackage.rows[0].targetPrice50, 100);
+  assert.equal(productPackage.rows[0].targetPrice50Cny, 20);
 });
 
-test("sales assortment DeepSeek analysis uses only compact dashboard facts and caches identical sources", async () => {
+test("sales assortment DeepSeek analysis keeps the first result until an explicit refresh", async () => {
   const dashboardService = new SalesAssortmentService({
     repository: repositoryFixture(),
   });
@@ -414,7 +700,8 @@ test("sales assortment DeepSeek analysis uses only compact dashboard facts and c
   assert.equal(requests.length, 1);
   assert.equal(requests[0].moduleId, "sales_assortment");
   assert.deepEqual(requests[0].responseFormat, { type: "json_object" });
-  assert.match(requests[0].messages[1].content, /货盘标准化销售额/);
+  assert.match(requests[0].messages[1].content, /货盘标准化估值/);
+  assert.match(requests[0].messages[1].content, /绝不能称为实际销售额或 GMV/);
   assert.match(requests[0].messages[1].content, /trend=销售与货盘趋势/);
   assert.match(requests[0].messages[1].content, /storeSalesTrend/);
   assert.match(requests[0].messages[1].content, /productSalesRanking/);
@@ -424,6 +711,54 @@ test("sales assortment DeepSeek analysis uses only compact dashboard facts and c
   assert.match(requests[0].messages[1].content, /dailyMovementWindows/);
   assert.doesNotMatch(requests[0].messages[1].content, /topProducts/);
   assert.doesNotMatch(requests[0].messages[1].content, /客户姓名|邮寄地址|电话1/);
+
+  const refreshed = await service.analyze({ periodDays: 7, forceRefresh: true });
+  assert.equal(refreshed.cached, false);
+  assert.equal(requests.length, 2);
+  assert.equal((await service.current()).cached, true);
+});
+
+test("sales assortment keeps the latest DeepSeek analysis across service restarts and recovers its backup", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "sales-assortment-ai-"));
+  try {
+    const storage = new LocalStorageProvider({ rootDir });
+    const first = {
+      id: "analysis-first",
+      generatedAt: "2026-08-08T01:00:00.000Z",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      promptVersion: "SALES-ASSORTMENT-AI-1.4.0",
+      cached: false,
+      scope: {},
+      period: {},
+      sources: {},
+      analysis: { modules: {} },
+    };
+    const second = { ...first, id: "analysis-second", generatedAt: "2026-08-08T02:00:00.000Z" };
+    await new SalesAssortmentAnalysisStore({ storage }).save(first);
+    await new SalesAssortmentAnalysisStore({ storage }).save(second);
+
+    assert.equal((await new SalesAssortmentAnalysisStore({ storage }).load()).id, "analysis-second");
+    await storage.put("latest.json", Buffer.from("{broken", "utf8"));
+
+    let dashboardCalls = 0;
+    let gatewayCalls = 0;
+    const service = new SalesAssortmentAiService({
+      dashboardService: { dashboard: async () => { dashboardCalls += 1; return {}; } },
+      gateway: { complete: async () => { gatewayCalls += 1; return { success: false }; } },
+      analysisStore: new SalesAssortmentAnalysisStore({ storage }),
+      configured: false,
+    });
+    const restored = await service.current();
+
+    assert.equal(restored.id, "analysis-first");
+    assert.equal(restored.cached, true);
+    assert.equal(dashboardCalls, 0);
+    assert.equal(gatewayCalls, 0);
+    assert.equal(await storage.exists("latest.pending.json"), false);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
 });
 
 test("sales assortment AI reports an explicit configuration gate", async () => {
@@ -525,7 +860,10 @@ test("sales assortment is active in Vue while the former React island remains a 
   assert.match(vuePage, /数据自动化设置/);
   assert.match(vuePage, /ModuleAiInsight/);
   assert.match(vuePage, /DailyOperationsBrief/);
-  assert.match(vuePage, /销售额下滑店铺/);
+  assert.match(vuePage, /标准化估值下滑店铺/);
+  assert.equal((vuePage.match(/店铺 \/ 平台/g) || []).length, 2);
+  assert.match(vuePage, /anomalyComparisonPeriod\.current/);
+  assert.match(vuePage, /anomalyComparisonPeriod\.previous/);
   assert.match(vuePage, /款名销量上涨/);
   assert.match(vuePage, /商业机会/);
   assert.match(vuePage, /库存行动/);
@@ -549,8 +887,9 @@ test("sales assortment is active in Vue while the former React island remains a 
   assert.match(growthApi, /mabang_manual_order/);
   assert.match(growthApi, /mabang_manual_inventory/);
   assert.match(server, /fileService: exportFileService/);
-  assert.match(vuePage, /订单 SKU × 商品数量 × 同国家45%标价/);
-  assert.match(vuePage, /预测日销 × 同国家45%标价/);
+  assert.match(vuePage, /订单 SKU × 商品数量 × 同国家50%目标利润标价/);
+  assert.match(vuePage, /预测日销 × 同国家50%目标利润标价/);
+  assert.match(vuePage, /50%目标利润标价/);
   assert.match(vuePage, /按交易编号去重/);
   assert.match(vueService, /\/api\/sales-assortment\/analyze/);
 });

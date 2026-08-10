@@ -33,6 +33,7 @@ import {
   loadMabangFilterOptions,
   loadMabangRunDetail,
   loadSalesAiStatus,
+  loadSavedSalesAnalysis,
   runSyncTask,
   saveDailySyncTask,
   saveDingtalkConfig,
@@ -104,21 +105,71 @@ function monthComparisonWindow() {
   };
 }
 
+function rangeDays(from: string, to: string) {
+  const start = new Date(`${from}T00:00:00Z`).getTime();
+  const end = new Date(`${to}T00:00:00Z`).getTime();
+  return Math.floor((end - start) / 86400000) + 1;
+}
+
+function shortRangeLabel(from: string, to: string) {
+  const format = (value: string) => {
+    const [year, month, day] = value.split("-").map(Number);
+    return `${year}年${month}月${day}日`;
+  };
+  return `${format(from)}-${format(to)}`;
+}
+
+function gmvComparisonWindow(range: [string, string]) {
+  const [currentStart, currentEnd] = range;
+  const [startYear, startMonth, startDay] = currentStart.split("-").map(Number);
+  const [endYear, endMonth, endDay] = currentEnd.split("-").map(Number);
+  const sameCalendarMonth = startYear === endYear && startMonth === endMonth;
+
+  let previousStart: string;
+  let previousEnd: string;
+  if (sameCalendarMonth) {
+    const previousAnchor = new Date(Date.UTC(startYear, startMonth - 2, 1));
+    const previousYear = previousAnchor.getUTCFullYear();
+    const previousMonth = previousAnchor.getUTCMonth() + 1;
+    const previousMonthDays = new Date(Date.UTC(startYear, startMonth - 1, 0)).getUTCDate();
+    const prefix = `${previousYear}-${String(previousMonth).padStart(2, "0")}-`;
+    previousStart = `${prefix}${String(Math.min(startDay, previousMonthDays)).padStart(2, "0")}`;
+    previousEnd = `${prefix}${String(Math.min(endDay, previousMonthDays)).padStart(2, "0")}`;
+  } else {
+    const span = rangeDays(currentStart, currentEnd);
+    previousEnd = shiftCalendarDay(currentStart, -1);
+    previousStart = shiftCalendarDay(previousEnd, -(span - 1));
+  }
+
+  return {
+    currentStart,
+    currentEnd,
+    previousStart,
+    previousEnd,
+    currentLabel: shortRangeLabel(currentStart, currentEnd),
+    previousLabel: shortRangeLabel(previousStart, previousEnd),
+    currentSeriesLabel: "所选范围",
+    comparisonSeriesLabel: sameCalendarMonth ? "上月同期" : "上一周期",
+  };
+}
+
 const workspace = useWorkspaceStore();
 const loading = ref(false);
 const error = ref("");
 const dashboard = shallowRef<SalesDashboard | null>(null);
 let dashboardController: AbortController | null = null;
-let monthlyTrendController: AbortController | null = null;
+let gmvTrendController: AbortController | null = null;
 let dashboardLoadSequence = 0;
 const periodDays = ref(7);
 const dateRangeFilter = ref<[string, string] | null>(yesterdayRange());
 const comparisonDays = ref(1);
-const monthlyTrendLoading = ref(false);
-const monthlyTrendError = ref("");
-const currentMonthTrend = shallowRef<SalesDashboard["trend"]>([]);
-const previousMonthTrend = shallowRef<SalesDashboard["trend"]>([]);
-const monthlyWindow = ref(monthComparisonWindow());
+const defaultGmvWindow = monthComparisonWindow();
+const gmvTrendRange = ref<[string, string]>([defaultGmvWindow.currentStart, defaultGmvWindow.currentEnd]);
+const gmvTrendLoading = ref(false);
+const gmvTrendError = ref("");
+const currentGmvTrend = shallowRef<SalesDashboard["trend"]>([]);
+const comparisonGmvTrend = shallowRef<SalesDashboard["trend"]>([]);
+const gmvTrendWindow = ref(gmvComparisonWindow(gmvTrendRange.value));
 const filters = reactive({ country: "", categoryL1: "", categoryL2: "", style: "", store: "" });
 const anomalyFilter = reactive({ storeAmount: 0, storeRate: 0, styleQuantity: 0, styleRate: 0 });
 
@@ -267,6 +318,17 @@ const periodLabel = computed(() => {
   if (!period?.orderDateFrom || !period?.orderDateTo) return `近 ${periodDays.value} 天`;
   return `${period.orderDateFrom} 至 ${period.orderDateTo}`;
 });
+function comparisonRangeLabel(from?: string | null, to?: string | null) {
+  if (!from || !to) return "—";
+  return from === to ? from : `${from} 至 ${to}`;
+}
+const anomalyComparisonPeriod = computed(() => {
+  const period = dashboard.value?.period;
+  return {
+    current: comparisonRangeLabel(period?.currentComparisonFrom, period?.currentComparisonTo),
+    previous: comparisonRangeLabel(period?.previousComparisonFrom, period?.previousComparisonTo),
+  };
+});
 const importDialogOpen = computed({
   get: () => Boolean(importPreview.value),
   set: (open: boolean) => { if (!open) importPreview.value = null; },
@@ -287,8 +349,9 @@ const sourceColumns = computed(() => ({
   "product-package": [
     ["sku", "SKU", 135], ["mainSku", "主 SKU", 135], ["productName", "商品", 210],
     ["country", "国家", 90], ["categoryL1", "一级类目", 110], ["categoryL2", "二级类目", 110],
-    ["style", "款名", 120], ["warehouse", "仓库", 150], ["priceTier45", "45%标价", 100],
-    ["exchangeRate", "汇率", 80],
+    ["style", "款名", 120], ["warehouse", "仓库", 150], ["costCny", "销售成本人民币", 130],
+    ["costLocal", "销售成本国家币", 130], ["exchangeRate", "汇率", 80],
+    ["targetPrice50", "50%目标利润标价", 140],
   ],
 } as Record<SalesImportKind, Array<[string, string, number]>>)[sourceKind.value]);
 const storeDeclines = computed(() => (dashboard.value?.storeAnomalies?.declines || []).filter((item) => (
@@ -617,6 +680,34 @@ function money(value: unknown) {
   return `¥${Number(value || 0).toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`;
 }
 
+function actualSalesDisplay(summary: SalesDashboard["summary"] | undefined) {
+  if (!summary || summary.actualSalesAmountAvailability === "unavailable") return "待确认";
+  const currencyEntries = Object.entries(summary.actualSalesAmountsByCurrency || {});
+  const fallbackEntry = currencyEntries.length === 1 ? currencyEntries[0] : null;
+  const currency = summary.actualSalesAmountCurrency || fallbackEntry?.[0] || "";
+  const rawAmount = summary.actualSalesAmount ?? fallbackEntry?.[1];
+  const amount = rawAmount == null ? null : Number(rawAmount);
+  if (currency && amount !== null && Number.isFinite(amount)) {
+    const formatted = amount.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+    return `${currency} ${formatted}${summary.actualSalesAmountAvailability === "partial" ? "（部分）" : ""}`;
+  }
+  return summary.actualSalesAmountAvailability === "partial" ? "多币种（部分）" : "—";
+}
+
+function actualSalesHint(summary: SalesDashboard["summary"] | undefined) {
+  const coverage = summary?.actualSalesOrderCoverage;
+  if (!coverage) {
+    return "按订单头“订单核算金额（人民币）”去重；缺失金额不按 0，类目 / SKU 部分命中不计整单且不分摊";
+  }
+  const issues = [
+    coverage.missingAmountOrderCount > 0 ? `缺金额 ${coverage.missingAmountOrderCount} 单` : "",
+    coverage.conflictingAmountOrderCount > 0 ? `金额冲突 ${coverage.conflictingAmountOrderCount} 单` : "",
+    coverage.currencyMissingOrderCount > 0 ? `缺币种 ${coverage.currencyMissingOrderCount} 单` : "",
+  ].filter(Boolean);
+  const issueText = issues.length ? `；${issues.join("，")}` : "";
+  return `订单金额覆盖 ${coverage.confirmedOrderCount}/${coverage.totalOrderCount} 单${issueText}；按订单头“订单核算金额（人民币）”去重；缺失金额不按 0，类目 / SKU 部分命中 ${coverage.partialAttributionOrderCount} 单，不计整单且不分摊`;
+}
+
 function percent(value: unknown) {
   const number = Number(value || 0);
   return `${number.toFixed(1)}%`;
@@ -625,6 +716,17 @@ function percent(value: unknown) {
 function signedPercent(value: unknown) {
   const result = Number(value || 0);
   return `${result > 0 ? "+" : ""}${result.toFixed(1)}%`;
+}
+
+function platformLabel(value: unknown) {
+  const raw = String(value || "").trim();
+  const normalized = raw.toLowerCase().replace(/[\s_-]+/g, "");
+  return ({
+    lazada: "Lazada",
+    shopee: "Shopee",
+    tiktok: "TikTok Shop",
+    tiktokshop: "TikTok Shop",
+  } as Record<string, string>)[normalized] || raw || "平台未标记";
 }
 
 function inventoryTypeLabel(type: string) {
@@ -656,43 +758,60 @@ function currentFilters(forceRefresh = false) {
   };
 }
 
-async function loadMonthlyTrend(forceRefresh = false) {
-  monthlyTrendController?.abort();
+async function loadGmvTrend(forceRefresh = false) {
+  const selectedRange = gmvTrendRange.value;
+  if (!selectedRange?.[0] || !selectedRange?.[1]) {
+    gmvTrendError.value = "请选择完整的标准化估值趋势日期范围";
+    return;
+  }
+  if (rangeDays(selectedRange[0], selectedRange[1]) > 90) {
+    gmvTrendError.value = "标准化估值趋势单次最多展示 90 天，请缩短日期范围";
+    return;
+  }
+
+  gmvTrendController?.abort();
   const controller = new AbortController();
-  monthlyTrendController = controller;
-  monthlyTrendLoading.value = true;
-  monthlyTrendError.value = "";
-  const window = monthComparisonWindow();
-  monthlyWindow.value = window;
+  gmvTrendController = controller;
+  gmvTrendLoading.value = true;
+  gmvTrendError.value = "";
+  const window = gmvComparisonWindow(selectedRange);
+  gmvTrendWindow.value = window;
+  const baseFilters = {
+    comparisonDays: 7,
+    country: filters.country,
+    categoryL1: filters.categoryL1,
+    categoryL2: filters.categoryL2,
+    style: filters.style,
+    store: filters.store,
+    forceRefresh,
+  };
   try {
-    const monthlyTrend = await loadSalesTrend({
-      periodDays: 90,
-      dateFrom: window.previousStart,
-      dateTo: window.currentEnd,
-      comparisonDays: 7,
-      country: filters.country,
-      categoryL1: filters.categoryL1,
-      categoryL2: filters.categoryL2,
-      style: filters.style,
-      store: filters.store,
-      forceRefresh,
-    }, controller.signal);
+    const [currentTrend, comparisonTrend] = await Promise.all([
+      loadSalesTrend({
+        ...baseFilters,
+        periodDays: rangeDays(window.currentStart, window.currentEnd),
+        dateFrom: window.currentStart,
+        dateTo: window.currentEnd,
+      }, controller.signal),
+      loadSalesTrend({
+        ...baseFilters,
+        periodDays: rangeDays(window.previousStart, window.previousEnd),
+        dateFrom: window.previousStart,
+        dateTo: window.previousEnd,
+      }, controller.signal),
+    ]);
     if (controller.signal.aborted) return;
-    currentMonthTrend.value = monthlyTrend.filter((item) => (
-      item.date >= window.currentStart && item.date <= window.currentEnd
-    ));
-    previousMonthTrend.value = monthlyTrend.filter((item) => (
-      item.date >= window.previousStart && item.date <= window.previousEnd
-    ));
+    currentGmvTrend.value = currentTrend;
+    comparisonGmvTrend.value = comparisonTrend;
   } catch (loadError) {
     if ((loadError as Error)?.name === "AbortError") return;
-    monthlyTrendError.value = String((loadError as Error)?.message || loadError || "月度趋势读取失败");
-    currentMonthTrend.value = [];
-    previousMonthTrend.value = [];
+    gmvTrendError.value = String((loadError as Error)?.message || loadError || "标准化估值趋势读取失败");
+    currentGmvTrend.value = [];
+    comparisonGmvTrend.value = [];
   } finally {
-    if (monthlyTrendController === controller) {
-      monthlyTrendController = null;
-      monthlyTrendLoading.value = false;
+    if (gmvTrendController === controller) {
+      gmvTrendController = null;
+      gmvTrendLoading.value = false;
     }
   }
 }
@@ -775,6 +894,14 @@ async function loadAiStatus() {
   }
 }
 
+async function loadSavedAnalysis() {
+  try {
+    aiAnalysis.value = await loadSavedSalesAnalysis();
+  } catch (loadError) {
+    aiError.value = String((loadError as Error)?.message || loadError || "已保存的 DeepSeek 分析读取失败");
+  }
+}
+
 async function analyze(forceRefresh = false) {
   if (!dashboard.value || !aiStatus.value?.configured) return;
   analysisController?.abort();
@@ -805,7 +932,7 @@ async function load(forceRefresh = false) {
     if (controller.signal.aborted || sequence !== dashboardLoadSequence) return;
     dashboard.value = nextDashboard;
     workspace.lastSyncedAt = new Date();
-    void loadMonthlyTrend(forceRefresh);
+    void loadGmvTrend(forceRefresh);
   } catch (loadError) {
     if ((loadError as Error)?.name === "AbortError") return;
     error.value = String((loadError as Error)?.message || loadError || "销售与货盘数据加载失败");
@@ -815,11 +942,12 @@ async function load(forceRefresh = false) {
       loading.value = false;
     }
   }
-  if (!controller.signal.aborted && sequence === dashboardLoadSequence && dashboard.value) void analyze(false);
 }
 
 function reset() {
+  const monthWindow = monthComparisonWindow();
   dateRangeFilter.value = yesterdayRange();
+  gmvTrendRange.value = [monthWindow.currentStart, monthWindow.currentEnd];
   periodDays.value = 7;
   comparisonDays.value = 1;
   Object.assign(filters, { country: "", categoryL1: "", categoryL2: "", style: "", store: "" });
@@ -936,13 +1064,13 @@ async function removeRobot(config: DingtalkConfig) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadAutomation(), loadAiStatus()]);
+  await Promise.all([loadAutomation(), loadAiStatus(), loadSavedAnalysis()]);
   await load(false);
 });
 
 onBeforeUnmount(() => {
   dashboardController?.abort();
-  monthlyTrendController?.abort();
+  gmvTrendController?.abort();
   analysisController?.abort();
   stopExportProgressPolling();
 });
@@ -1001,36 +1129,65 @@ onBeforeUnmount(() => {
     <el-alert v-if="error" type="error" :closable="false" show-icon :title="error" />
     <el-alert v-else-if="dashboard?.period?.sufficient === false" type="warning" :closable="false" show-icon title="当前订单周期不足，趋势和日均指标仅供参考。" />
 
-    <section class="section-heading"><div><span class="panel-kicker">BUSINESS PULSE</span><h2>经营指标</h2></div><span>统一使用国家匹配后的产品包 4 档价（45%）</span></section>
+    <section class="section-heading"><div><span class="panel-kicker">BUSINESS PULSE</span><h2>经营指标</h2></div><span>实际销售额按订单头“订单核算金额（人民币）”去重；类目 / SKU 部分命中不计整单且不分摊；其余金额为 50% 目标利润标价估值</span></section>
     <section class="metric-grid assortment-metrics">
-      <MetricCard label="我方 GMV" :value="dashboard ? money(dashboard.summary.ownAmount) : '—'" hint="订单 SKU × 商品数量 × 同国家45%标价" />
+      <MetricCard label="实际销售额" :value="actualSalesDisplay(dashboard?.summary)" :hint="actualSalesHint(dashboard?.summary)" />
+      <MetricCard label="我方标准化估值" :value="dashboard ? money(dashboard.summary.ownEstimatedAmount ?? dashboard.summary.ownAmount) : '—'" hint="订单 SKU × 商品数量 × 同国家50%目标利润标价；非实际成交额" />
       <MetricCard
-        label="货盘 GMV"
-        :value="dashboard ? money(dashboard.summary.assortmentAmount) : '—'"
-        :hint="dashboard ? `预测日销 × 同国家45%标价 × ${dashboard.summary.ownDataDays}个有效付款日` : '预测日销量 × 同国家45%标价 × 有效付款日期天数'"
+        label="货盘标准化估值"
+        :value="dashboard ? money(dashboard.summary.assortmentEstimatedAmount ?? dashboard.summary.assortmentAmount) : '—'"
+        :hint="dashboard ? `预测日销 × 同国家50%目标利润标价 × ${dashboard.summary.ownDataDays}个有效付款日；非实际成交额` : '预测日销量 × 同国家50%目标利润标价 × 有效付款日期天数'"
       />
-      <MetricCard label="我方占比" :value="dashboard ? percent(dashboard.summary.ownShare) : '—'" hint="我方销售额 ÷ 货盘金额" />
-      <MetricCard label="GMV 缺口" :value="dashboard ? money(dashboard.summary.gapAmount) : '—'" hint="货盘 GMV - 我方 GMV" tone="warning" />
+      <MetricCard label="标准化承接占比" :value="dashboard ? percent(dashboard.summary.ownShare) : '—'" hint="我方标准化估值 ÷ 货盘标准化估值" />
+      <MetricCard label="标准化估值缺口" :value="dashboard ? money(dashboard.summary.estimatedGapAmount ?? dashboard.summary.gapAmount) : '—'" hint="货盘标准化估值 - 我方标准化估值" tone="warning" />
       <MetricCard label="订单量" :value="dashboard ? dashboard.summary.orderCount.toLocaleString('zh-CN') : '—'" hint="按交易编号去重" />
-      <MetricCard label="客单价" :value="dashboard ? money(dashboard.summary.averageOrderValue) : '—'" hint="我方 GMV ÷ 订单量" />
+      <MetricCard label="估算单均值" :value="dashboard ? money(dashboard.summary.estimatedAverageOrderValue ?? dashboard.summary.averageOrderValue) : '—'" hint="我方标准化估值 ÷ 订单量；非真实客单价" />
     </section>
 
-    <section class="section-heading"><div><span class="panel-kicker">MONTHLY GMV TREND</span><h2>本月与上月同期趋势</h2></div><span>趋势时间独立于经营范围，业务维度筛选保持一致</span></section>
-    <el-alert v-if="monthlyTrendError" type="error" :closable="false" show-icon :title="monthlyTrendError" />
-    <article class="dashboard-panel executive-trend-panel monthly-comparison-panel" v-loading="monthlyTrendLoading">
+    <section class="section-heading gmv-section-heading">
+      <div><span class="panel-kicker">ESTIMATE TREND</span><h2>标准化估值时间趋势</h2></div>
+      <div class="gmv-range-control">
+        <span>默认本月，选择后仅刷新图表</span>
+        <el-date-picker
+          v-model="gmvTrendRange"
+          type="daterange"
+          value-format="YYYY-MM-DD"
+          range-separator="至"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          :shortcuts="dateShortcuts"
+          :clearable="false"
+          unlink-panels
+          @change="loadGmvTrend(false)"
+        />
+      </div>
+    </section>
+    <el-alert v-if="gmvTrendError" type="error" :closable="false" show-icon :title="gmvTrendError" />
+    <article class="dashboard-panel executive-trend-panel monthly-comparison-panel" v-loading="gmvTrendLoading">
       <header>
-        <div><span class="panel-kicker">MONTHLY COMPARISON</span><h3>本月与上月同期 GMV 对比</h3></div>
-        <span>{{ monthlyWindow.currentLabel }} 对比 {{ monthlyWindow.previousLabel }}</span>
+        <div><span class="panel-kicker">PERIOD COMPARISON</span><h3>所选周期与同期标准化估值对比</h3></div>
+        <span>{{ gmvTrendWindow.currentLabel }} 对比 {{ gmvTrendWindow.previousLabel }}</span>
       </header>
       <TrendChart
-        v-if="currentMonthTrend.length || previousMonthTrend.length"
-        :rows="currentMonthTrend"
-        :comparison-rows="previousMonthTrend"
+        v-if="currentGmvTrend.length || comparisonGmvTrend.length"
+        :rows="currentGmvTrend"
+        :comparison-rows="comparisonGmvTrend"
+        :current-series-label="gmvTrendWindow.currentSeriesLabel"
+        :comparison-series-label="gmvTrendWindow.comparisonSeriesLabel"
       />
-      <el-empty v-else description="当前筛选无月度趋势数据" />
+      <el-empty v-else description="当前日期范围无标准化估值趋势数据" />
     </article>
 
-    <section class="section-heading anomaly-heading"><div><span class="panel-kicker">EXCEPTION RADAR</span><h2>异常数据</h2></div><el-segmented v-model="comparisonDays" :options="[{ label: '昨日比前日', value: 1 }, { label: '近3日比前3日', value: 3 }, { label: '近7日比前7日', value: 7 }]" @change="load" /></section>
+    <section class="section-heading anomaly-heading">
+      <div><span class="panel-kicker">EXCEPTION RADAR</span><h2>异常数据</h2></div>
+      <div class="anomaly-heading-tools">
+        <div class="comparison-period-summary" aria-label="异常数据对比日期">
+          <span><strong>本期</strong>{{ anomalyComparisonPeriod.current }}</span>
+          <span><strong>上期</strong>{{ anomalyComparisonPeriod.previous }}</span>
+        </div>
+        <el-segmented v-model="comparisonDays" :options="[{ label: '昨日比前日', value: 1 }, { label: '近3日比前3日', value: 3 }, { label: '近7日比前7日', value: 7 }]" @change="load" />
+      </div>
+    </section>
     <section class="anomaly-controls">
       <label>店铺最低金额<el-input-number v-model="anomalyFilter.storeAmount" :min="0" :step="1000" controls-position="right" /></label>
       <label>店铺最低变动<el-input-number v-model="anomalyFilter.storeRate" :min="0" :max="1000" :step="5" controls-position="right" /><span>%</span></label>
@@ -1040,22 +1197,22 @@ onBeforeUnmount(() => {
 
     <section class="anomaly-grid anomaly-analysis-grid">
       <div class="anomaly-lane">
-        <article class="movement-panel decline-panel"><header><div><ArrowDownRight :size="18" /><strong>销售额下滑店铺</strong></div><span>按影响金额优先 · {{ storeDeclines.length }} 家</span></header><el-table :data="storeDeclineRows" height="360" empty-text="当前门槛下无下滑店铺"><el-table-column prop="store" label="店铺" min-width="150" show-overflow-tooltip /><el-table-column prop="country" label="国家" width="82" /><el-table-column label="本期" width="112" sortable prop="currentAmount"><template #default="scope">{{ money(scope.row.currentAmount) }}</template></el-table-column><el-table-column label="上期" width="112" sortable prop="previousAmount"><template #default="scope">{{ money(scope.row.previousAmount) }}</template></el-table-column><el-table-column label="影响金额" width="118" sortable prop="impactAmount"><template #default="scope"><strong class="decline-value">{{ money(scope.row.impactAmount) }}</strong></template></el-table-column><el-table-column label="环比" width="88" sortable prop="changeRate"><template #default="scope"><strong class="decline-value">{{ signedPercent(scope.row.changeRate) }}</strong></template></el-table-column></el-table></article>
+        <article class="movement-panel decline-panel"><header><div><ArrowDownRight :size="18" /><strong>标准化估值下滑店铺</strong></div><span>按估值影响优先 · {{ storeDeclines.length }} 家</span></header><el-table :data="storeDeclineRows" height="360" empty-text="当前门槛下无下滑店铺"><el-table-column label="店铺 / 平台" min-width="170"><template #default="scope"><div class="store-platform-cell"><strong>{{ scope.row.store }}</strong><span>{{ platformLabel(scope.row.platform) }}</span></div></template></el-table-column><el-table-column prop="country" label="国家" width="82" /><el-table-column label="本期" width="112" sortable prop="currentAmount"><template #default="scope">{{ money(scope.row.currentAmount) }}</template></el-table-column><el-table-column label="上期" width="112" sortable prop="previousAmount"><template #default="scope">{{ money(scope.row.previousAmount) }}</template></el-table-column><el-table-column label="估值影响" width="118" sortable prop="impactAmount"><template #default="scope"><strong class="decline-value">{{ money(scope.row.impactAmount) }}</strong></template></el-table-column><el-table-column label="环比" width="88" sortable prop="changeRate"><template #default="scope"><strong class="decline-value">{{ signedPercent(scope.row.changeRate) }}</strong></template></el-table-column></el-table></article>
         <ModuleAiInsight title="店铺下滑重点诊断" tone="decline" :analysis="aiAnalysis?.analysis.modules.storeDeclines" :configured="Boolean(aiStatus?.configured)" :loading="aiLoading" :error="aiError" :generated-at="aiAnalysis?.generatedAt" :cached="aiAnalysis?.cached" @refresh="analyze(true)" />
       </div>
       <div class="anomaly-lane">
-        <article class="movement-panel growth-panel"><header><div><ArrowUpRight :size="18" /><strong>销售额上涨店铺</strong></div><span>按影响金额优先 · {{ storeGrowth.length }} 家</span></header><el-table :data="storeGrowthRows" height="360" empty-text="当前门槛下无上涨店铺"><el-table-column prop="store" label="店铺" min-width="150" show-overflow-tooltip /><el-table-column prop="country" label="国家" width="82" /><el-table-column label="本期" width="112" sortable prop="currentAmount"><template #default="scope">{{ money(scope.row.currentAmount) }}</template></el-table-column><el-table-column label="上期" width="112" sortable prop="previousAmount"><template #default="scope">{{ money(scope.row.previousAmount) }}</template></el-table-column><el-table-column label="影响金额" width="118" sortable prop="impactAmount"><template #default="scope"><strong class="growth-value">{{ money(scope.row.impactAmount) }}</strong></template></el-table-column><el-table-column label="环比" width="88" sortable prop="changeRate"><template #default="scope"><strong class="growth-value">{{ signedPercent(scope.row.changeRate) }}</strong></template></el-table-column></el-table></article>
+        <article class="movement-panel growth-panel"><header><div><ArrowUpRight :size="18" /><strong>标准化估值上涨店铺</strong></div><span>按估值影响优先 · {{ storeGrowth.length }} 家</span></header><el-table :data="storeGrowthRows" height="360" empty-text="当前门槛下无上涨店铺"><el-table-column label="店铺 / 平台" min-width="170"><template #default="scope"><div class="store-platform-cell"><strong>{{ scope.row.store }}</strong><span>{{ platformLabel(scope.row.platform) }}</span></div></template></el-table-column><el-table-column prop="country" label="国家" width="82" /><el-table-column label="本期" width="112" sortable prop="currentAmount"><template #default="scope">{{ money(scope.row.currentAmount) }}</template></el-table-column><el-table-column label="上期" width="112" sortable prop="previousAmount"><template #default="scope">{{ money(scope.row.previousAmount) }}</template></el-table-column><el-table-column label="估值影响" width="118" sortable prop="impactAmount"><template #default="scope"><strong class="growth-value">{{ money(scope.row.impactAmount) }}</strong></template></el-table-column><el-table-column label="环比" width="88" sortable prop="changeRate"><template #default="scope"><strong class="growth-value">{{ signedPercent(scope.row.changeRate) }}</strong></template></el-table-column></el-table></article>
         <ModuleAiInsight title="店铺增长重点诊断" tone="growth" :analysis="aiAnalysis?.analysis.modules.storeGrowth" :configured="Boolean(aiStatus?.configured)" :loading="aiLoading" :error="aiError" :generated-at="aiAnalysis?.generatedAt" :cached="aiAnalysis?.cached" @refresh="analyze(true)" />
       </div>
     </section>
 
     <section class="anomaly-grid anomaly-analysis-grid">
       <div class="anomaly-lane">
-        <article class="movement-panel decline-panel"><header><div><ArrowDownRight :size="18" /><strong>款名销量下滑</strong></div><span>按影响销量优先 · {{ styleDeclines.length }} 个款</span></header><el-table :data="styleDeclineRows" height="360" empty-text="当前门槛下无下滑款名"><el-table-column prop="style" label="款名" min-width="160" show-overflow-tooltip /><el-table-column prop="country" label="国家" width="82" /><el-table-column prop="currentQuantity" label="本期" width="86" sortable /><el-table-column prop="previousQuantity" label="上期" width="86" sortable /><el-table-column prop="impactQuantity" label="影响销量" width="96" sortable><template #default="scope"><strong class="decline-value">{{ scope.row.impactQuantity }}</strong></template></el-table-column><el-table-column label="环比" width="88" sortable prop="changeRate"><template #default="scope"><strong class="decline-value">{{ signedPercent(scope.row.changeRate) }}</strong></template></el-table-column></el-table></article>
+        <article class="movement-panel decline-panel"><header><div><ArrowDownRight :size="18" /><strong>款名销量下滑</strong></div><span>展开款名查看主要影响店铺 · {{ styleDeclines.length }} 个款</span></header><el-table :data="styleDeclineRows" height="360" empty-text="当前门槛下无下滑款名"><el-table-column type="expand" width="46"><template #default="scope"><div class="style-store-detail"><header><div><strong>{{ scope.row.style }}</strong><span>{{ scope.row.country }} · 店铺影响明细</span></div><small>按绝对影响销量排序</small></header><el-table :data="scope.row.storeImpacts || []" size="small" max-height="280" empty-text="当前款名没有可拆分的店铺销量"><el-table-column prop="store" label="店铺" min-width="150" show-overflow-tooltip /><el-table-column prop="manager" label="店长" width="90" show-overflow-tooltip /><el-table-column prop="platform" label="平台" width="90" /><el-table-column prop="currentQuantity" label="本期" width="78" sortable /><el-table-column prop="previousQuantity" label="上期" width="78" sortable /><el-table-column label="影响量" width="90" sortable prop="impactQuantity"><template #default="storeScope"><strong :class="storeScope.row.quantityChange < 0 ? 'decline-value' : storeScope.row.quantityChange > 0 ? 'growth-value' : ''">{{ storeScope.row.quantityChange > 0 ? '+' : '' }}{{ storeScope.row.quantityChange }}</strong></template></el-table-column><el-table-column label="环比" width="88" sortable prop="changeRate"><template #default="storeScope"><strong :class="storeScope.row.quantityChange < 0 ? 'decline-value' : storeScope.row.quantityChange > 0 ? 'growth-value' : ''">{{ signedPercent(storeScope.row.changeRate) }}</strong></template></el-table-column></el-table></div></template></el-table-column><el-table-column prop="style" label="款名" min-width="160" show-overflow-tooltip /><el-table-column prop="country" label="国家" width="82" /><el-table-column prop="currentQuantity" label="本期" width="86" sortable /><el-table-column prop="previousQuantity" label="上期" width="86" sortable /><el-table-column prop="impactQuantity" label="影响销量" width="96" sortable><template #default="scope"><strong class="decline-value">{{ scope.row.impactQuantity }}</strong></template></el-table-column><el-table-column label="环比" width="88" sortable prop="changeRate"><template #default="scope"><strong class="decline-value">{{ signedPercent(scope.row.changeRate) }}</strong></template></el-table-column></el-table></article>
         <ModuleAiInsight title="款名下滑重点诊断" tone="decline" :analysis="aiAnalysis?.analysis.modules.styleDeclines" :configured="Boolean(aiStatus?.configured)" :loading="aiLoading" :error="aiError" :generated-at="aiAnalysis?.generatedAt" :cached="aiAnalysis?.cached" @refresh="analyze(true)" />
       </div>
       <div class="anomaly-lane">
-        <article class="movement-panel growth-panel"><header><div><ArrowUpRight :size="18" /><strong>款名销量上涨</strong></div><span>按影响销量优先 · {{ styleGrowth.length }} 个款</span></header><el-table :data="styleGrowthRows" height="360" empty-text="当前门槛下无上涨款名"><el-table-column prop="style" label="款名" min-width="160" show-overflow-tooltip /><el-table-column prop="country" label="国家" width="82" /><el-table-column prop="currentQuantity" label="本期" width="86" sortable /><el-table-column prop="previousQuantity" label="上期" width="86" sortable /><el-table-column prop="impactQuantity" label="影响销量" width="96" sortable><template #default="scope"><strong class="growth-value">{{ scope.row.impactQuantity }}</strong></template></el-table-column><el-table-column label="环比" width="88" sortable prop="changeRate"><template #default="scope"><strong class="growth-value">{{ signedPercent(scope.row.changeRate) }}</strong></template></el-table-column></el-table></article>
+        <article class="movement-panel growth-panel"><header><div><ArrowUpRight :size="18" /><strong>款名销量上涨</strong></div><span>展开款名查看主要影响店铺 · {{ styleGrowth.length }} 个款</span></header><el-table :data="styleGrowthRows" height="360" empty-text="当前门槛下无上涨款名"><el-table-column type="expand" width="46"><template #default="scope"><div class="style-store-detail"><header><div><strong>{{ scope.row.style }}</strong><span>{{ scope.row.country }} · 店铺影响明细</span></div><small>按绝对影响销量排序</small></header><el-table :data="scope.row.storeImpacts || []" size="small" max-height="280" empty-text="当前款名没有可拆分的店铺销量"><el-table-column prop="store" label="店铺" min-width="150" show-overflow-tooltip /><el-table-column prop="manager" label="店长" width="90" show-overflow-tooltip /><el-table-column prop="platform" label="平台" width="90" /><el-table-column prop="currentQuantity" label="本期" width="78" sortable /><el-table-column prop="previousQuantity" label="上期" width="78" sortable /><el-table-column label="影响量" width="90" sortable prop="impactQuantity"><template #default="storeScope"><strong :class="storeScope.row.quantityChange < 0 ? 'decline-value' : storeScope.row.quantityChange > 0 ? 'growth-value' : ''">{{ storeScope.row.quantityChange > 0 ? '+' : '' }}{{ storeScope.row.quantityChange }}</strong></template></el-table-column><el-table-column label="环比" width="88" sortable prop="changeRate"><template #default="storeScope"><strong :class="storeScope.row.quantityChange < 0 ? 'decline-value' : storeScope.row.quantityChange > 0 ? 'growth-value' : ''">{{ signedPercent(storeScope.row.changeRate) }}</strong></template></el-table-column></el-table></div></template></el-table-column><el-table-column prop="style" label="款名" min-width="160" show-overflow-tooltip /><el-table-column prop="country" label="国家" width="82" /><el-table-column prop="currentQuantity" label="本期" width="86" sortable /><el-table-column prop="previousQuantity" label="上期" width="86" sortable /><el-table-column prop="impactQuantity" label="影响销量" width="96" sortable><template #default="scope"><strong class="growth-value">{{ scope.row.impactQuantity }}</strong></template></el-table-column><el-table-column label="环比" width="88" sortable prop="changeRate"><template #default="scope"><strong class="growth-value">{{ signedPercent(scope.row.changeRate) }}</strong></template></el-table-column></el-table></article>
         <ModuleAiInsight title="款名增长重点诊断" tone="growth" :analysis="aiAnalysis?.analysis.modules.styleGrowth" :configured="Boolean(aiStatus?.configured)" :loading="aiLoading" :error="aiError" :generated-at="aiAnalysis?.generatedAt" :cached="aiAnalysis?.cached" @refresh="analyze(true)" />
       </div>
     </section>
@@ -1067,7 +1224,7 @@ onBeforeUnmount(() => {
         <el-table-column prop="country" label="国家" width="90" />
         <el-table-column prop="categoryL1" label="一级类目" min-width="130" show-overflow-tooltip />
         <el-table-column prop="categoryL2" label="二级类目" min-width="130" show-overflow-tooltip />
-        <el-table-column label="货盘 GMV" width="140" align="right" sortable prop="assortmentAmount"><template #default="scope">{{ money(scope.row.assortmentAmount) }}</template></el-table-column>
+        <el-table-column label="货盘标准化估值" width="160" align="right" sortable prop="assortmentAmount"><template #default="scope">{{ money(scope.row.assortmentAmount) }}</template></el-table-column>
         <el-table-column label="机会缺口" width="140" align="right" sortable prop="opportunityAmount"><template #default="scope"><strong class="negative-value">{{ money(scope.row.opportunityAmount) }}</strong></template></el-table-column>
         <el-table-column label="库存标价金额" width="145" align="right" sortable prop="inventoryValue"><template #default="scope">{{ money(scope.row.inventoryValue) }}</template></el-table-column>
         <el-table-column prop="assortmentDailySales" label="货盘日销" width="110" align="right" sortable />
@@ -1085,8 +1242,8 @@ onBeforeUnmount(() => {
         <el-table-column prop="productName" label="商品" min-width="210" show-overflow-tooltip />
         <el-table-column prop="style" label="款名" min-width="150" show-overflow-tooltip />
         <el-table-column prop="country" label="国家" width="90" />
-        <el-table-column label="货盘 GMV" width="130" align="right" sortable prop="assortmentAmount"><template #default="scope">{{ money(scope.row.assortmentAmount) }}</template></el-table-column>
-        <el-table-column label="我方 GMV" width="125" align="right" sortable prop="ownAmount"><template #default="scope">{{ money(scope.row.ownAmount) }}</template></el-table-column>
+        <el-table-column label="货盘标准化估值" width="160" align="right" sortable prop="assortmentAmount"><template #default="scope">{{ money(scope.row.assortmentAmount) }}</template></el-table-column>
+        <el-table-column label="我方标准化估值" width="155" align="right" sortable prop="ownAmount"><template #default="scope">{{ money(scope.row.ownAmount) }}</template></el-table-column>
         <el-table-column prop="ownDailySales" label="我方日销" width="105" align="right" sortable />
         <el-table-column prop="previousAvailableQuantity" label="上次库存" width="105" align="right" sortable><template #default="scope">{{ scope.row.previousAvailableQuantity === null ? '—' : scope.row.previousAvailableQuantity }}</template></el-table-column>
         <el-table-column prop="availableQuantity" label="可用库存" width="105" align="right" sortable />
@@ -1096,7 +1253,7 @@ onBeforeUnmount(() => {
         <el-table-column prop="action" label="建议动作" min-width="280" show-overflow-tooltip />
       </el-table>
     </section>
-    <ModuleAiInsight title="库存变化与 GMV 诊断" tone="inventory" :analysis="aiAnalysis?.analysis.modules.inventory" :configured="Boolean(aiStatus?.configured)" :loading="aiLoading" :error="aiError" :generated-at="aiAnalysis?.generatedAt" :cached="aiAnalysis?.cached" @refresh="analyze(true)" />
+    <ModuleAiInsight title="库存变化与标准化估值诊断" tone="inventory" :analysis="aiAnalysis?.analysis.modules.inventory" :configured="Boolean(aiStatus?.configured)" :loading="aiLoading" :error="aiError" :generated-at="aiAnalysis?.generatedAt" :cached="aiAnalysis?.cached" @refresh="analyze(true)" />
 
     <section class="section-heading"><div><span class="panel-kicker">DAILY BRIEF</span><h2>经营日报</h2></div><span>最多 10 项，支持按计划推送钉钉</span></section>
     <DailyOperationsBrief :report="dashboard?.dailyReport" :alerts="dashboard?.priorityAlerts || []" />
@@ -1367,9 +1524,19 @@ onBeforeUnmount(() => {
 .automation-toolbar-status { display: flex; align-items: center; gap: 10px; min-width: 0; }.automation-toolbar-status > div { display: grid; gap: 2px; }.automation-toolbar-status strong { font-size: 13px; }.automation-toolbar-status small { color: var(--ops-text-secondary); font-size: 11px; }.automation-toolbar-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .decision-filter { padding: 14px; }.decision-filter-heading,.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }.decision-filter-heading { margin-bottom: 12px; }.decision-filter-heading > div { display: grid; gap: 2px; }.decision-filter-heading > span,.section-heading > span { color: var(--ops-text-secondary); font-size: 11px; }.decision-filter-grid { display: grid; grid-template-columns: minmax(260px,1.45fr) repeat(5,minmax(120px,1fr)) auto; gap: 8px; }.decision-filter-grid :deep(.el-select),.decision-filter-grid :deep(.el-date-editor) { width: 100%; }.decision-filter-actions { display: flex; gap: 8px; }
 .section-heading { margin-top: 8px; }.section-heading > div { display: grid; gap: 2px; }.section-heading h2 { margin: 0; font-size: 17px; line-height: 1.3; letter-spacing: 0; }.panel-kicker { color: #087f5b; font-size: 10px; font-weight: 800; letter-spacing: .08em; }
-.executive-trend-panel { min-width: 0; min-height: 440px; }.executive-trend-panel > header { margin-bottom: 8px; }.monthly-comparison-panel { width: 100%; }.monthly-comparison-panel .trend-chart { min-height: 370px; }
-.anomaly-heading { align-items: center; }.anomaly-controls { display: flex; flex-wrap: wrap; gap: 16px; padding: 10px 14px; }.anomaly-controls label { display: flex; align-items: center; gap: 7px; color: var(--ops-text-secondary); font-size: 11px; }.anomaly-controls :deep(.el-input-number) { width: 120px; }
+.assortment-metrics { grid-template-columns: repeat(auto-fit,minmax(min(100%,158px),1fr)); }
+.assortment-metrics :deep(.metric-card) { min-width: 0; overflow: hidden; container-type: inline-size; }
+.assortment-metrics :deep(.metric-card > strong) { display: block; width: 100%; overflow: hidden; font-size: clamp(19px,12cqi,29px); letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
+.assortment-metrics :deep(.metric-foot) { min-width: 0; align-items: flex-start; }
+.assortment-metrics :deep(.metric-foot > span:last-child) { min-width: 0; line-height: 1.35; overflow-wrap: anywhere; }
+.gmv-section-heading { align-items: center; }
+.gmv-range-control { display: flex !important; grid-auto-flow: column; align-items: center; justify-content: end; gap: 10px !important; min-width: 0; }
+.gmv-range-control > span { color: var(--ops-text-secondary); font-size: 11px; white-space: nowrap; }
+.gmv-range-control :deep(.el-date-editor) { width: 290px; max-width: 100%; }
+.executive-trend-panel { min-width: 0; min-height: 440px; }.executive-trend-panel > header { flex-wrap: wrap; margin-bottom: 8px; }.monthly-comparison-panel { width: 100%; }.monthly-comparison-panel .trend-chart { min-height: 370px; }
+.anomaly-heading { align-items: center; }.anomaly-heading-tools { display: flex !important; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px !important; min-width: 0; }.comparison-period-summary { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }.comparison-period-summary > span { display: flex; align-items: center; gap: 5px; min-height: 28px; padding: 3px 8px; color: var(--ops-text-secondary); font-size: 11px; white-space: nowrap; border: 1px solid var(--ops-border-light); border-radius: 6px; background: var(--ops-surface); }.comparison-period-summary strong { color: var(--ops-text-primary); font-size: 11px; }.anomaly-controls { display: flex; flex-wrap: wrap; gap: 16px; padding: 10px 14px; }.anomaly-controls label { display: flex; align-items: center; gap: 7px; color: var(--ops-text-secondary); font-size: 11px; }.anomaly-controls :deep(.el-input-number) { width: 120px; }
 .anomaly-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }.anomaly-analysis-grid { align-items: stretch; }.anomaly-lane { display: grid; grid-template-rows: auto 1fr; gap: 14px; min-width: 0; }.anomaly-lane :deep(.module-ai) { box-sizing: border-box; height: 100%; }.movement-panel { min-width: 0; overflow: hidden; }.movement-panel > header { display: flex; align-items: center; justify-content: space-between; min-height: 50px; padding: 0 14px; border-bottom: 1px solid var(--ops-border-light); }.movement-panel > header div { display: flex; align-items: center; gap: 8px; }.movement-panel > header strong { font-size: 13px; }.movement-panel > header span { color: var(--ops-text-secondary); font-size: 11px; }.movement-panel :deep(.el-table) { font-size: 12px; }.decline-panel > header { color: #087f5b; background: #f3fbf7; }.growth-panel > header { color: #c73545; background: #fff7f7; }
+.movement-panel :deep(.el-table__expand-icon) { display: grid; width: 20px; height: 20px; place-items: center; color: #2563eb; border: 1px solid #bfdbfe; border-radius: 4px; transform: none; }.movement-panel :deep(.el-table__expand-icon > .el-icon) { display: none; }.movement-panel :deep(.el-table__expand-icon::before) { content: "+"; font-size: 16px; font-weight: 700; line-height: 1; }.movement-panel :deep(.el-table__expand-icon--expanded::before) { content: "−"; }.store-platform-cell { display: grid; gap: 2px; min-width: 0; line-height: 1.25; }.store-platform-cell > strong { overflow: hidden; color: var(--ops-text-primary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }.store-platform-cell > span { color: var(--ops-text-secondary); font-size: 10px; }.style-store-detail { padding: 12px 16px 16px 54px; background: #f8fafc; }.style-store-detail > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }.style-store-detail > header > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }.style-store-detail > header strong { font-size: 13px; }.style-store-detail > header span,.style-store-detail > header small { color: var(--ops-text-secondary); font-size: 10px; }.style-store-detail :deep(.el-table) { border: 1px solid var(--ops-border-light); border-radius: 6px; }
 .decline-value { color: #087f5b; }.growth-value { color: #d9485f; }.negative-value { color: #d9485f; }.positive-value { color: #087f5b; }.opportunity-panel,.inventory-panel { overflow: hidden; }.opportunity-panel :deep(.el-table__expand-icon) { color: #2563eb; }.inventory-panel :deep(.el-tag) { min-width: 68px; justify-content: center; }
 .data-quality-strip { display: flex; align-items: center; gap: 8px; padding: 10px 14px; color: var(--ops-text-secondary); font-size: 11px; }
 .import-preview { display: grid; gap: 14px; }.import-preview-file { display: grid; gap: 4px; }.import-preview-file span { color: var(--ops-text-secondary); font-size: 11px; }.import-preview-metrics { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }.import-preview-metrics > div { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--ops-border-light); border-radius: 6px; background: var(--ops-surface-subtle); }.import-preview-metrics span { color: var(--ops-text-secondary); font-size: 10px; }.import-preview-metrics strong { font-size: 20px; }.import-preview-metrics .blocked strong { color: var(--el-color-danger); }
@@ -1377,8 +1544,8 @@ onBeforeUnmount(() => {
 .export-progress-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px; }.export-progress-toolbar span { color: var(--ops-text-secondary); font-size: 11px; }.export-progress-detail { display: grid; gap: 14px; margin-top: 16px; padding: 14px; border: 1px solid var(--ops-border-light); border-radius: 8px; background: var(--ops-surface-subtle); }.export-progress-detail > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }.export-progress-detail > header > div:first-child { display: grid; gap: 3px; }.export-progress-detail > header span { color: var(--ops-text-secondary); font-size: 10px; }.export-progress-detail > header strong { font-size: 14px; }.export-progress-detail-actions { display: flex; align-items: center; gap: 8px; }.export-progress-facts { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; }.export-progress-facts > div { display: grid; gap: 4px; min-width: 0; padding: 10px; border: 1px solid var(--ops-border-light); border-radius: 6px; background: var(--ops-surface); }.export-progress-facts span { color: var(--ops-text-secondary); font-size: 10px; }.export-progress-facts strong { overflow-wrap: anywhere; font-size: 12px; }.export-progress-fact-wide { grid-column: 1 / -1; }
 .source-pagination { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding-top: 12px; color: var(--ops-text-secondary); font-size: 11px; }
 .dialog-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 16px; }.dialog-grid-wide { grid-column: 1 / -1; }.dialog-grid :deep(.el-select),.dialog-grid :deep(.el-date-editor) { width: 100%; }.switch-row { display: flex; flex-wrap: wrap; gap: 18px; }.robot-list { display: grid; gap: 8px; }.robot-list article { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border: 1px solid var(--ops-border-light); border-radius: 8px; }.robot-list article > div:first-child { display: grid; gap: 4px; }.robot-list span { color: var(--ops-text-secondary); font-size: 10px; }
-@media (max-width: 1380px) { .decision-filter-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }.decision-filter-actions { justify-content: flex-end; }.assortment-metrics { grid-template-columns: repeat(3,minmax(0,1fr)); } }
-@media (max-width: 960px) { .anomaly-grid { grid-template-columns: 1fr; }.assortment-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }.monthly-comparison-panel > header { align-items: flex-start; flex-direction: column; gap: 4px; }.monthly-comparison-panel .trend-chart { min-height: 420px; } }
-@media (max-width: 760px) { .automation-toolbar { align-items: flex-start; flex-direction: column; }.automation-toolbar-actions { width: 100%; justify-content: flex-start; }.decision-filter-grid { grid-template-columns: 1fr; }.decision-filter-heading,.section-heading { align-items: flex-start; flex-direction: column; }.dialog-grid { grid-template-columns: 1fr; }.dialog-grid-wide { grid-column: auto; }.immediate-filter-row { grid-template-columns: 1fr; }.immediate-filter-section > header,.export-progress-detail > header,.export-progress-toolbar { align-items: flex-start; flex-direction: column; }.export-progress-facts { grid-template-columns: repeat(2,minmax(0,1fr)); }.export-progress-fact-wide { grid-column: 1 / -1; } }
-@media (max-width: 520px) { .automation-toolbar-status { flex-wrap: wrap; }.robot-list article { align-items: flex-start; flex-direction: column; }.assortment-metrics { grid-template-columns: 1fr; } }
+@media (max-width: 1380px) { .decision-filter-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }.decision-filter-actions { justify-content: flex-end; } }
+@media (max-width: 960px) { .anomaly-grid { grid-template-columns: 1fr; }.monthly-comparison-panel > header { align-items: flex-start; flex-direction: column; gap: 4px; }.monthly-comparison-panel .trend-chart { min-height: 420px; } }
+@media (max-width: 760px) { .automation-toolbar { align-items: flex-start; flex-direction: column; }.automation-toolbar-actions { width: 100%; justify-content: flex-start; }.decision-filter-grid { grid-template-columns: 1fr; }.decision-filter-heading,.section-heading { align-items: flex-start; flex-direction: column; }.gmv-range-control { width: 100%; grid-auto-flow: row; justify-items: start; }.gmv-range-control > span { white-space: normal; }.gmv-range-control :deep(.el-date-editor) { width: 100%; }.anomaly-heading-tools { width: 100%; align-items: flex-start; flex-direction: column; justify-content: flex-start; }.anomaly-heading-tools :deep(.el-segmented) { max-width: 100%; overflow-x: auto; }.comparison-period-summary { justify-content: flex-start; }.dialog-grid { grid-template-columns: 1fr; }.dialog-grid-wide { grid-column: auto; }.immediate-filter-row { grid-template-columns: 1fr; }.immediate-filter-section > header,.export-progress-detail > header,.export-progress-toolbar { align-items: flex-start; flex-direction: column; }.export-progress-facts { grid-template-columns: repeat(2,minmax(0,1fr)); }.export-progress-fact-wide { grid-column: 1 / -1; } }
+@media (max-width: 520px) { .automation-toolbar-status { flex-wrap: wrap; }.robot-list article { align-items: flex-start; flex-direction: column; } }
 </style>

@@ -1,6 +1,6 @@
 # Commerce Ops Platform Connector Center V1
 
-Status: implemented foundation with Lazada as the reference connector.
+Status: implemented foundation with Lazada and delegated Shopee access, plus a canonical shop directory.
 
 ## Boundary
 
@@ -22,6 +22,21 @@ flowchart TD
 The Gateway owns shop lookup, authorization retrieval, proactive token refresh, connector
 selection, output normalization, write gating, and request audit. No business module or Agent is
 allowed to receive app secrets or decrypted tokens.
+
+## Canonical shop directory and authorization projection
+
+`app.commerce_shop_registry` is the business source of truth for store code, name, country,
+responsible managers, platform, category, platform short code, seller ID, shop type and lifecycle
+status. The Connector SQLite control plane remains the only owner of tokens and provider
+authorization records. `/api/platform/shops` joins these two stores at read time and writes back
+only the confirmed non-secret Connector binding.
+
+Matching order is stable shop code, same-platform name plus country, then provider seller ID.
+Country or seller-ID conflicts are preserved as `REVIEW_REQUIRED`; they are never silently merged.
+This separation lets a store exist before authorization, lets manual and system imports use the
+same validation path, and makes authorization status update automatically without copying token
+state into PostgreSQL. Shopee status is read from the delegated Token Broker with a short cache;
+Lazada status is read from the encrypted Connector authorization table.
 
 ## Control-plane data model
 
@@ -53,7 +68,9 @@ All endpoints remain behind the existing Commerce Ops `/api/*` access policy.
 | --- | --- | --- |
 | GET | `/api/platform/status` | Connector runtime health and write-gate state |
 | GET | `/api/platforms` | Platforms and connector availability |
-| GET | `/api/platform/shops` | Connected shops and non-secret authorization status |
+| GET | `/api/platform/shops` | Canonical shops joined with live non-secret authorization status |
+| POST | `/api/platform/shops` | Manually create or update one canonical shop |
+| POST | `/api/platform/shops/sync` | Idempotently synchronize up to 1,000 shops from a registered system or spreadsheet import |
 | GET | `/api/platform/shop` | Provider shop information |
 | GET | `/api/platform/orders` | Normalized paginated orders, without buyer PII |
 | GET | `/api/platform/order-items` | Normalized order items and package identifiers |

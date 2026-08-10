@@ -418,6 +418,78 @@ test("Listing account bridge reuses the Mabang credential owner without persisti
   }
 });
 
+test("Listing account bridge preserves safe Mabang connection errors for the API boundary", async () => {
+  const upstream = Object.assign(new Error("Mabang requires account verification."), {
+    code: "MABANG_LISTING_REQUEST_FAILED",
+    status: 409,
+  });
+  const bridge = new FoundationListingAccountBridge({
+    foundationRepository: {
+      async getAccount() {
+        return {
+          id: "foundation:account:mabang:account-1",
+          status: "active",
+          sourceSystem: "mabang",
+          credentialRefType: "mabang_account_profile",
+          credentialRefId: "account-1",
+        };
+      },
+    },
+    accountRegistry: { async activateCapabilities() {} },
+    accountRepository: {
+      async get() {
+        return { username: "operator@example.test", encryptedPassword: "encrypted-value" };
+      },
+    },
+    decryptSecret() { return "plain-secret"; },
+    async connectListing() { throw upstream; },
+  });
+
+  await assert.rejects(
+    bridge.connect("foundation:account:mabang:account-1"),
+    (error) => error.code === "MABANG_LISTING_REQUEST_FAILED"
+      && error.status === 409
+      && error.message === "Mabang requires account verification."
+      && error.cause === upstream,
+  );
+});
+
+test("Listing account bridge keeps non-Mabang connector failures private", async () => {
+  const upstream = Object.assign(new Error("secret connector detail"), {
+    code: "INTERNAL_CONNECTOR_FAILURE",
+  });
+  const bridge = new FoundationListingAccountBridge({
+    foundationRepository: {
+      async getAccount() {
+        return {
+          id: "foundation:account:mabang:account-1",
+          status: "active",
+          sourceSystem: "mabang",
+          credentialRefType: "mabang_account_profile",
+          credentialRefId: "account-1",
+        };
+      },
+    },
+    accountRegistry: { async activateCapabilities() {} },
+    accountRepository: {
+      async get() {
+        return { username: "operator@example.test", encryptedPassword: "encrypted-value" };
+      },
+    },
+    decryptSecret() { return "plain-secret"; },
+    async connectListing() { throw upstream; },
+  });
+
+  await assert.rejects(
+    bridge.connect("foundation:account:mabang:account-1"),
+    (error) => error.code === "FOUNDATION_LISTING_CONNECTION_FAILED"
+      && error.status === 502
+      && error.message === "Mabang Listing account connection failed."
+      && !error.message.includes("secret connector detail")
+      && error.cause === upstream,
+  );
+});
+
 test("Foundation-owned tasks enforce transitions, retries, events, and leases", async () => {
   const context = await createContext();
   try {
