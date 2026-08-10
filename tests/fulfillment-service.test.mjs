@@ -217,6 +217,45 @@ test("fulfillment dashboard proxy bounds message review reads and requires exact
   assert.equal(calls.length, 3);
 });
 
+test("fulfillment dashboard proxy validates and forwards batch SKU replacement jobs", async () => {
+  const calls = [];
+  const proxy = createFulfillmentDashboardProxy({ fetchImpl: async (url, options) => {
+    calls.push({ url:String(url),options });
+    return new Response(JSON.stringify({ success:true,data:{} }), { status:202 });
+  } });
+
+  const planRequest = Readable.from([JSON.stringify({ selections:[
+    { orderReference:"260810ABC123",itemId:"10001",replacementSku:"sku-red",unexpected:"drop" },
+    { orderReference:"260810XYZ789",itemId:"10002",replacementSku:"SKU-SMALL" },
+  ],unexpected:"drop" })]);
+  planRequest.method = "POST";
+  assert.equal(await proxy(planRequest,proxyResponse(),new URL("http://localhost/api/fulfillment-dashboard/sku-replacements/batch-plan")),true);
+  assert.equal(calls[0].url,"http://127.0.0.1:3112/api/fulfillment/sku-replacements/batch-plan");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { selections:[
+    { orderReference:"260810ABC123",itemId:"10001",replacementSku:"sku-red" },
+    { orderReference:"260810XYZ789",itemId:"10002",replacementSku:"SKU-SMALL" },
+  ] });
+
+  const executeRequest = Readable.from([JSON.stringify({ batchHash:"a".repeat(64),approvalText:"确认批量更换SKU 2项",unexpected:"drop" })]);
+  executeRequest.method = "POST";
+  assert.equal(await proxy(executeRequest,proxyResponse(),new URL("http://localhost/api/fulfillment-dashboard/sku-replacements/batch-execute")),true);
+  assert.equal(calls[1].url,"http://127.0.0.1:3112/api/fulfillment/sku-replacements/batch-execute");
+  assert.deepEqual(JSON.parse(calls[1].options.body), { batchHash:"a".repeat(64),approvalText:"确认批量更换SKU 2项" });
+
+  const statusRequest = Readable.from([]); statusRequest.method = "GET";
+  assert.equal(await proxy(statusRequest,proxyResponse(),new URL("http://localhost/api/fulfillment-dashboard/sku-replacements/batch-executions/task-123")),true);
+  assert.equal(calls[2].url,"http://127.0.0.1:3112/api/fulfillment/sku-replacements/batch-executions/task-123");
+
+  const duplicateRequest = Readable.from([JSON.stringify({ selections:[
+    { orderReference:"260810ABC123",itemId:"10001",replacementSku:"SKU-A" },
+    { orderReference:"260810ABC123",itemId:"10001",replacementSku:"SKU-B" },
+  ] })]); duplicateRequest.method = "POST";
+  const duplicateResponse = proxyResponse();
+  assert.equal(await proxy(duplicateRequest,duplicateResponse,new URL("http://localhost/api/fulfillment-dashboard/sku-replacements/batch-plan")),true);
+  assert.equal(duplicateResponse.status,400);
+  assert.equal(calls.length,3);
+});
+
 test("production fulfillment configuration contains all five Indonesian Shopee shops", () => {
   const resolved = resolveFulfillmentConfig({ rootDir:process.cwd(),env:{} });
   assert.deepEqual(resolved.shops.map((shop) => shop.shopId), ["2021578358","2021640336","2021485965","2021621760","2021557966"]);
