@@ -101,6 +101,12 @@ const routes = [
     meta: { title: "履约中心", subtitle: "查看订单扫描、自动发货、异常恢复和店铺状态。" },
   },
   {
+    path: "/sku-replacement",
+    name: "sku-replacement",
+    component: () => import("@/pages/SkuReplacementPage.vue"),
+    meta: { title: "缺货 SKU 替换", subtitle: "检查订单缺货商品，复核同仓候选并安全执行批量替换。" },
+  },
+  {
     path: "/customer-service",
     name: "customer-service",
     component: () => import("@/pages/CustomerServicePage.vue"),

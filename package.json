@@ -15,6 +15,7 @@
     "configure:lazada-tunnel": "node --disable-warning=ExperimentalWarning scripts/configure-lazada-cloudflare.mjs",
     "start:lazada-tunnel": "node --disable-warning=ExperimentalWarning scripts/start-lazada-tunnel.mjs",
     "start:fulfillment:supervised": "node --disable-warning=ExperimentalWarning scripts/fulfillment-supervisor.mjs",
+    "restart:fulfillment:safe": "node --disable-warning=ExperimentalWarning scripts/restart-fulfillment-safe.mjs",
     "start:ads": "node scripts/start-ads.mjs",
     "start:mabang-listing": "node scripts/start-mabang-listing.mjs",
     "start:mabang-wps": "node scripts/start-mabang-wps.mjs",
