@@ -90,8 +90,21 @@ async function supervise() {
 async function shutdown() {
   if (stopping) return;
   stopping = true;
-  log("Stopping fulfillment supervisor.");
-  if (child && !child.killed) child.kill("SIGTERM");
+  log("Stopping fulfillment supervisor; requesting the service to drain active operations first.");
+  if (child && !child.killed) {
+    try {
+      const response = await fetch(`http://${config.host}:${config.port}/api/fulfillment/maintenance/restart`, {
+        method: "POST", headers: { "x-fulfillment-maintenance": "drain-and-restart" }, signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json().catch(() => ({}));
+      log(payload.data?.message || "Fulfillment service entered drain mode.");
+    } catch (error) {
+      log(`Could not request a graceful drain (${error.message}); refusing to force-stop the fulfillment child.`);
+      stopping = false;
+      return;
+    }
+  }
   try { unlinkSync(lockPath); } catch {}
 }
 process.on("SIGINT", shutdown);

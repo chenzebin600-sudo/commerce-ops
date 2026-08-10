@@ -15,6 +15,7 @@ import { FulfillmentAgent } from "./agent.mjs";
 import { FulfillmentAgentTools } from "./agent-tools.mjs";
 import { SkuReplacementService } from "./sku-replacement.mjs";
 import { SkuReplacementBatchService } from "./sku-replacement-batch.mjs";
+import { OperationDrainController } from "../lib/operation-drain.mjs";
 
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 loadLocalEnv(rootDir);
@@ -119,8 +120,24 @@ const recoveredSkuReplacementTasks = skuReplacementBatchService.reconcileInterru
 if (recoveredSkuReplacementTasks.length) {
   console.warn(`Recovered ${recoveredSkuReplacementTasks.length} interrupted SKU replacement task(s) for manual review.`);
 }
+const operationDrain = new OperationDrainController();
+let shuttingDown = false;
+
+function trackedOperation(kind,options,operation) {
+  return operationDrain.run(kind,options,operation).catch((error) => {
+    if (error?.code === "FULFILLMENT_DRAINING") throw new FulfillmentError(error.code,error.message,503);
+    throw error;
+  });
+}
+
+function maintenanceRequestAllowed(req) {
+  const address = String(req.socket?.remoteAddress || "").replace(/^::ffff:/,"");
+  return new Set(["127.0.0.1","::1"]).has(address)
+    && req.headers["x-fulfillment-maintenance"] === "drain-and-restart";
+}
 
 function skuReplacementFailure(error, fallbackCode, fallbackMessage, fallbackStatus = 409) {
+  if (error instanceof FulfillmentError) return error;
   const code = String(error?.code || fallbackCode);
   const status = code.endsWith("_NOT_FOUND") ? 404
     : code.endsWith("_INVALID") ? 400 : fallbackStatus;
@@ -130,7 +147,7 @@ function skuReplacementFailure(error, fallbackCode, fallbackMessage, fallbackSta
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-    if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { success: true, realSubmitEnabled: config.realSubmitEnabled,
+    if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { success: true, ...operationDrain.status(), realSubmitEnabled: config.realSubmitEnabled,
       database: { provider: repository.databaseProviderName, mode: repository.databaseMode,
         target: repository.databaseTarget, readOnly: repository.readOnly },
       schedulerEnabled: config.schedulerEnabled, schedulerIntervalSeconds: config.schedulerIntervalSeconds,
@@ -147,13 +164,21 @@ const server = http.createServer(async (req, res) => {
         autoFulfillEnabled: shop.autoFulfillEnabled })) });
     if (req.method === "GET" && (url.pathname === "/docs" || url.pathname === "/docs/")) return sendHtml(res, 200, createApiDocsHtml(config));
     if (req.method === "GET" && url.pathname === "/openapi.json") return send(res, 200, createOpenApiDocument(config));
+    if (req.method === "POST" && url.pathname === "/api/fulfillment/maintenance/restart") {
+      if (!maintenanceRequestAllowed(req)) return send(res,403,{ success:false,error:{ code:"MAINTENANCE_FORBIDDEN",message:"只允许本机安全维护程序调用" } });
+      const state = operationDrain.beginDrain();
+      send(res,202,{ success:true,data:{ ...state,message:state.activeOperations ? "正在等待现有任务结束后重启" : "即将安全重启" } });
+      setImmediate(() => void shutdown());
+      return;
+    }
     if (!authorized(req)) return send(res, 401, { success: false, error: { code: "UNAUTHORIZED", message: "未授权访问" } });
     if (repository.readOnly && req.method !== "GET") {
       throw new FulfillmentError("POSTGRES_SHADOW_READ_ONLY",
         "PostgreSQL Shadow validation mode is read-only; fulfillment writes remain disabled.", 409);
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/sku-replacements/batch-preview") {
-      try { return send(res,201,{ success:true,data:await skuReplacementService.previewBatch(await body(req)) }); }
+      const payload = await body(req);
+      try { return send(res,201,{ success:true,data:await trackedOperation("sku-batch-preview",{},() => skuReplacementService.previewBatch(payload)) }); }
       catch (error) { throw skuReplacementFailure(error,"SKU_REPLACEMENT_PREVIEW_FAILED","替换 SKU 建议生成失败"); }
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/sku-replacements/batch-recover") {
@@ -161,22 +186,25 @@ const server = http.createServer(async (req, res) => {
       catch (error) { throw skuReplacementFailure(error,"SKU_REPLACEMENT_RECOVERY_FAILED","SKU 替换预览恢复失败",404); }
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/sku-replacements/plan") {
-      try { return send(res,201,{ success:true,data:await skuReplacementService.createPlan(await body(req)) }); }
+      const payload = await body(req);
+      try { return send(res,201,{ success:true,data:await trackedOperation("sku-plan",{},() => skuReplacementService.createPlan(payload)) }); }
       catch (error) { throw skuReplacementFailure(error,"SKU_REPLACEMENT_PLAN_FAILED","替换 SKU 计划生成失败"); }
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/sku-replacements/execute") {
-      try { return send(res,200,{ success:true,data:await skuReplacementService.execute(await body(req)) }); }
+      const payload = await body(req);
+      try { return send(res,200,{ success:true,data:await trackedOperation("sku-execute",{ write:true },() => skuReplacementService.execute(payload)) }); }
       catch (error) { throw skuReplacementFailure(error,"SKU_REPLACEMENT_EXECUTE_FAILED","替换 SKU 执行失败"); }
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/sku-replacements/batch-plan") {
-      try { return send(res,201,{ success:true,data:await skuReplacementBatchService.createPlan(await body(req)) }); }
+      const payload = await body(req);
+      try { return send(res,201,{ success:true,data:await trackedOperation("sku-batch-plan",{},() => skuReplacementBatchService.createPlan(payload)) }); }
       catch (error) { throw skuReplacementFailure(error,"SKU_REPLACEMENT_BATCH_PLAN_FAILED","批量替换 SKU 计划生成失败"); }
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/sku-replacements/batch-execute") {
       let task;
-      try { task = skuReplacementBatchService.createExecution(await body(req)); }
+      try { operationDrain.assertAccepting(); task = skuReplacementBatchService.createExecution(await body(req)); }
       catch (error) { throw skuReplacementFailure(error,"SKU_REPLACEMENT_BATCH_EXECUTE_FAILED","批量替换 SKU 执行失败"); }
-      void skuReplacementBatchService.runExecution(task.taskId)
+      void trackedOperation("sku-batch-execute",{ write:true },() => skuReplacementBatchService.runExecution(task.taskId))
         .catch((error) => console.error(`SKU replacement task ${task.taskId} stopped with ${String(error?.code || "INTERNAL_ERROR").slice(0,80)}.`));
       return send(res,202,{ success:true,data:task });
     }
@@ -283,5 +311,19 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(config.port, config.host, () => console.log(`Mabang fulfillment API listening on http://${config.host}:${config.port}`));
-function shutdown() { scheduler.stop(); server.close(async () => { await scheduler.waitForIdle(); await Promise.all(services.map((shopService) => shopService.waitForIdle())); await repository.close(); process.exit(0); }); }
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  operationDrain.beginDrain();
+  scheduler.stop();
+  const operationsIdle = await operationDrain.waitForIdle();
+  if (!operationsIdle) {
+    console.error("Tracked fulfillment operations did not drain within 30 minutes; refusing forced shutdown.");
+    shuttingDown = false;
+    return;
+  }
+  await scheduler.waitForIdle();
+  await Promise.all(services.map((shopService) => shopService.waitForIdle()));
+  server.close(async () => { await repository.close(); process.exit(0); });
+}
 process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);

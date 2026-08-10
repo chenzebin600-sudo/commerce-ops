@@ -43,6 +43,9 @@ FULFILLMENT_REPORTING_INFO_URL = BASE_URL + '/index.php?mod=order.getReportingIn
 FULFILLMENT_SUBMIT_URL = BASE_URL + '/index.php?mod=order.doReportingInformation'
 FULFILLMENT_DISTRIBUTION_URL = BASE_URL + '/index.php?mod=order.doBatchDistribution'
 FULFILLMENT_BATCH_EDIT_URL = BASE_URL + '/index.php?mod=order.all'
+ORDER_WAREHOUSE_FORM_URL = BASE_URL + '/index.php?mod=order.getOrderItemWarehouse'
+ORDER_ITEM_SKU_CHANGE_URL = BASE_URL + '/index.php?mod=order.doChanegOrderItem'
+STOCK_LIKE_URL = BASE_URL + '/index.php?mod=common.getStockLike'
 EXPORT_TEMPLATE_ID = '1049202'
 HEADERS_AJAX = {'Accept': 'application/json, text/javascript, */*; q=0.01', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'X-Requested-With': 'XMLHttpRequest', 'Origin': BASE_URL, 'Referer': ORDER_PAGE_URL}
 HEADERS_PAGE = {'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Referer': INITIAL_URL}
@@ -606,6 +609,142 @@ class MabangClient:
                 platform_order_ids.append(platform_order_id)
         records = self.export_orders_to_records(platform_order_ids) if platform_order_ids else []
         return records, platform_order_ids, missing_references
+
+    @staticmethod
+    def _warehouse_form_items(response_data, order_id):
+        markup = str(response_data.get('message') or '')
+        stock_data = response_data.get('orderStockSkuData') or {}
+        by_item_id = {}
+        values = stock_data.values() if isinstance(stock_data, dict) else stock_data if isinstance(stock_data, list) else []
+        for item in values:
+            if isinstance(item, dict) and item.get('id') is not None:
+                by_item_id[str(item.get('id'))] = item
+        item_ids = list(dict.fromkeys(re.findall(r'name=["\']orderItem\[(\d+)\]["\']', markup, re.I)))
+        items = []
+        for item_id in item_ids:
+            row_match = re.search(r'<tr\b[^>]*>.*?name=["\']orderItem\[' + re.escape(item_id) + r'\]["\'].*?</tr>', markup, re.I | re.S)
+            row = row_match.group(0) if row_match else markup
+            data = by_item_id.get(item_id, {})
+            select_match = re.search(r'<select\b[^>]*name=["\']stockWarehouseId\[' + re.escape(item_id) + r'\]["\'][^>]*>(.*?)</select>', row, re.I | re.S)
+            options = []
+            if select_match:
+                for attrs_text, label in re.findall(r'<option\b([^>]*)>(.*?)</option>', select_match.group(1), re.I | re.S):
+                    attrs = {name.lower(): html.unescape(value) for name, _, value in re.findall(r'([\w:-]+)\s*=\s*(["\'])(.*?)\2', attrs_text, re.S)}
+                    options.append({
+                        'value': str(attrs.get('value') or '').strip(),
+                        'text': re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', '', label))).strip(),
+                        'selected': bool(re.search(r'\bselected\b', attrs_text, re.I)),
+                        'stockGridId': str(attrs.get('data-defaultstockwarehousedetailid') or '').strip(),
+                        'stockGrid': str(attrs.get('data-defaultgridcode') or '').strip(),
+                        'available': to_number(attrs.get('data-stockwarehouseavailablenum') or attrs.get('data-stockquantity')),
+                    })
+            selected = next((option for option in options if option['selected']), options[0] if options else {})
+
+            def input_value(name):
+                match = re.search(r'<input\b[^>]*name=["\']' + re.escape(name) + r'["\'][^>]*>', row, re.I | re.S)
+                if not match:
+                    return ''
+                attrs = {key.lower(): html.unescape(value) for key, _, value in re.findall(r'([\w:-]+)\s*=\s*(["\'])(.*?)\2', match.group(0), re.S)}
+                return str(attrs.get('value') or '').strip()
+
+            items.append({
+                'itemId': item_id,
+                'orderId': str(data.get('orderId') or order_id),
+                'stockSku': str(data.get('stockSku') or '').strip(),
+                'title': str(data.get('title') or '').strip(),
+                'quantity': int(to_number(input_value(f'quantity[{item_id}]') or data.get('quantity')) or 1),
+                'stockWarehouseName': str(selected.get('text') or '').strip(),
+                'warehouseOptions': options,
+                'isCombo': str(data.get('isCombo') or '').strip().lower() in {'1', 'true', 'yes'},
+            })
+        return items
+
+    def read_order_warehouse_form(self, order_reference):
+        order = self.find_order_for_fulfillment(order_reference, '2')
+        order_id = str(order.get('id') or order.get('orderId') or '').strip()
+        if not order_id:
+            raise Exception('SKU_REPLACEMENT_ORDER_ID_MISSING: 订单缺少马帮内部 ID。')
+        response = self.post_json_with_reauth(
+            ORDER_WAREHOUSE_FORM_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data={'orderIds': order_id}, operation='读取订单商品编辑表单',
+        )
+        if not response.get('success'):
+            raise Exception('SKU_REPLACEMENT_FORM_UNAVAILABLE: 当前订单不可编辑或马帮未返回商品表单。')
+        items = self._warehouse_form_items(response, order_id)
+        if not items:
+            raise Exception('SKU_REPLACEMENT_ORDER_NOT_EDITABLE: 当前订单阶段不支持更换 SKU。')
+        return {
+            'internalOrderId': order_id,
+            'platformOrderId': str(order.get('platformOrderId') or order_reference).strip(),
+            'shopId': str(order.get('shopId') or '').strip(),
+            'platformId': str(order.get('platformId') or '').strip(),
+            'orderStatus': str(order.get('orderStatus') or order.get('status') or '').strip(),
+            'trackNumber': str(order.get('trackNumber') or order.get('trackingNumber') or '').strip(),
+            'items': items,
+        }
+
+    def resolve_stock_sku(self, stock_sku):
+        wanted = str(stock_sku or '').strip()
+        if not wanted:
+            raise Exception('SKU_REPLACEMENT_TARGET_INVALID: 替换 SKU 不能为空。')
+        response = self.post_json_with_reauth(
+            STOCK_LIKE_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data={'type': 'stockSku', 'status': '', 'keyword': wanted, 'page': '1', 'commoditySearchType': '2',
+                  'isChangeOrderItemPrice': '1', 'isBackorderWarehouse': '1'}, operation='精确查找替换 SKU',
+        )
+        markup = str(response.get('message') or response.get('data') or response.get('html') or response.get('pageHtml') or '')
+        matches = []
+        for tag in re.findall(r'<a\b[^>]*>', markup, re.I | re.S):
+            attrs = {key.lower(): html.unescape(value) for key, _, value in re.findall(r'([\w:-]+)\s*=\s*(["\'])(.*?)\2', tag, re.S)}
+            classes = set(str(attrs.get('class') or '').split())
+            if 'commoditySelete' not in classes or str(attrs.get('data-sku') or '').strip().upper() != wanted.upper():
+                continue
+            stock_id = str(attrs.get('data-id') or '').strip()
+            if stock_id:
+                matches.append({'stockId': stock_id, 'stockSku': str(attrs.get('data-sku') or wanted).strip()})
+        unique = {item['stockId']: item for item in matches}
+        if len(unique) != 1:
+            raise Exception('SKU_REPLACEMENT_TARGET_NOT_UNIQUE: 马帮未找到唯一的普通库存 SKU，请人工核对。')
+        return next(iter(unique.values()))
+
+    def change_order_item_sku(self, order_reference, item_id, original_sku, replacement_sku, expected_quantity, expected_warehouse, expected_stock_id=''):
+        form = self.read_order_warehouse_form(order_reference)
+        if form.get('trackNumber'):
+            raise Exception('SKU_REPLACEMENT_ORDER_SHIPPED: 订单已有物流单号，禁止更换 SKU。')
+        current = next((item for item in form['items'] if item['itemId'] == str(item_id)), None)
+        if not current:
+            raise Exception('SKU_REPLACEMENT_PLAN_STALE: 订单商品行已变化，请重新预览。')
+        if current['stockSku'].strip().upper() != str(original_sku).strip().upper() or current['quantity'] != int(expected_quantity or 0):
+            raise Exception('SKU_REPLACEMENT_PLAN_STALE: 原 SKU 或数量已变化，请重新预览。')
+        if re.sub(r'/[-\d.]+$', '', current['stockWarehouseName']).strip() != re.sub(r'/[-\d.]+$', '', str(expected_warehouse)).strip():
+            raise Exception('SKU_REPLACEMENT_PLAN_STALE: 商品仓库已变化，请重新预览。')
+        if current.get('isCombo') or re.search(r'(A包|B包|配件包|套装|组合)', current.get('title') or '', re.I):
+            raise Exception('SKU_REPLACEMENT_COMBO_BLOCKED: 组合商品暂不支持自动更换 SKU。')
+        target = self.resolve_stock_sku(replacement_sku)
+        if expected_stock_id and target['stockId'] != str(expected_stock_id):
+            raise Exception('SKU_REPLACEMENT_TARGET_CHANGED: 替换 SKU 的马帮库存标识已变化，请重新预览。')
+        response = self.session.post(
+            ORDER_ITEM_SKU_CHANGE_URL,
+            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            data={'orderItemId': current['itemId'], 'stockId': target['stockId'], 'type': '2'},
+            timeout=REQUEST_TIMEOUT, allow_redirects=True,
+        )
+        result = safe_json(response)
+        if response_looks_unauthenticated(response, result):
+            raise Exception('MABANG_AUTH_EXPIRED_DURING_SKU_CHANGE: 写入结果未知，禁止自动重试。')
+        if not (result.get('success') is True or result.get('success') == 1 or result.get('success') == '1'):
+            raise Exception('SKU_REPLACEMENT_REJECTED: 马帮未确认 SKU 更换成功。')
+        verified = self.read_order_warehouse_form(order_reference)
+        after = next((item for item in verified['items'] if item['itemId'] == current['itemId']), None)
+        if not after:
+            candidates = [item for item in verified['items'] if item['stockSku'].strip().upper() == str(replacement_sku).strip().upper()
+                          and item['quantity'] == current['quantity']]
+            after = candidates[0] if len(candidates) == 1 else None
+        if not after or after['stockSku'].strip().upper() != str(replacement_sku).strip().upper():
+            raise Exception('SKU_REPLACEMENT_VERIFY_FAILED: 写入后 SKU 回读不一致，请立即人工核对，禁止重试。')
+        return {'changed': True, 'stockId': target['stockId'], 'before': current, 'after': after}
 
     def get_fulfillment_channel_data(self, internal_id):
         channel_data = self.post_json_with_reauth(

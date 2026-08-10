@@ -315,6 +315,62 @@ def collect_fulfillment_orders(payload):
     }
 
 
+def inspect_order_warehouse_batch(payload):
+    username, password = require_credentials(payload)
+    references = list(dict.fromkeys(
+        str(value or '').strip() for value in (payload.get('orderReferences') or []) if str(value or '').strip()
+    ))
+    if not references or len(references) > 100 or payload.get('commit'):
+        raise ValueError('必须指定 1-100 个订单号，批量检查不接受写入确认标记。')
+    client = order_source.MabangClient()
+    client.login(username, password)
+    orders, failures = [], []
+    for reference in references:
+        try:
+            orders.append({'orderReference': reference, 'order': json_safe(client.read_order_warehouse_form(reference))})
+        except Exception as error:
+            failures.append({'orderReference': reference, 'message': str(error)[:300]})
+    return {'ok': True, 'kind': 'order-warehouse-inspect-batch', 'orders': orders, 'failures': failures}
+
+
+def inspect_order_warehouse(payload):
+    username, password = require_credentials(payload)
+    reference = str(payload.get('orderReference') or '').strip()
+    if not reference or payload.get('commit'):
+        raise ValueError('必须指定订单号，检查操作不接受写入确认标记。')
+    client = order_source.MabangClient()
+    client.login(username, password)
+    return {'ok': True, 'kind': 'order-warehouse-inspect', 'order': json_safe(client.read_order_warehouse_form(reference))}
+
+
+def resolve_order_sku(payload):
+    username, password = require_credentials(payload)
+    if payload.get('commit'):
+        raise ValueError('SKU 查询不接受写入确认标记。')
+    replacement_sku = str(payload.get('replacementSku') or '').strip()
+    if not replacement_sku:
+        raise ValueError('替换 SKU 不能为空。')
+    client = order_source.MabangClient()
+    client.login(username, password)
+    return {'ok': True, 'kind': 'order-sku-resolve', 'result': json_safe(client.resolve_stock_sku(replacement_sku))}
+
+
+def change_order_sku(payload):
+    username, password = require_credentials(payload)
+    if payload.get('commit') != 'ORDER_SKU_CHANGE_CONFIRMED':
+        raise ValueError('SKU 更换缺少明确确认标记。')
+    required = ['orderReference', 'itemId', 'originalSku', 'replacementSku', 'expectedQuantity', 'expectedWarehouse']
+    if any(payload.get(key) in (None, '') for key in required):
+        raise ValueError('SKU 更换参数不完整。')
+    client = order_source.MabangClient()
+    client.login(username, password)
+    result = client.change_order_item_sku(
+        payload['orderReference'], payload['itemId'], payload['originalSku'], payload['replacementSku'],
+        payload['expectedQuantity'], payload['expectedWarehouse'], payload.get('expectedStockId') or '',
+    )
+    return {'ok': True, 'kind': 'order-sku-change', 'result': json_safe(result)}
+
+
 def inspect_fulfillment(payload):
     username, password = require_credentials(payload)
     order_reference = str(payload.get("orderReference") or "").strip()
@@ -586,6 +642,14 @@ def dispatch(payload):
         return collect_profit_order_references(payload)
     if action == "inventory":
         return collect_inventory(payload)
+    if action == "order-warehouse-inspect":
+        return inspect_order_warehouse(payload)
+    if action == "order-warehouse-inspect-batch":
+        return inspect_order_warehouse_batch(payload)
+    if action == "order-sku-resolve":
+        return resolve_order_sku(payload)
+    if action == "order-sku-change":
+        return change_order_sku(payload)
     if action == "fulfillment-inspect":
         return inspect_fulfillment(payload)
     if action == "fulfillment-preflight":
