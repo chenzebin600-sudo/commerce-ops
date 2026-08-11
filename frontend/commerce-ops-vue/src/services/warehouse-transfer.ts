@@ -20,11 +20,17 @@ export interface WarehouseTransferBatch {
 }
 
 export type SkuReplacementKind = "SAME" | "COLOR" | "SMALLER" | "SMALLER_COLOR";
+export type SkuReplacementWarehouseMode = "KEEP_CURRENT" | "MOVE_WHOLE_ORDER";
+export interface SkuReplacementWarehouseAlternative {
+  warehouse: string; mode: SkuReplacementWarehouseMode; remaining: number;
+}
 export interface SkuReplacementCandidate {
   sku: string; chineseName: string; warehouse: string; available: number; productStatus: string;
   category1: string; category2: string; kind: SkuReplacementKind; label: string;
   riskLevel: "LOW" | "MEDIUM" | "HIGH"; colorChanged: boolean; specRelation: string;
   originalColors: string[]; candidateColors: string[];
+  warehouseMode: SkuReplacementWarehouseMode; targetWarehouse: string;
+  warehouseAlternatives: SkuReplacementWarehouseAlternative[];
 }
 export interface SkuReplacementItem {
   itemId: string; originalSku: string; chineseName: string; quantity: number; currentWarehouse: string;
@@ -54,7 +60,7 @@ export interface SkuReplacementBatchPlan {
   failures: Array<SkuReplacementSelection & { code: string; message: string }>;
   summary: { requested: number; executable: number; failed: number };
 }
-export interface SkuReplacementSelection { orderReference: string; itemId: string; replacementSku: string }
+export interface SkuReplacementSelection { orderReference: string; itemId: string; replacementSku: string; targetWarehouse: string }
 export interface SkuReplacementDiagnostic {
   version: 1; capturedAt: string;
   stage: "mabang_response" | "mabang_request_uncertain" | "readback" | "service_precheck";

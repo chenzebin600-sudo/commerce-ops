@@ -1,11 +1,12 @@
 import type { SkuReplacementBatchTask, SkuReplacementBatchTaskItem, SkuReplacementDiagnostic,
-  SkuReplacementKind, SkuReplacementPlan } from "./warehouse-transfer";
+  SkuReplacementCandidate, SkuReplacementKind, SkuReplacementPlan, SkuReplacementSelection } from "./warehouse-transfer";
 
 export type ReplacementKindFilter = "ALL" | SkuReplacementKind;
 export type ReplacementRiskFilter = "ALL" | "LOW" | "MEDIUM" | "HIGH";
 export type ReplacementItemStatus = "UNSELECTED" | "SELECTED" | "NO_CANDIDATE" | "RUNNING" | "COMPLETED" | "FAILED" | "MANUAL_REVIEW";
 export type ReplacementStatusFilter = "ALL" | ReplacementItemStatus;
-export type SkuSelections = Record<string, string>;
+export interface SkuSelectionState { sku: string; targetWarehouse: string }
+export type SkuSelections = Record<string, SkuSelectionState>;
 export type ReplacementExecutionStatuses = Record<string, Exclude<ReplacementItemStatus, "UNSELECTED" | "SELECTED" | "NO_CANDIDATE">>;
 
 export interface ReplacementFilters {
@@ -18,11 +19,17 @@ export function replacementItemKey(orderReference: string, itemId: string) {
   return `${orderReference}\u0000${itemId}`;
 }
 
-export function toggleSkuSelection(current: SkuSelections, key: string, sku: string): SkuSelections {
+export function toggleSkuSelection(current: SkuSelections, key: string,
+  candidate: Pick<SkuReplacementCandidate, "sku" | "targetWarehouse">): SkuSelections {
   const next = { ...current };
-  if (next[key] === sku) delete next[key];
-  else next[key] = sku;
+  if (next[key]?.sku === candidate.sku) delete next[key];
+  else next[key] = { sku: candidate.sku, targetWarehouse: candidate.targetWarehouse };
   return next;
+}
+
+export function setSkuSelectionWarehouse(current: SkuSelections, key: string, targetWarehouse: string): SkuSelections {
+  const selected = current[key];
+  return selected ? { ...current, [key]: { ...selected, targetWarehouse } } : current;
 }
 
 export function replacementItemStatus(orderReference: string, item: SkuReplacementPlan["items"][number], selections: SkuSelections,
@@ -45,7 +52,7 @@ export function filterSkuReplacementPlans(plans: SkuReplacementPlan[], filters: 
         && (filters.risk === "ALL" || candidate.riskLevel === filters.risk));
       if (!candidates.length) return null;
       if (filters.status === "SELECTED") {
-        const selectedSku = selections[replacementItemKey(orderReference, item.itemId)];
+        const selectedSku = selections[replacementItemKey(orderReference, item.itemId)]?.sku;
         if (!candidates.some((candidate) => candidate.sku === selectedSku)) return null;
       }
       return { ...item, candidates };
@@ -59,7 +66,7 @@ export function summarizeSkuSelections(plans: SkuReplacementPlan[], selections: 
   let selectedItems = 0;
   for (const plan of plans) {
     for (const item of plan.items) {
-      const selectedSku = selections[replacementItemKey(plan.order.platformOrderId, item.itemId)];
+      const selectedSku = selections[replacementItemKey(plan.order.platformOrderId, item.itemId)]?.sku;
       if (!selectedSku || !item.candidates.some((candidate) => candidate.sku === selectedSku)) continue;
       selectedItems += 1;
       selectedOrders.add(plan.order.platformOrderId);
@@ -69,12 +76,14 @@ export function summarizeSkuSelections(plans: SkuReplacementPlan[], selections: 
 }
 
 export function buildSkuReplacementSelections(plans: SkuReplacementPlan[], selections: SkuSelections) {
-  const result: Array<{ orderReference: string; itemId: string; replacementSku: string }> = [];
+  const result: SkuReplacementSelection[] = [];
   for (const plan of plans) {
     for (const item of plan.items) {
-      const replacementSku = selections[replacementItemKey(plan.order.platformOrderId, item.itemId)];
-      if (!replacementSku || !item.candidates.some((candidate) => candidate.sku === replacementSku)) continue;
-      result.push({ orderReference: plan.order.platformOrderId, itemId: item.itemId, replacementSku });
+      const selected = selections[replacementItemKey(plan.order.platformOrderId, item.itemId)];
+      const candidate = selected && item.candidates.find((candidate) => candidate.sku === selected.sku);
+      if (!candidate?.warehouseAlternatives.some((alternative) => alternative.warehouse === selected.targetWarehouse)) continue;
+      result.push({ orderReference: plan.order.platformOrderId, itemId: item.itemId,
+        replacementSku: selected.sku, targetWarehouse: selected.targetWarehouse });
     }
   }
   return result;

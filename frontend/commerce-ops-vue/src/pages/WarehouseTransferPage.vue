@@ -3,9 +3,10 @@ import { ArrowRight, CheckCircle2, CircleAlert, Clock3, Layers3, ShieldCheck } f
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { createSkuReplacementBatchPlan, executeSkuReplacementBatch, executeWarehouseTransferBatch, getSkuReplacementBatchTask, previewSkuReplacementBatch, previewWarehouseTransferBatch, recoverSkuReplacementBatch, recoverWarehouseTransferBatch,
-  type SkuReplacementBatch, type SkuReplacementBatchTask, type SkuReplacementPlan, type WarehouseTransferBatch } from "@/services/warehouse-transfer";
+  type SkuReplacementBatch, type SkuReplacementBatchTask, type SkuReplacementCandidate, type SkuReplacementPlan, type WarehouseTransferBatch } from "@/services/warehouse-transfer";
 import { buildSkuReplacementSelections, executionStatusesFromTask, filterSkuReplacementPlans, replacementItemKey, replacementItemStatus,
-  diagnosticRows, summarizeSkuSelections, taskItemFor, toggleSkuSelection, type ReplacementFilters } from "@/services/sku-replacement-selection";
+  diagnosticRows, setSkuSelectionWarehouse, summarizeSkuSelections, taskItemFor, toggleSkuSelection,
+  type ReplacementFilters, type SkuSelections } from "@/services/sku-replacement-selection";
 
 const MAX_BATCH_ORDERS = 100;
 const orderInput = ref("");
@@ -18,7 +19,7 @@ const batch = ref<WarehouseTransferBatch | null>(null);
 const replacementBatch = ref<SkuReplacementBatch | null>(null);
 const replacementError = ref("");
 const replacementLoading = ref(false);
-const selectedReplacementSkus = ref<Record<string, string>>({});
+const selectedReplacementSkus = ref<SkuSelections>({});
 const replacementFilters = ref<ReplacementFilters>({ kind:"ALL",risk:"ALL",status:"ALL" });
 const replacementTask = ref<SkuReplacementBatchTask | null>(null);
 const replacementPlanning = ref(false);
@@ -103,10 +104,23 @@ function shortageItems(plan: SkuReplacementPlan) { return plan.items.filter((ite
 function replacementPlan(orderReference: string) {
   return replacementBatch.value?.plans.find((plan) => plan.order.platformOrderId === orderReference);
 }
-function selectReplacement(orderReference: string, itemId: string, replacementSku: string) {
+function selectReplacement(orderReference: string, itemId: string, candidate: SkuReplacementCandidate) {
   if (replacementLocked.value) return;
   const key = replacementItemKey(orderReference, itemId);
-  selectedReplacementSkus.value = toggleSkuSelection(selectedReplacementSkus.value, key, replacementSku);
+  selectedReplacementSkus.value = toggleSkuSelection(selectedReplacementSkus.value, key, candidate);
+  selectionChanged();
+}
+function selectReplacementWarehouse(orderReference: string, itemId: string, targetWarehouse: unknown) {
+  if (replacementLocked.value) return;
+  const key = replacementItemKey(orderReference, itemId);
+  selectedReplacementSkus.value = setSkuSelectionWarehouse(selectedReplacementSkus.value, key, String(targetWarehouse || ""));
+  selectionChanged();
+}
+function replacementWarehouseModeLabel(mode: SkuReplacementCandidate["warehouseMode"]) {
+  return mode === "KEEP_CURRENT" ? "保持原仓" : "整单换仓";
+}
+function automaticWarehouseRemaining(candidate: SkuReplacementCandidate) {
+  return candidate.warehouseAlternatives.find((alternative) => alternative.warehouse === candidate.targetWarehouse)?.remaining ?? 0;
 }
 function replacementStatus(plan: SkuReplacementPlan, item: SkuReplacementPlan["items"][number]) {
   return replacementItemStatus(plan.order.platformOrderId, item, selectedReplacementSkus.value, replacementExecutionStatuses.value);
@@ -158,7 +172,7 @@ async function executeSelectedReplacements() {
       return;
     }
     const { value } = await ElMessageBox.prompt(
-      `将串行更换 ${plan.summary.executable} 个商品行，涉及 ${replacementSelectionSummary.value.selectedOrders} 个订单。每项写入后都会回读验证；单项失败不会阻断后续项目。虾皮买家订单商品不会改变。`,
+      `将串行更换 ${plan.summary.executable} 个商品行，涉及 ${replacementSelectionSummary.value.selectedOrders} 个订单。每项最多会执行两次经校验的马帮操作（更换 SKU、必要时整单换仓），操作后都会回读验证；单项失败不会阻断后续项目。虾皮买家订单商品不会改变。`,
       "不可撤销：确认批量更换马帮 SKU",
       { confirmButtonText: `确认执行 ${plan.summary.executable} 项`, cancelButtonText: "取消", type: "warning", inputPlaceholder: plan.approvalText,
         inputValidator: (input) => input === plan.approvalText || `请输入完整确认文字：${plan.approvalText}` },
@@ -405,12 +419,22 @@ async function executeBatch() {
               </div>
               <div v-if="item.candidates.length" class="candidate-area">
                 <div class="candidate-list">
-                <button v-for="candidate in item.candidates" :key="candidate.sku" type="button" class="candidate-card" :class="[candidate.riskLevel.toLowerCase(), { selected: selectedReplacementSkus[replacementItemKey(plan.order.platformOrderId, item.itemId)] === candidate.sku }]"
-                  :aria-pressed="selectedReplacementSkus[replacementItemKey(plan.order.platformOrderId, item.itemId)] === candidate.sku" :disabled="replacementLocked || item.requiresBundleReview || ['COMPLETED','MANUAL_REVIEW','RUNNING'].includes(replacementStatus(plan, item))"
-                  @click="selectReplacement(plan.order.platformOrderId, item.itemId, candidate.sku)">
-                  <div><el-tag size="small" :type="candidate.riskLevel === 'LOW' ? 'success' : candidate.riskLevel === 'MEDIUM' ? 'warning' : 'danger'" effect="light">{{ candidate.label }}</el-tag><span>可用 {{ candidate.available }}</span></div>
-                  <strong>{{ candidate.sku }}</strong><p>{{ candidate.chineseName }}</p><small>{{ candidate.warehouse }}<template v-if="candidate.productStatus"> · {{ candidate.productStatus }}</template></small>
-                </button>
+                <div v-for="candidate in item.candidates" :key="candidate.sku" class="candidate-option">
+                  <button type="button" class="candidate-card" :class="[candidate.riskLevel.toLowerCase(), { selected: selectedReplacementSkus[replacementItemKey(plan.order.platformOrderId, item.itemId)]?.sku === candidate.sku }]"
+                    :aria-pressed="selectedReplacementSkus[replacementItemKey(plan.order.platformOrderId, item.itemId)]?.sku === candidate.sku" :disabled="replacementLocked || item.requiresBundleReview || ['COMPLETED','MANUAL_REVIEW','RUNNING'].includes(replacementStatus(plan, item))"
+                    @click="selectReplacement(plan.order.platformOrderId, item.itemId, candidate)">
+                    <div><span class="candidate-tags"><el-tag size="small" :type="candidate.riskLevel === 'LOW' ? 'success' : candidate.riskLevel === 'MEDIUM' ? 'warning' : 'danger'" effect="light">{{ candidate.label }}</el-tag><el-tag size="small" :type="candidate.warehouseMode === 'KEEP_CURRENT' ? 'success' : 'warning'" effect="plain">{{ replacementWarehouseModeLabel(candidate.warehouseMode) }}</el-tag></span><span>可用 {{ candidate.available }}</span></div>
+                    <strong>{{ candidate.sku }}</strong><p>{{ candidate.chineseName }}</p><small>自动仓 {{ candidate.targetWarehouse }} · 剩余 {{ automaticWarehouseRemaining(candidate) }}<template v-if="candidate.productStatus"> · {{ candidate.productStatus }}</template></small>
+                  </button>
+                  <label v-if="selectedReplacementSkus[replacementItemKey(plan.order.platformOrderId, item.itemId)]?.sku === candidate.sku" class="warehouse-selector">
+                    <span>目标仓库</span>
+                    <el-select :model-value="selectedReplacementSkus[replacementItemKey(plan.order.platformOrderId, item.itemId)]?.targetWarehouse" :disabled="replacementLocked" aria-label="选择目标仓库"
+                      @change="selectReplacementWarehouse(plan.order.platformOrderId, item.itemId, $event)">
+                      <el-option v-for="alternative in candidate.warehouseAlternatives" :key="alternative.warehouse" :value="alternative.warehouse"
+                        :label="`${alternative.warehouse} · ${replacementWarehouseModeLabel(alternative.mode)} · 剩余 ${alternative.remaining}`" />
+                    </el-select>
+                  </label>
+                </div>
                 </div>
               </div>
               <div v-else class="no-candidate"><CircleAlert :size="17" /><span>当前仓没有符合“同款换色或更小规格”且库存足够的候选</span></div>
@@ -448,7 +472,7 @@ async function executeBatch() {
 .preview-queue article>span{color:#91a19c;font:600 11px ui-monospace,monospace}.preview-queue article strong{overflow:hidden;font:600 12px ui-monospace,SFMono-Regular,monospace;text-overflow:ellipsis;white-space:nowrap}.preview-queue article small{color:#6f827b;font-size:11px}
 .resolution-ladder{display:grid;grid-template-columns:minmax(230px,1fr) minmax(180px,.72fr) auto minmax(210px,.82fr) auto minmax(180px,.72fr);gap:12px;align-items:center;padding:15px 18px;border:1px solid #dfe7e4;border-radius:13px;background:#fff}.ladder-title{display:grid;gap:3px}.ladder-title span,.resolution-ladder article span{font-size:11px;color:#82918c}.resolution-ladder article{display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:10px;background:#f5f7f6}.resolution-ladder article.active{background:#eaf4f0;color:#216652}.resolution-ladder article.completed{color:#44736a;background:#f0f6f4}.resolution-ladder article.completed b{color:#fff;background:#4e8b7b}.resolution-ladder article b{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#fff;font:700 11px ui-monospace,monospace}.resolution-ladder article div{display:grid;gap:2px}.resolution-ladder article strong{font-size:12px}.resolution-ladder>svg{color:#9aa9a4}
 .plan-row.failed.routed{color:#895c21;background:#fffaf0;border-color:#ead9b7}.replacement-panel{display:grid;gap:18px;padding:22px;border:1px solid #eadcbf;border-radius:14px;background:#fffdf8;box-shadow:0 8px 24px rgba(82,61,20,.05)}.replacement-panel>header,.replacement-panel>header>div,.replacement-order-head,.replacement-panel>footer,.replacement-panel>footer>div{display:flex;align-items:center;justify-content:space-between;gap:14px}.replacement-panel>header>div>div{display:grid;gap:3px}.replacement-panel h2{margin:0;font-size:20px}.replacement-panel header p{margin:2px 0 0;color:#7d7a70;font-size:12px}.replacement-panel header span{font-size:11px;color:#8d826c}.step-chip{display:grid!important;place-items:center;width:36px;height:36px;border-radius:10px;background:#f2e7ce;color:#7f5a19!important;font:700 13px ui-monospace,monospace!important}.replacement-stats{display:grid!important;justify-items:end;white-space:nowrap}.replacement-stats strong{font:700 24px ui-monospace,monospace;color:#805d20}.replacement-filters{display:grid;grid-template-columns:repeat(3,minmax(150px,220px)) 1fr;gap:10px;align-items:end;padding:13px;border:1px solid #e9e1d2;border-radius:11px;background:#faf7f0}.replacement-filters label{display:grid;gap:6px}.replacement-filters label>span,.filter-result span{font-size:11px;color:#847b6b}.filter-result{display:grid;justify-items:end;gap:2px}.filter-result strong{font:700 18px ui-monospace,monospace;color:#705324}.replacement-orders{display:grid;gap:12px}.replacement-order{overflow:hidden;border:1px solid #e8e2d5;border-radius:12px;background:#fff}.replacement-order-head{padding:13px 15px;border-bottom:1px solid #eee8dc;background:#faf7f0}.replacement-order-head>div{display:grid;gap:3px}.replacement-order-head strong{font:700 13px ui-monospace,SFMono-Regular,monospace}.replacement-order-head span{font-size:11px;color:#857e70}.shortage-item{display:grid;grid-template-columns:minmax(210px,.7fr) minmax(0,2fr);gap:18px;padding:15px}.shortage-item+.shortage-item{border-top:1px solid #f0ece4}.original-sku{display:grid;align-content:start;gap:4px}.original-sku>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.original-sku>div>span{font-size:10px;letter-spacing:.08em;color:#a05d52}.original-sku strong,.candidate-card>strong{font:700 12px ui-monospace,SFMono-Regular,monospace}.original-sku p,.candidate-card p{margin:0;color:#5f625f;font-size:12px;line-height:1.45}.original-sku small,.candidate-card small{font-size:11px;color:#8b8f8b}.original-sku em{margin-top:3px;color:#a76a2b;font-size:11px;font-style:normal}.candidate-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px}.candidate-card{display:grid;gap:5px;padding:11px 12px;border:1px solid #e4e7e4;border-left:3px solid #58917f;border-radius:9px;background:#fbfcfb}.candidate-card.medium{border-left-color:#d29b42}.candidate-card.high{border-left-color:#cf7565}.candidate-card>div{display:flex;justify-content:space-between;gap:8px;align-items:center}.candidate-card>div>span{font-size:10px;color:#778079}.no-candidate,.replacement-empty{display:flex;gap:8px;align-items:center;min-height:70px;padding:12px;border-radius:9px;background:#f7f4ef;color:#8b7961;font-size:12px}.replacement-empty{justify-content:center;border:1px dashed #ddd2bf}.replacement-task{display:grid;gap:10px;padding:13px 14px;border:1px solid #c7ddd5;border-radius:10px;background:#f1f8f5}.replacement-task>div{display:flex;align-items:center;gap:10px}.replacement-task>div>div{display:grid;gap:3px}.replacement-task small{font-size:11px;color:#657b73}.replacement-panel>footer{padding-top:13px;border-top:1px solid #ebe2d3}.replacement-panel>footer>div{justify-content:flex-start;max-width:900px;color:#7b6d54}.replacement-panel>footer span{font-size:12px;line-height:1.5}.replacement-batch-action{position:sticky;bottom:12px;z-index:3;padding:13px 14px!important;border:1px solid #dfd0b4!important;border-radius:11px;background:rgba(255,253,248,.96);box-shadow:0 10px 28px rgba(82,61,20,.12);backdrop-filter:blur(8px)}.replacement-batch-action :deep(.el-button){flex:none;min-height:44px;margin:0}
-.candidate-area{display:grid;gap:9px}.candidate-card{min-height:44px;text-align:left;font:inherit;color:inherit;cursor:pointer;transition:border-color .16s,box-shadow .16s,transform .16s}.candidate-card:hover:not(:disabled){transform:translateY(-1px);border-color:#91b8ac}.candidate-card:focus-visible{outline:3px solid rgba(52,119,99,.24);outline-offset:2px}.candidate-card.selected{border-color:#347763;box-shadow:0 0 0 2px rgba(52,119,99,.15);background:#f2f8f5}.candidate-card:disabled{cursor:not-allowed;opacity:.6}
+.candidate-area{display:grid;gap:9px}.candidate-option{display:grid;align-content:start;gap:8px}.candidate-card{width:100%;min-height:44px;text-align:left;font:inherit;color:inherit;cursor:pointer;transition:border-color .16s,box-shadow .16s,transform .16s}.candidate-card:hover:not(:disabled){transform:translateY(-1px);border-color:#91b8ac}.candidate-card:focus-visible{outline:3px solid rgba(52,119,99,.24);outline-offset:2px}.candidate-card.selected{border-color:#347763;box-shadow:0 0 0 2px rgba(52,119,99,.15);background:#f2f8f5}.candidate-card:disabled{cursor:not-allowed;opacity:.6}.candidate-tags{display:flex;flex-wrap:wrap;gap:5px}.warehouse-selector{display:grid;gap:5px;padding:8px 10px;border:1px solid #cfe0d9;border-radius:8px;background:#f3f8f6}.warehouse-selector>span{font-size:10px;color:#60766e}.warehouse-selector :deep(.el-select){width:100%}
 .sku-failure-detail{display:grid;gap:5px;margin-top:8px;padding:10px;border:1px solid #efd8d3;border-radius:8px;background:#fff6f4}.sku-failure-detail>strong{overflow-wrap:anywhere;color:#9b443c;font-size:11px}.sku-failure-detail>p{color:#744f4a;font-size:11px}.sku-diagnostic{border-top:1px solid #efdeda;padding-top:6px}.sku-diagnostic summary{min-height:44px;display:flex;align-items:center;color:#714a43;font-size:12px;font-weight:600;cursor:pointer}.sku-diagnostic summary:focus-visible{outline:3px solid rgba(155,68,60,.2);outline-offset:2px;border-radius:4px}.sku-diagnostic dl{display:grid;grid-template-columns:minmax(74px,auto) minmax(0,1fr);gap:5px 10px;margin:2px 0 4px}.sku-diagnostic dt{color:#8b6a65;font-size:11px}.sku-diagnostic dd{margin:0;overflow-wrap:anywhere;color:#4f4745;font:11px/1.55 ui-monospace,SFMono-Regular,monospace}
 @media(max-width:1100px){.resolution-ladder{grid-template-columns:1fr 1fr 1fr}.ladder-title{grid-column:1/-1}.resolution-ladder>svg{display:none}.shortage-item{grid-template-columns:1fr}.replacement-filters{grid-template-columns:repeat(3,1fr)}.filter-result{grid-column:1/-1;justify-items:start}}
 @media(max-width:700px){.resolution-ladder{grid-template-columns:1fr}.replacement-panel>header,.replacement-panel>footer{align-items:flex-start;flex-direction:column}.replacement-stats{justify-items:start}.candidate-list,.replacement-filters{grid-template-columns:1fr}.filter-result{grid-column:auto}.replacement-batch-action :deep(.el-button){width:100%}}
