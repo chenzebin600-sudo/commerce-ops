@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { aggregateReplacementInventory, findSkuReplacementCandidates, SkuReplacementService } from "../fulfillment-service/sku-replacement.mjs";
 import { SkuReplacementBatchService } from "../fulfillment-service/sku-replacement-batch.mjs";
+import { WarehouseTransferService } from "../fulfillment-service/warehouse-transfer.mjs";
 
 const rows = aggregateReplacementInventory([
   { 仓库: "深圳仓", 库存SKU编号: "CHAIR-WHITE-3", 中文名称: "人体工学椅 白色 3层", 一级目录: "家具", 可用库存量: 0 },
@@ -106,6 +107,8 @@ test("替换预览优先保留当前仓并只从店铺白名单提供整单换�
 
   assert.equal(previewCandidate.warehouseMode, "KEEP_CURRENT");
   assert.equal(previewCandidate.targetWarehouse, "当前仓");
+  assert.equal("prospectiveItems" in previewCandidate, false);
+  assert.equal("stock" in previewCandidate.warehouseAlternatives[0], false);
   assert.equal(moveCandidate.targetWarehouse, "允许仓B");
   assert.deepEqual(moveCandidate.warehouseAlternatives.map((item) => item.warehouse), ["允许仓B", "允许仓A"]);
   assert.deepEqual(calls.find((call) => call.action === "inventory").warehouseNames, ["当前仓", "允许仓A", "允许仓B"]);
@@ -174,7 +177,8 @@ test("更换计划需精确确认、可从持久化记录恢复且只能执行�
 });
 
 async function skuExecutionFixture({ replacementSku = "CHAIR-WHITE-2", targetWarehouse = "广州仓",
-  afterSkuItems = null, finalItems = null, warehouseExecuteError = null, warehouseServiceAvailable = true } = {}) {
+  afterSkuItems = null, finalItems = null, warehouseExecuteError = null, warehouseServiceAvailable = true,
+  allowedWarehouses = ["深圳仓", "广州仓"] } = {}) {
   const rootDir = mkdtempSync(path.join(tmpdir(), "sku-replacement-two-phase-"));
   const originalItems = [
     { itemId: "123", stockSku: "CHAIR-WHITE-3", title: "人体工学椅 白色 3层", quantity: 2,
@@ -192,6 +196,7 @@ async function skuExecutionFixture({ replacementSku = "CHAIR-WHITE-2", targetWar
     { 仓库: "广州仓", 库存SKU编号: "CHAIR-BLACK-3", 中文名称: "人体工学椅 黑色 3层", 一级目录: "家具", 可用库存量: 8 },
     { 仓库: "广州仓", 库存SKU编号: "TABLE-BASIC", 中文名称: "书桌", 一级目录: "家具", 可用库存量: 5 },
   ];
+  const state = { order, inventoryRecords, allowedWarehouses: [...allowedWarehouses] };
   const actions = [];
   const warehouseCalls = [];
   let executing = false;
@@ -203,6 +208,8 @@ async function skuExecutionFixture({ replacementSku = "CHAIR-WHITE-2", targetWar
       actions.push("warehouse-preview"); warehouseCalls.push({ method: "preview", payload });
       return { planHash: "warehouse-plan-1", approvalText: `确认换仓 ORDER_PHASE_10001 -> ${targetWarehouse}` };
     },
+    previewKeepCurrentReconciliation: async ({ orderReference, targetWarehouse: wantedWarehouse }) =>
+      warehouseTransferService.preview({ orderReference, targetWarehouse: wantedWarehouse }),
     execute: async (payload) => {
       actions.push("warehouse-execute"); warehouseCalls.push({ method: "execute", payload });
       if (warehouseExecuteError) throw warehouseExecuteError;
@@ -210,17 +217,17 @@ async function skuExecutionFixture({ replacementSku = "CHAIR-WHITE-2", targetWar
     },
   };
   const service = new SkuReplacementService({ rootDir, credentials: () => ({ ok: true, username: "u", password: "p" }),
-    hasShopAccess: () => true, allowedWarehouses: () => ["深圳仓", "广州仓"],
+    hasShopAccess: () => true, allowedWarehouses: () => state.allowedWarehouses,
     warehouseTransferService: warehouseServiceAvailable ? warehouseTransferService : null,
     now: () => new Date("2026-08-11T04:00:00.000Z"), runWorker: async (payload) => {
       if (payload.action === "order-warehouse-inspect") {
-        if (!executing) return { order };
+        if (!executing) return { order: state.order };
         actions.push("order-warehouse-inspect");
         const items = inspectedItems[inspectionIndex++];
         if (!items) throw new Error("unexpected execution inspection");
         return { order: { ...order, items } };
       }
-      if (payload.action === "inventory") return { records: inventoryRecords };
+      if (payload.action === "inventory") return { records: state.inventoryRecords };
       if (payload.action === "order-sku-resolve") return { result: { stockId: `stock-${payload.replacementSku}`, stockSku: payload.replacementSku } };
       if (payload.action === "order-sku-change") {
         executing = true; skuWrites += 1; actions.push("order-sku-change");
@@ -229,8 +236,33 @@ async function skuExecutionFixture({ replacementSku = "CHAIR-WHITE-2", targetWar
       throw new Error(`unexpected ${payload.action}`);
     } });
   const plan = await service.createPlan({ orderReference: "ORDER_PHASE_10001", itemId: "123", replacementSku, targetWarehouse });
-  return { service, plan, rootDir, actions, warehouseCalls, skuWrites: () => skuWrites };
+  return { service, plan, rootDir, actions, warehouseCalls, state, skuWrites: () => skuWrites };
 }
+
+test("SKU 写入前会重验全部商品行、店铺白名单和完整目标仓库存", async (t) => {
+  const afterSkuItems = [
+    { itemId: "123", stockSku: "CHAIR-WHITE-2", quantity: 2, stockWarehouseName: "广州仓" },
+    { itemId: "456", stockSku: "TABLE-BASIC", quantity: 1, stockWarehouseName: "广州仓" },
+  ];
+  const scenarios = [
+    { name: "非选中商品行数量变化", mutate: (state) => { state.order.items[1].quantity = 2; } },
+    { name: "店铺允许仓库变化", mutate: (state) => { state.allowedWarehouses.splice(0, state.allowedWarehouses.length, "深圳仓"); } },
+    { name: "非选中 SKU 的目标仓库存变化", mutate: (state) => {
+      state.inventoryRecords.find((row) => row["仓库"] === "广州仓" && row["库存SKU编号"] === "TABLE-BASIC")["可用库存量"] = 0;
+    } },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const fixture = await skuExecutionFixture({ afterSkuItems, finalItems: afterSkuItems });
+      scenario.mutate(fixture.state);
+
+      await assert.rejects(fixture.service.execute({ planHash: fixture.plan.planHash, approvalText: fixture.plan.approvalText }),
+        (error) => error.code === "SKU_REPLACEMENT_PRECONDITION_CHANGED");
+      assert.equal(fixture.skuWrites(), 0);
+    });
+  }
+});
 
 test("SKU 写入后按计划整单换仓并独立复核最终 SKU 与仓库", async () => {
   const afterSkuItems = [
@@ -269,6 +301,59 @@ test("马帮把 KEEP_CURRENT 更换自动跳仓后会整单迁回原仓", async 
   assert.equal(completed.result.warehouseRouting.targetWarehouse, "深圳仓");
   assert.equal(completed.result.warehouseRouting.transferSkipped, false);
   assert.deepEqual(completed.result.warehouseRouting.finalWarehouses, ["深圳仓"]);
+});
+
+test("空白名单的 KEEP_CURRENT 计划自动跳仓后通过内部路径恢复哈希原仓", async () => {
+  const rootDir = mkdtempSync(path.join(tmpdir(), "sku-replacement-keep-current-"));
+  const inventoryRecords = [
+    { 仓库: "深圳仓", 库存SKU编号: "CHAIR-WHITE-3", 中文名称: "人体工学椅 白色 3层", 一级目录: "家具", 可用库存量: 0 },
+    { 仓库: "深圳仓", 库存SKU编号: "CHAIR-BLACK-3", 中文名称: "人体工学椅 黑色 3层", 一级目录: "家具", 可用库存量: 8 },
+    { 仓库: "深圳仓", 库存SKU编号: "TABLE-BASIC", 中文名称: "书桌", 一级目录: "家具", 可用库存量: 5 },
+  ];
+  const state = { order: { internalOrderId: "99", platformOrderId: "ORDER_KEEP_10001", shopId: "10", platformId: "17",
+    orderStatus: "pending", trackNumber: "", items: [
+      { itemId: "123", stockSku: "CHAIR-WHITE-3", title: "人体工学椅 白色 3层", quantity: 2,
+        stockWarehouseName: "深圳仓", warehouseOptions: [{ text: "深圳仓" }, { text: "自动跳仓" }], isCombo: false },
+      { itemId: "456", stockSku: "TABLE-BASIC", title: "书桌", quantity: 1,
+        stockWarehouseName: "深圳仓", warehouseOptions: [{ text: "深圳仓" }, { text: "自动跳仓" }], isCombo: false },
+    ] } };
+  const actions = [];
+  let skuWrites = 0;
+  let warehouseWrites = 0;
+  const runWorker = async (payload) => {
+    actions.push(payload.action);
+    if (payload.action === "order-warehouse-inspect") return { order: structuredClone(state.order) };
+    if (payload.action === "inventory") return { records: inventoryRecords };
+    if (payload.action === "order-sku-resolve") return { result: { stockId: "stock-black", stockSku: payload.replacementSku } };
+    if (payload.action === "order-sku-change") {
+      skuWrites += 1;
+      state.order.items = state.order.items.map((item) => ({ ...item,
+        stockSku: item.itemId === "123" ? "CHAIR-BLACK-3" : item.stockSku, stockWarehouseName: "自动跳仓" }));
+      return { result: { changed: true, stockId: payload.expectedStockId } };
+    }
+    if (payload.action === "order-warehouse-change") {
+      warehouseWrites += 1;
+      assert.equal(payload.targetWarehouse, "深圳仓");
+      state.order.items = state.order.items.map((item) => ({ ...item, stockWarehouseName: "深圳仓" }));
+      return { result: { changed: true } };
+    }
+    throw new Error(`unexpected ${payload.action}`);
+  };
+  const common = { rootDir, credentials: () => ({ ok: true, username: "u", password: "p" }), hasShopAccess: () => true,
+    allowedWarehouses: () => [], runWorker, now: () => new Date("2026-08-11T04:00:00.000Z") };
+  const warehouseTransferService = new WarehouseTransferService(common);
+  const service = new SkuReplacementService({ ...common, warehouseTransferService });
+  const plan = await service.createPlan({ orderReference: "ORDER_KEEP_10001", itemId: "123", replacementSku: "CHAIR-BLACK-3" });
+
+  const completed = await service.execute({ planHash: plan.planHash, approvalText: plan.approvalText });
+
+  assert.equal(plan.warehouseMode, "KEEP_CURRENT");
+  assert.equal(plan.targetWarehouse, "深圳仓");
+  assert.equal(skuWrites, 1);
+  assert.equal(warehouseWrites, 1);
+  assert.deepEqual(completed.result.warehouseRouting.finalWarehouses, ["深圳仓"]);
+  assert.equal(actions.filter((action) => action === "order-sku-change").length, 1);
+  assert.equal(actions.filter((action) => action === "order-warehouse-change").length, 1);
 });
 
 test("SKU 写入后已经整单位于目标仓会跳过仓库写入", async () => {
@@ -436,6 +521,21 @@ test("批量更换计划拒绝同一商品行选择多个目标 SKU", async () =
     { orderReference: "ORDER_10001", itemId: "1", replacementSku: "SKU-A" },
     { orderReference: "ORDER_10001", itemId: "1", replacementSku: "SKU-B" },
   ] }), /每个商品行只能选择一个替换 SKU/);
+});
+
+test("批量更换计划确定性拒绝同一订单的多个商品行", async () => {
+  const rootDir = mkdtempSync(path.join(tmpdir(), "sku-replacement-batch-order-"));
+  let createPlanCalls = 0;
+  const service = new SkuReplacementBatchService({ rootDir,
+    skuReplacementService: { createPlan: async (selection) => { createPlanCalls += 1; return batchPlanRecord(selection, createPlanCalls); } },
+    now: () => new Date("2026-08-10T04:00:00.000Z") });
+
+  await assert.rejects(service.createPlan({ selections: [
+    { orderReference: "ORDER_10001", itemId: "1", replacementSku: "SKU-A" },
+    { orderReference: "ORDER_10001", itemId: "2", replacementSku: "SKU-B" },
+  ] }), (error) => error.code === "SKU_REPLACEMENT_BATCH_ORDER_DUPLICATE"
+    && error.message === "同一批次每个订单只能选择一个商品行");
+  assert.equal(createPlanCalls, 0);
 });
 
 test("批量更换计划保留有效项并记录逐项预验证失败", async () => {

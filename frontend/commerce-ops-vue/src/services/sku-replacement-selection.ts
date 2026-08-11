@@ -112,6 +112,21 @@ export function diagnosticRows(diagnostic: SkuReplacementDiagnostic | null | und
     const text = String(value ?? "").trim();
     if (text) rows.push({ label, value: text });
   };
+  if ("phase" in diagnostic) {
+    add("阶段", diagnostic.phase);
+    add("说明", diagnostic.message);
+    add("SKU", `${diagnostic.observedSku || "?"} → ${diagnostic.targetSku || "?"}`);
+    add("目标仓", diagnostic.targetWarehouse);
+    add("最终仓", diagnostic.finalWarehouses?.join(" · "));
+    add("操作状态", [
+      diagnostic.skuWriteConfirmed ? "SKU 已确认" : "SKU 未确认",
+      diagnostic.warehousePreviewAttempted ? "已尝试预览" : "未尝试预览",
+      diagnostic.warehouseWriteAttempted ? "已尝试写仓" : "未尝试写仓",
+      diagnostic.warehouseWriteConfirmed ? "写仓已确认" : "写仓未确认",
+    ].join(" · "));
+    add("原因码", diagnostic.cause?.code);
+    return rows;
+  }
   add("阶段", diagnostic.stage);
   add("HTTP", diagnostic.response?.httpStatus);
   const requestFields = ["orderItemId", "stockId", "IsChangeWarehouse", "isChangeOrderItemPrice"]

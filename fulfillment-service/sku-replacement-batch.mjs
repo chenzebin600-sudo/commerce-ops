@@ -44,10 +44,15 @@ export class SkuReplacementBatchService {
     }
     const normalized = selections.map(normalizedSelection);
     const itemKeys = new Set();
+    const orderKeys = new Set();
     for (const selection of normalized) {
       const key = `${selection.orderReference}\u0000${selection.itemId}`;
       if (itemKeys.has(key)) throw coded("SKU_REPLACEMENT_BATCH_ITEM_DUPLICATE", "每个商品行只能选择一个替换 SKU");
       itemKeys.add(key);
+      if (orderKeys.has(selection.orderReference)) {
+        throw coded("SKU_REPLACEMENT_BATCH_ORDER_DUPLICATE", "同一批次每个订单只能选择一个商品行");
+      }
+      orderKeys.add(selection.orderReference);
     }
     const items = [];
     const failures = [];

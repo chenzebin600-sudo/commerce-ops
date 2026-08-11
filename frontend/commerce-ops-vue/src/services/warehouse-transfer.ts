@@ -61,7 +61,7 @@ export interface SkuReplacementBatchPlan {
   summary: { requested: number; executable: number; failed: number };
 }
 export interface SkuReplacementSelection { orderReference: string; itemId: string; replacementSku: string; targetWarehouse: string }
-export interface SkuReplacementDiagnostic {
+export interface SkuReplacementLegacyDiagnostic {
   version: 1; capturedAt: string;
   stage: "mabang_response" | "mabang_request_uncertain" | "readback" | "service_precheck";
   endpoint: "order.doChanegOrderItem";
@@ -71,6 +71,14 @@ export interface SkuReplacementDiagnostic {
     code: string; message: string; fieldNames: string[]; bodyKind: string; bodyLength: number; textPreview?: string };
   verification: { beforeSku: string; targetSku: string; afterSku: string; result: string };
 }
+export interface SkuReplacementWarehouseDiagnostic {
+  version: 1;
+  phase: "POST_SKU_INSPECT" | "WAREHOUSE_PREVIEW" | "WAREHOUSE_EXECUTE" | "FINAL_VERIFY";
+  skuWriteConfirmed: boolean; warehousePreviewAttempted: boolean; warehouseWriteAttempted: boolean;
+  warehouseWriteConfirmed: boolean; targetSku: string; observedSku: string; targetWarehouse: string;
+  finalWarehouses: string[]; message?: string; cause?: { code: string };
+}
+export type SkuReplacementDiagnostic = SkuReplacementLegacyDiagnostic | SkuReplacementWarehouseDiagnostic;
 export type SkuReplacementTaskItemStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "MANUAL_REVIEW" | "NOT_EXECUTED";
 export interface SkuReplacementBatchTaskItem {
   orderReference: string; itemId: string; originalSku: string; replacementSku: string; planHash: string;

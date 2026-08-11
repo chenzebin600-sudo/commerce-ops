@@ -143,6 +143,26 @@ test("接口诊断会转换为固定、可读且无 HTML 的字段行", () => {
   assert.equal(diagnosticRows(null).length, 0);
 });
 
+test("仓库阶段诊断会显示安全说明、尝试状态和目标与最终仓库", () => {
+  const diagnostic = {
+    version: 1, phase: "WAREHOUSE_EXECUTE", skuWriteConfirmed: true,
+    warehousePreviewAttempted: true, warehouseWriteAttempted: true, warehouseWriteConfirmed: false,
+    targetSku: "CHAIR-BLACK-3", observedSku: "CHAIR-BLACK-3", targetWarehouse: "深圳仓",
+    finalWarehouses: ["自动跳仓"], message: "换仓写入结果无法确认",
+    cause: { code: "WAREHOUSE_VERIFY_FAILED" },
+  };
+
+  assert.deepEqual(diagnosticRows(diagnostic), [
+    { label: "阶段", value: "WAREHOUSE_EXECUTE" },
+    { label: "说明", value: "换仓写入结果无法确认" },
+    { label: "SKU", value: "CHAIR-BLACK-3 → CHAIR-BLACK-3" },
+    { label: "目标仓", value: "深圳仓" },
+    { label: "最终仓", value: "自动跳仓" },
+    { label: "操作状态", value: "SKU 已确认 · 已尝试预览 · 已尝试写仓 · 写仓未确认" },
+    { label: "原因码", value: "WAREHOUSE_VERIFY_FAILED" },
+  ]);
+});
+
 test("按订单和商品行精确定位批量任务结果", () => {
   const expected = { orderReference: "ORDER_1", itemId: "2", status: "FAILED" };
   const task = { items: [

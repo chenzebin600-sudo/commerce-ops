@@ -25,6 +25,16 @@ function stable(value) {
 }
 function hash(value) { return crypto.createHash("sha256").update(stable(value)).digest("hex"); }
 function ignored(item) { return IGNORED_SKUS.has(sku(item.stockSku)) || IGNORED_SKUS.has(text(item.title).replace(/\s+/g, "")); }
+function reconciliationItems(items = []) {
+  return items.map((item) => ({
+    itemId: text(item.itemId), stockSku: sku(item.stockSku), quantity: number(item.quantity),
+    currentWarehouse: warehouseScopeLabel(item.stockWarehouseName ?? item.currentWarehouse ?? item.warehouse),
+  })).sort((left, right) => left.itemId.localeCompare(right.itemId) || left.stockSku.localeCompare(right.stockSku)
+    || left.quantity - right.quantity);
+}
+function reconciliationIdentity(items = []) {
+  return reconciliationItems(items).map(({ itemId, stockSku, quantity }) => ({ itemId, stockSku, quantity }));
+}
 function inventoryFields(row) {
   return { warehouse: text(row["仓库"] ?? row.warehouse), sku: sku(row["库存SKU编号"] ?? row["SKU"] ?? row.sku), available: number(row["可用库存"] ?? row["可用量"] ?? row["可用库存量"] ?? row.availableQuantity ?? row.available) };
 }
@@ -54,6 +64,18 @@ export class WarehouseTransferService {
     this.historyDir = path.join(rootDir, "storage", "warehouse-transfers");
   }
 
+  async previewKeepCurrentReconciliation({ orderReference, targetWarehouse, expectedItems = [] } = {}) {
+    const originalWarehouse = warehouseScopeLabel(targetWarehouse);
+    const expected = reconciliationItems(expectedItems);
+    if (!originalWarehouse || !expected.length
+        || expected.some((item) => warehouseKey(item.currentWarehouse) !== warehouseKey(originalWarehouse))) {
+      throw coded("WAREHOUSE_RECONCILIATION_INVALID", "保留原仓的内部换仓授权无效");
+    }
+    return this.preview({ orderReference, targetWarehouse: originalWarehouse }, {
+      keepCurrentReconciliation: { mode: "KEEP_CURRENT", originalWarehouse, expectedItems: expected },
+    });
+  }
+
   async preview({ orderReference, targetWarehouse = "" } = {}, context = {}) {
     const reference = text(orderReference);
     if (!/^[A-Za-z0-9_-]{4,100}$/.test(reference)) throw coded("WAREHOUSE_ORDER_REFERENCE_INVALID", "请输入有效的订单号");
@@ -64,10 +86,20 @@ export class WarehouseTransferService {
     if (!order?.shopId || !this.hasShopAccess(order.shopId)) throw coded("WAREHOUSE_SHOP_ACCESS_REVOKED", "该订单店铺不属于当前马帮账号权限范围");
     const activeItems = (order.items || []).filter((item) => !ignored(item));
     if (!activeItems.length) throw coded("WAREHOUSE_ORDER_HAS_NO_SELLABLE_ITEMS", "订单仅包含赠品 SKU，不执行换仓");
+    const wanted = text(targetWarehouse);
+    const reconciliation = context.keepCurrentReconciliation;
+    const reconciliationAuthorized = reconciliation?.mode === "KEEP_CURRENT"
+      && warehouseKey(reconciliation.originalWarehouse) === warehouseKey(wanted)
+      && stable(reconciliationIdentity(activeItems)) === stable(reconciliationIdentity(reconciliation.expectedItems))
+      && reconciliation.expectedItems.every((item) => warehouseKey(item.currentWarehouse) === warehouseKey(wanted));
+    if (reconciliation && !reconciliationAuthorized) {
+      throw coded("WAREHOUSE_RECONCILIATION_STATE_CHANGED", "订单商品已偏离保留原仓计划，请人工核对");
+    }
     const policyWarehouses = new Set((this.allowedWarehouses(order.shopId) || []).map(text).filter(Boolean));
-    if (!policyWarehouses.size) throw coded("WAREHOUSE_POLICY_EMPTY", "请先在自动发货店铺设置中配置该店铺允许的仓库");
+    if (!policyWarehouses.size && !reconciliationAuthorized) throw coded("WAREHOUSE_POLICY_EMPTY", "请先在自动发货店铺设置中配置该店铺允许的仓库");
+    const eligibleWarehouses = reconciliationAuthorized ? [wanted] : [...policyWarehouses];
     const optionMaps = activeItems.map((item) => new Map((item.warehouseOptions || []).map((option) => [warehouseKey(option.text), text(option.text)]).filter(([key]) => key)));
-    const candidates = [...policyWarehouses].map((warehouse) => optionMaps[0].get(warehouseKey(warehouse)))
+    const candidates = eligibleWarehouses.map((warehouse) => optionMaps[0].get(warehouseKey(warehouse)))
       .filter((warehouse, index, all) => warehouse && all.indexOf(warehouse) === index
         && optionMaps.every((options) => options.has(warehouseKey(warehouse)))
         && !activeItems.every((item) => warehouseKey(item.stockWarehouseName) === warehouseKey(warehouse)));
@@ -87,7 +119,6 @@ export class WarehouseTransferService {
       return { warehouse, ready: stock.every((item) => item.available >= item.quantity), stock,
         remaining: stock.reduce((sum, item) => sum + Math.max(0, item.available - item.quantity), 0) };
     }).sort((left, right) => Number(right.ready) - Number(left.ready) || right.remaining - left.remaining || left.warehouse.localeCompare(right.warehouse, "zh-CN"));
-    const wanted = text(targetWarehouse);
     const selected = wanted ? evaluated.find((item) => warehouseKey(item.warehouse) === warehouseKey(wanted)) : evaluated.find((item) => item.ready);
     if (wanted && !selected) throw coded("WAREHOUSE_TARGET_NOT_ALLOWED", "目标仓库不在该店铺允许范围，或订单商品不支持该仓库");
     if (!selected?.ready) throw coded("WAREHOUSE_NO_COMMON_STOCK", "允许仓库中没有一个仓库可同时满足订单内全部 SKU 库存");
@@ -97,7 +128,8 @@ export class WarehouseTransferService {
       order: { internalOrderId: order.internalOrderId, platformOrderId: order.platformOrderId, shopId: order.shopId, platformId: order.platformId, orderStatus: order.orderStatus },
       targetWarehouse: selected.warehouse,
       items: activeItems.map((item) => ({ itemId: text(item.itemId), stockSku: text(item.stockSku), title: text(item.title), quantity: number(item.quantity), currentWarehouse: text(item.stockWarehouseName) })),
-      stock: selected.stock, alternatives: evaluated.filter((item) => item.ready).map((item) => ({ warehouse: item.warehouse, remaining: item.remaining })) };
+      stock: selected.stock, alternatives: evaluated.filter((item) => item.ready).map((item) => ({ warehouse: item.warehouse, remaining: item.remaining })),
+      ...(reconciliationAuthorized ? { reconciliation: { mode: "KEEP_CURRENT", originalWarehouse: reconciliation.originalWarehouse } } : {}) };
     record.planHash = hash(record);
     record.approvalText = `确认换仓 ${record.order.platformOrderId || reference} -> ${record.targetWarehouse}`;
     if (context.reservations) {
@@ -218,7 +250,9 @@ export class WarehouseTransferService {
     const account = context.account || this.credentials();
     if (!account?.ok || !this.hasShopAccess(record.order.shopId)) throw coded("WAREHOUSE_ACCESS_CHANGED", "账号或店铺权限已变化，请重新预览");
     const currentAllowed = (this.allowedWarehouses(record.order.shopId) || []).some((warehouse) => warehouseKey(warehouse) === warehouseKey(record.targetWarehouse));
-    if (!currentAllowed) throw coded("WAREHOUSE_POLICY_CHANGED", "店铺允许仓库已变化，请重新预览");
+    const keepCurrentReconciliation = record.reconciliation?.mode === "KEEP_CURRENT"
+      && warehouseKey(record.reconciliation.originalWarehouse) === warehouseKey(record.targetWarehouse);
+    if (!currentAllowed && !keepCurrentReconciliation) throw coded("WAREHOUSE_POLICY_CHANGED", "店铺允许仓库已变化，请重新预览");
     this.plans.delete(record.planHash); // 从重新验库存开始即占用计划，保证并发请求也只能进入一次写入流程。
     const freshLedger = context.inventoryLedger || inventoryLedger((await this.inventoryForWarehouses(account, [record.targetWarehouse], { allowSnapshot: false })).records);
     const freshRequired = new Map();

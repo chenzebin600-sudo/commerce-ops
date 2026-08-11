@@ -134,6 +134,76 @@ function uniqueWarehouses(values = []) {
   return result;
 }
 
+function canonicalWarehouses(values = []) {
+  return uniqueWarehouses(values).sort((left, right) => warehouseKey(left).localeCompare(warehouseKey(right)));
+}
+
+function optionWarehouse(option) {
+  return warehouseScope(option && typeof option === "object" ? option.text ?? option.name ?? option.warehouse : option);
+}
+
+function canonicalActiveItems(items = []) {
+  return items.map((item) => ({
+    itemId: text(item.itemId ?? item.id),
+    stockSku: sku(item.stockSku ?? item.sku),
+    quantity: number(item.quantity),
+    currentWarehouse: warehouseScope(item.stockWarehouseName ?? item.currentWarehouse ?? item.warehouse),
+    warehouseOptions: canonicalWarehouses((item.warehouseOptions || []).map(optionWarehouse)),
+  })).sort((left, right) => left.itemId.localeCompare(right.itemId)
+    || left.stockSku.localeCompare(right.stockSku)
+    || left.quantity - right.quantity);
+}
+
+function canonicalRoute(route) {
+  if (!route) return null;
+  return {
+    mode: text(route.mode), warehouse: warehouseScope(route.warehouse), remaining: number(route.remaining),
+    stock: (route.stock || []).map((item) => ({ sku: sku(item.sku), quantity: number(item.quantity), available: number(item.available) }))
+      .sort((left, right) => left.sku.localeCompare(right.sku)),
+  };
+}
+
+function replacementEvidence(candidate) {
+  return {
+    sku: sku(candidate?.sku), chineseName: text(candidate?.chineseName), productStatus: text(candidate?.productStatus),
+    category1: text(candidate?.category1), category2: text(candidate?.category2), kind: text(candidate?.kind),
+    riskLevel: text(candidate?.riskLevel), colorChanged: Boolean(candidate?.colorChanged), specRelation: text(candidate?.specRelation),
+    originalColors: [...(candidate?.originalColors || [])].map(text), candidateColors: [...(candidate?.candidateColors || [])].map(text),
+  };
+}
+
+function inventoryEvidence(prospectiveItems, inventoryWarehouses, inventory) {
+  const requiredSkus = [...new Set(canonicalActiveItems(prospectiveItems).map((item) => item.stockSku).filter(Boolean))].sort();
+  const ledger = new Map(inventory.map((row) => [`${warehouseKey(row.warehouse)}\u0000${sku(row.sku)}`, number(row.available)]));
+  return canonicalWarehouses(inventoryWarehouses).flatMap((warehouse) => requiredSkus.map((itemSku) => ({
+    warehouse, sku: itemSku, available: ledger.get(`${warehouseKey(warehouse)}\u0000${itemSku}`) || 0,
+  })));
+}
+
+function preWriteEvidence({ activeItems, allowedWarehouses, inventory, candidate, selectedRoute }) {
+  const inventoryWarehouses = canonicalWarehouses([
+    ...activeItems.map((item) => item.stockWarehouseName),
+    ...allowedWarehouses,
+  ]);
+  return {
+    activeItems: canonicalActiveItems(activeItems),
+    prospectiveItems: canonicalActiveItems(candidate.prospectiveItems),
+    allowedWarehouses: canonicalWarehouses(allowedWarehouses),
+    inventoryWarehouses,
+    inventory: inventoryEvidence(candidate.prospectiveItems, inventoryWarehouses, inventory),
+    selectedRoute: canonicalRoute(selectedRoute),
+    warehouseAlternatives: (candidate.warehouseAlternatives || []).map(canonicalRoute),
+    replacement: replacementEvidence(candidate),
+  };
+}
+
+function publicReplacementCandidate(candidate) {
+  const { prospectiveItems: _prospectiveItems, ...visible } = candidate;
+  return { ...visible, warehouseAlternatives: (visible.warehouseAlternatives || []).map(({ warehouse, mode, remaining }) => ({
+    warehouse, mode, remaining,
+  })) };
+}
+
 function verifiedOrderState(order, record) {
   const activeItems = (order?.items || []).filter((item) => !ignored(item));
   const selectedItem = activeItems.find((item) => text(item.itemId) === record.item.itemId);
@@ -163,6 +233,12 @@ function warehouseVerificationError(record, state, error) {
     observedSku: text(state.observedSku),
     targetWarehouse: record.targetWarehouse,
     finalWarehouses: uniqueWarehouses(state.finalWarehouses),
+    message: ({
+      POST_SKU_INSPECT: "SKU 写入后的订单状态无法确认",
+      WAREHOUSE_PREVIEW: "未能生成原计划目标仓库的换仓预览",
+      WAREHOUSE_EXECUTE: "换仓写入结果无法确认",
+      FINAL_VERIFY: "最终 SKU 与仓库状态无法确认",
+    })[state.phase] || "SKU 与仓库状态无法确认",
     cause: {
       code: /^[A-Z0-9_]{1,120}$/.test(rawCauseCode) ? rawCauseCode : "WAREHOUSE_STATE_UNCONFIRMED",
     },
@@ -246,7 +322,7 @@ export class SkuReplacementService {
         return { itemId: text(item.itemId), originalSku: text(item.stockSku), chineseName, quantity: number(item.quantity),
           currentWarehouse, available, shortage,
           candidates: shortage > 0 ? routedReplacementCandidates({ items: activeItems, item, chineseName,
-            allowedWarehouses, inventory }) : [],
+            allowedWarehouses, inventory }).map(publicReplacementCandidate) : [],
           requiresBundleReview: /(A包|B包|配件包|套装|组合)/i.test(chineseName) };
       });
       return { order: { internalOrderId: text(order.internalOrderId), platformOrderId: text(order.platformOrderId || orderReference),
@@ -339,7 +415,8 @@ export class SkuReplacementService {
       item: { itemId: wantedItemId, originalSku: text(item.stockSku), chineseName, quantity: number(item.quantity), currentWarehouse, available },
       replacement, replacementStockId: text(resolved.result?.stockId), warehouseMode: selectedRoute.mode,
       targetWarehouse: selectedRoute.warehouse, warehouseAlternatives: candidate.warehouseAlternatives,
-      prospectiveItems: candidate.prospectiveItems };
+      prospectiveItems: candidate.prospectiveItems,
+      preWriteEvidence: preWriteEvidence({ activeItems, allowedWarehouses, inventory, candidate, selectedRoute }) };
     if (!record.replacementStockId) throw coded("SKU_REPLACEMENT_STOCK_ID_MISSING", "马帮未返回替换 SKU 的库存标识");
     record.planHash = hash(record);
     record.approvalText = `确认更换SKU并整单定仓 ${record.order.platformOrderId} ${record.item.originalSku} -> ${record.replacement.sku} -> ${record.targetWarehouse}`;
@@ -373,13 +450,33 @@ export class SkuReplacementService {
     const phaseState = { phase: "PRE_SKU_WRITE", warehousePreviewAttempted: false, warehouseWriteAttempted: false,
       warehouseWriteConfirmed: false, observedSku: "", finalWarehouses: [] };
     try {
-      const inventoryResponse = await this.runWorker({ action: "inventory", compact: false, warehouseNames: [warehouseScope(record.targetWarehouse)],
+      const inspected = await this.runWorker({ action: "order-warehouse-inspect", username: account.username, password: account.password,
+        orderReference: record.order.platformOrderId });
+      const currentOrder = inspected.order;
+      const activeItems = (currentOrder?.items || []).filter((item) => !ignored(item));
+      const currentAllowedWarehouses = uniqueWarehouses(this.allowedWarehouses(currentOrder?.shopId));
+      const freshInventoryWarehouses = uniqueWarehouses([
+        ...(record.preWriteEvidence?.inventoryWarehouses || []),
+        ...activeItems.map((item) => item.stockWarehouseName),
+        ...currentAllowedWarehouses,
+        record.targetWarehouse,
+      ]);
+      const inventoryResponse = await this.runWorker({ action: "inventory", compact: false, warehouseNames: freshInventoryWarehouses,
         username: account.username, password: account.password });
       const inventory = aggregateReplacementInventory(inventoryResponse.records || []);
-      const fresh = findSkuReplacementCandidates({ originalSku: record.item.originalSku, originalName: record.item.chineseName,
-        warehouse: record.targetWarehouse, quantity: record.item.quantity, inventory, limit: 50 })
+      const currentItem = activeItems.find((item) => text(item.itemId) === record.item.itemId);
+      const freshCandidate = currentItem && routedReplacementCandidates({ items: activeItems, item: currentItem,
+        chineseName: record.item.chineseName, allowedWarehouses: currentAllowedWarehouses, inventory, limit: 50 })
         .find((candidate) => candidate.sku === record.replacement.sku);
-      if (!fresh) throw coded("SKU_REPLACEMENT_INVENTORY_CHANGED", "替换 SKU 库存或商品规则已变化，请重新读取");
+      const freshSelectedRoute = freshCandidate?.warehouseAlternatives.find((route) => route.mode === record.warehouseMode
+        && warehouseKey(route.warehouse) === warehouseKey(record.targetWarehouse));
+      const currentEvidence = freshCandidate && freshSelectedRoute ? preWriteEvidence({ activeItems,
+        allowedWarehouses: currentAllowedWarehouses, inventory, candidate: freshCandidate, selectedRoute: freshSelectedRoute }) : null;
+      if (!currentOrder?.shopId || text(currentOrder.shopId) !== record.order.shopId || !this.hasShopAccess(currentOrder.shopId)
+          || currentOrder.trackNumber || !currentItem || !currentEvidence
+          || stable(currentEvidence) !== stable(record.preWriteEvidence)) {
+        throw coded("SKU_REPLACEMENT_PRECONDITION_CHANGED", "订单商品、店铺仓库规则或库存已变化，请重新读取并生成计划");
+      }
       const response = await this.runWorker({ action: "order-sku-change", commit: "ORDER_SKU_CHANGE_CONFIRMED",
         username: account.username, password: account.password, orderReference: record.order.platformOrderId,
         itemId: record.item.itemId, originalSku: record.item.originalSku, replacementSku: record.replacement.sku,
@@ -400,8 +497,11 @@ export class SkuReplacementService {
           phaseState.phase = "WAREHOUSE_PREVIEW";
           if (!this.warehouseTransferService) throw coded("WAREHOUSE_SERVICE_UNAVAILABLE", "换仓服务不可用");
           phaseState.warehousePreviewAttempted = true;
-          const warehousePlan = await this.warehouseTransferService.preview({ orderReference: record.order.platformOrderId,
-            targetWarehouse: record.targetWarehouse });
+          const warehousePlan = record.warehouseMode === "KEEP_CURRENT"
+            ? await this.warehouseTransferService.previewKeepCurrentReconciliation({ orderReference: record.order.platformOrderId,
+              targetWarehouse: record.targetWarehouse, expectedItems: record.prospectiveItems })
+            : await this.warehouseTransferService.preview({ orderReference: record.order.platformOrderId,
+              targetWarehouse: record.targetWarehouse });
           phaseState.phase = "WAREHOUSE_EXECUTE";
           phaseState.warehouseWriteAttempted = true;
           await this.warehouseTransferService.execute({ planHash: warehousePlan.planHash, approvalText: warehousePlan.approvalText });

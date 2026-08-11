@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { WarehouseTransferService } from "../fulfillment-service/warehouse-transfer.mjs";
 
-function fixtureService() {
+function fixtureService({ allowedWarehouses = ["目标仓"] } = {}) {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "warehouse-transfer-"));
   const calls = [];
   const runWorker = async (payload) => {
@@ -25,7 +25,7 @@ function fixtureService() {
     throw new Error(`unexpected action ${payload.action}`);
   };
   return { rootDir, calls, service: new WarehouseTransferService({ rootDir, runWorker, credentials: () => ({ ok: true, username: "u", password: "p" }),
-    hasShopAccess: (shopId) => shopId === "88", allowedWarehouses: () => ["目标仓"] }) };
+    hasShopAccess: (shopId) => shopId === "88", allowedWarehouses: () => allowedWarehouses }) };
 }
 
 test("换仓预览仅选择整单 SKU 库存均充足的允许仓", async () => {
@@ -36,6 +36,14 @@ test("换仓预览仅选择整单 SKU 库存均充足的允许仓", async () => 
     assert.equal(plan.items.length, 2);
     assert.equal(plan.stock.every((item) => item.available >= item.quantity), true);
     assert.match(plan.approvalText, /确认换仓 ORDER_10001 -> 目标仓/);
+  } finally { fs.rmSync(rootDir, { recursive: true, force: true }); }
+});
+
+test("公开换仓预览不会使用 KEEP_CURRENT 的内部空白名单授权", async () => {
+  const { service, rootDir } = fixtureService({ allowedWarehouses: [] });
+  try {
+    await assert.rejects(service.preview({ orderReference: "ORDER_10001", targetWarehouse: "旧仓" }),
+      (error) => error.code === "WAREHOUSE_POLICY_EMPTY");
   } finally { fs.rmSync(rootDir, { recursive: true, force: true }); }
 });
 
