@@ -1,18 +1,21 @@
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 
 from scripts.mabang_order_source import (
-    MabangClient, authoritative_fulfillment_order_id, bind_authoritative_platform_order_ids, extract_fulfillment_stock_flags,
+    MabangClient, SkuReplacementOperationError, authoritative_fulfillment_order_id,
+    bind_authoritative_platform_order_ids, extract_fulfillment_stock_flags,
     fulfillment_poll_delay, is_message_only_abnormal,
-    normalize_sku_change_response, response_looks_unauthenticated,
+    build_sku_change_diagnostic, normalize_sku_change_response, response_looks_unauthenticated,
 )
 
 
 class FakeResponse:
-    def __init__(self, url='', text='', status_code=200):
+    def __init__(self, url='', text='', status_code=200, headers=None):
         self.url = url
         self.text = text
         self.status_code = status_code
+        self.headers = headers or {}
 
 
 def sku_form(stock_sku):
@@ -493,6 +496,52 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
                 FakeResponse(status_code=200), {'success': value, 'message': '修改成功'}
             )['confirmed'])
 
+    def test_sku_diagnostic_keeps_request_contract_and_json_field_names_only(self):
+        response = FakeResponse(
+            status_code=409,
+            text='{"success":false}',
+            headers={'Content-Type': 'application/json; charset=utf-8', 'Set-Cookie': 'secret'},
+        )
+        diagnostic = build_sku_change_diagnostic(response, {
+            'success': False,
+            'code': 'FIELD_INVALID',
+            'message': 'type 字段无效',
+            'token': 'must-not-appear',
+            'html': '<input name="password" value="secret">',
+        }, {'orderItemId': '477372993', 'stockId': '2679193', 'type': '2'})
+
+        self.assertEqual(diagnostic['request'], {
+            'fieldNames': ['orderItemId', 'stockId', 'type'],
+            'orderItemId': '477372993',
+            'stockId': '2679193',
+            'type': '2',
+        })
+        self.assertEqual(diagnostic['response']['httpStatus'], 409)
+        self.assertEqual(diagnostic['response']['contentType'], 'application/json; charset=utf-8')
+        self.assertEqual(diagnostic['response']['fieldNames'], ['code', 'html', 'message', 'success', 'token'])
+        self.assertEqual(diagnostic['response']['code'], 'FIELD_INVALID')
+        self.assertEqual(diagnostic['response']['message'], 'type 字段无效')
+        self.assertNotIn('secret', json.dumps(diagnostic, ensure_ascii=False))
+
+    def test_html_body_is_never_preserved(self):
+        response = FakeResponse(
+            status_code=409,
+            text='<html><input name="password" value="secret"></html>',
+            headers={'Content-Type': 'text/html'},
+        )
+        diagnostic = build_sku_change_diagnostic(
+            response,
+            None,
+            {'orderItemId': '1', 'stockId': '2', 'type': '2'},
+            body_kind='non_json',
+            text_preview=response.text,
+        )
+
+        self.assertEqual(diagnostic['response']['bodyKind'], 'non_json')
+        self.assertEqual(diagnostic['response']['bodyLength'], len(response.text))
+        self.assertNotIn('textPreview', diagnostic['response'])
+        self.assertNotIn('secret', json.dumps(diagnostic, ensure_ascii=False))
+
     def test_rejected_response_is_success_only_when_readback_is_target(self):
         client = MabangClient()
         client.read_order_warehouse_form = MagicMock(side_effect=[
@@ -530,11 +579,20 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
         client.session.post = MagicMock(return_value=response)
 
         with self.assertRaisesRegex(
-                Exception, 'SKU_REPLACEMENT_REJECTED.*ORDER_ITEM_LOCKED.*订单商品已锁定'):
+                SkuReplacementOperationError, 'SKU_REPLACEMENT_REJECTED.*ORDER_ITEM_LOCKED.*订单商品已锁定') as raised:
             client.change_order_item_sku(
                 '20213797082782605624288044', '477372993', 'T5AA3413198', 'T3AA1673198', 1,
                 '印尼KSB-A仓-1308/3', 'target-1')
 
+        self.assertEqual(raised.exception.code, 'SKU_REPLACEMENT_REJECTED')
+        self.assertEqual(raised.exception.diagnostic['request']['type'], '2')
+        self.assertEqual(raised.exception.diagnostic['response']['httpStatus'], 409)
+        self.assertEqual(raised.exception.diagnostic['verification'], {
+            'beforeSku': 'T5AA3413198',
+            'targetSku': 'T3AA1673198',
+            'afterSku': 'T5AA3413198',
+            'result': 'original',
+        })
         client.session.post.assert_called_once()
 
     def test_timeout_with_original_readback_requires_manual_review(self):
@@ -547,11 +605,15 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
         })
         client.session.post = MagicMock(side_effect=TimeoutError('timed out'))
 
-        with self.assertRaisesRegex(Exception, 'SKU_REPLACEMENT_VERIFY_FAILED'):
+        with self.assertRaisesRegex(SkuReplacementOperationError, 'SKU_REPLACEMENT_VERIFY_FAILED') as raised:
             client.change_order_item_sku(
                 '20213797082782605624288044', '477372993', 'T5AA3413198', 'T3AA1673198', 1,
                 '印尼KSB-A仓-1308/3', 'target-1')
 
+        self.assertEqual(raised.exception.code, 'SKU_REPLACEMENT_VERIFY_FAILED')
+        self.assertEqual(raised.exception.diagnostic['stage'], 'mabang_request_uncertain')
+        self.assertEqual(raised.exception.diagnostic['response']['bodyKind'], 'no_response')
+        self.assertEqual(raised.exception.diagnostic['verification']['result'], 'original')
         client.session.post.assert_called_once()
 
     def test_readback_failure_requires_manual_review(self):
