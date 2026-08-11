@@ -4,14 +4,26 @@ from unittest.mock import MagicMock, patch
 from scripts.mabang_order_source import (
     MabangClient, authoritative_fulfillment_order_id, bind_authoritative_platform_order_ids, extract_fulfillment_stock_flags,
     fulfillment_poll_delay, is_message_only_abnormal,
-    response_looks_unauthenticated,
+    normalize_sku_change_response, response_looks_unauthenticated,
 )
 
 
 class FakeResponse:
-    def __init__(self, url='', text=''):
+    def __init__(self, url='', text='', status_code=200):
         self.url = url
         self.text = text
+        self.status_code = status_code
+
+
+def sku_form(stock_sku):
+    return {
+        'trackNumber': '',
+        'items': [{
+            'itemId': '477372993', 'stockSku': stock_sku, 'quantity': 1,
+            'stockWarehouseName': '印尼KSB-A仓-1308/3', 'isCombo': False,
+            'title': '5E-60*28学习桌不带脚踏白柳色矮款',
+        }],
+    }
 
 
 class MabangFulfillmentSafetyTests(unittest.TestCase):
@@ -458,6 +470,127 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
     def test_normal_json_response_is_not_treated_as_logged_out(self):
         response = FakeResponse(url='https://example.test/index.php?mod=order.oTc', text='{"success":true}')
         self.assertFalse(response_looks_unauthenticated(response, {'success': True}))
+
+    def test_sku_change_response_keeps_only_bounded_diagnostics(self):
+        response = FakeResponse(status_code=409)
+        result = normalize_sku_change_response(response, {
+            'success': False,
+            'code': 'ORDER_ITEM_LOCKED',
+            'message': '订单商品已锁定',
+            'html': '<input name="password" value="secret">',
+        })
+
+        self.assertEqual(result, {
+            'confirmed': False,
+            'httpStatus': 409,
+            'code': 'ORDER_ITEM_LOCKED',
+            'message': '订单商品已锁定',
+        })
+
+    def test_sku_change_response_accepts_known_success_values(self):
+        for value in (True, 1, '1'):
+            self.assertTrue(normalize_sku_change_response(
+                FakeResponse(status_code=200), {'success': value, 'message': '修改成功'}
+            )['confirmed'])
+
+    def test_rejected_response_is_success_only_when_readback_is_target(self):
+        client = MabangClient()
+        client.read_order_warehouse_form = MagicMock(side_effect=[
+            sku_form('T5AA3413198'), sku_form('T3AA1673198'),
+        ])
+        client.resolve_stock_sku = MagicMock(return_value={
+            'stockId': 'target-1', 'stockSku': 'T3AA1673198',
+        })
+        response = MagicMock(status_code=200, url='https://example.test/change', text='{"success":false}')
+        response.json.return_value = {
+            'success': False, 'code': 'LEGACY_SCHEMA', 'message': '未返回成功标记',
+        }
+        client.session.post = MagicMock(return_value=response)
+
+        changed = client.change_order_item_sku(
+            '20213797082782605624288044', '477372993', 'T5AA3413198', 'T3AA1673198', 1,
+            '印尼KSB-A仓-1308/3', 'target-1')
+
+        self.assertTrue(changed['changed'])
+        self.assertEqual(changed['after']['stockSku'], 'T3AA1673198')
+        client.session.post.assert_called_once()
+
+    def test_rejected_response_with_original_readback_reports_business_rejection(self):
+        client = MabangClient()
+        client.read_order_warehouse_form = MagicMock(side_effect=[
+            sku_form('T5AA3413198'), sku_form('T5AA3413198'),
+        ])
+        client.resolve_stock_sku = MagicMock(return_value={
+            'stockId': 'target-1', 'stockSku': 'T3AA1673198',
+        })
+        response = MagicMock(status_code=409, url='https://example.test/change', text='{"success":false}')
+        response.json.return_value = {
+            'success': False, 'code': 'ORDER_ITEM_LOCKED', 'message': '订单商品已锁定',
+        }
+        client.session.post = MagicMock(return_value=response)
+
+        with self.assertRaisesRegex(
+                Exception, 'SKU_REPLACEMENT_REJECTED.*ORDER_ITEM_LOCKED.*订单商品已锁定'):
+            client.change_order_item_sku(
+                '20213797082782605624288044', '477372993', 'T5AA3413198', 'T3AA1673198', 1,
+                '印尼KSB-A仓-1308/3', 'target-1')
+
+        client.session.post.assert_called_once()
+
+    def test_timeout_with_original_readback_requires_manual_review(self):
+        client = MabangClient()
+        client.read_order_warehouse_form = MagicMock(side_effect=[
+            sku_form('T5AA3413198'), sku_form('T5AA3413198'),
+        ])
+        client.resolve_stock_sku = MagicMock(return_value={
+            'stockId': 'target-1', 'stockSku': 'T3AA1673198',
+        })
+        client.session.post = MagicMock(side_effect=TimeoutError('timed out'))
+
+        with self.assertRaisesRegex(Exception, 'SKU_REPLACEMENT_VERIFY_FAILED'):
+            client.change_order_item_sku(
+                '20213797082782605624288044', '477372993', 'T5AA3413198', 'T3AA1673198', 1,
+                '印尼KSB-A仓-1308/3', 'target-1')
+
+        client.session.post.assert_called_once()
+
+    def test_readback_failure_requires_manual_review(self):
+        client = MabangClient()
+        client.read_order_warehouse_form = MagicMock(side_effect=[
+            sku_form('T5AA3413198'), RuntimeError('read failed'),
+        ])
+        client.resolve_stock_sku = MagicMock(return_value={
+            'stockId': 'target-1', 'stockSku': 'T3AA1673198',
+        })
+        response = MagicMock(status_code=200, url='https://example.test/change', text='{"success":true}')
+        response.json.return_value = {'success': True, 'message': '修改成功'}
+        client.session.post = MagicMock(return_value=response)
+
+        with self.assertRaisesRegex(Exception, 'SKU_REPLACEMENT_VERIFY_FAILED'):
+            client.change_order_item_sku(
+                '20213797082782605624288044', '477372993', 'T5AA3413198', 'T3AA1673198', 1,
+                '印尼KSB-A仓-1308/3', 'target-1')
+
+        client.session.post.assert_called_once()
+
+    def test_third_sku_readback_requires_manual_review(self):
+        client = MabangClient()
+        client.read_order_warehouse_form = MagicMock(side_effect=[
+            sku_form('T5AA3413198'), sku_form('UNEXPECTED-SKU'),
+        ])
+        client.resolve_stock_sku = MagicMock(return_value={
+            'stockId': 'target-1', 'stockSku': 'T3AA1673198',
+        })
+        response = MagicMock(status_code=200, url='https://example.test/change', text='{"success":false}')
+        response.json.return_value = {'success': False, 'message': '修改失败'}
+        client.session.post = MagicMock(return_value=response)
+
+        with self.assertRaisesRegex(Exception, 'SKU_REPLACEMENT_VERIFY_FAILED'):
+            client.change_order_item_sku(
+                '20213797082782605624288044', '477372993', 'T5AA3413198', 'T3AA1673198', 1,
+                '印尼KSB-A仓-1308/3', 'target-1')
+
+        client.session.post.assert_called_once()
 
 
 if __name__ == '__main__':

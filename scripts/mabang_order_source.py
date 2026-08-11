@@ -252,6 +252,22 @@ def safe_json(response):
         raise Exception(f'接口返回不是 JSON，前500字符：{text[:500]}')
 
 
+def normalize_sku_change_response(response, result):
+    result = result if isinstance(result, dict) else {}
+    success = result.get('success')
+    raw_code = result.get('code') or result.get('errorCode') or result.get('status') or ''
+    code = str(raw_code).strip()[:80] if isinstance(raw_code, (str, int, float, bool)) else ''
+    raw_message = result.get('message') or result.get('msg') or result.get('error') or ''
+    message = re.sub(r'[\x00-\x1f\x7f]+', ' ', raw_message if isinstance(raw_message, str) else '').strip()[:300]
+    status = getattr(response, 'status_code', None)
+    return {
+        'confirmed': success is True or success == 1 or success == '1',
+        'httpStatus': int(status) if isinstance(status, int) else None,
+        'code': code,
+        'message': message,
+    }
+
+
 def response_looks_unauthenticated(response, data=None):
     url = str(getattr(response, 'url', '') or '').lower()
     text = str(getattr(response, 'text', '') or '')[:20000].lower()
@@ -909,26 +925,43 @@ class MabangClient:
         target = self.resolve_stock_sku(replacement_sku)
         if expected_stock_id and target['stockId'] != str(expected_stock_id):
             raise Exception('SKU_REPLACEMENT_TARGET_CHANGED: 替换 SKU 的马帮库存标识已变化，请重新预览。')
-        response = self.session.post(
-            ORDER_ITEM_SKU_CHANGE_URL,
-            headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
-            data={'orderItemId': current['itemId'], 'stockId': target['stockId'], 'type': '2'},
-            timeout=REQUEST_TIMEOUT, allow_redirects=True,
-        )
-        result = safe_json(response)
-        if response_looks_unauthenticated(response, result):
-            raise Exception('MABANG_AUTH_EXPIRED_DURING_SKU_CHANGE: 写入结果未知，禁止自动重试。')
-        if not (result.get('success') is True or result.get('success') == 1 or result.get('success') == '1'):
-            raise Exception('SKU_REPLACEMENT_REJECTED: 马帮未确认 SKU 更换成功。')
-        verified = self.read_order_warehouse_form(order_reference)
+        diagnostic = {'confirmed': False, 'httpStatus': None, 'code': '', 'message': ''}
+        request_uncertain = False
+        try:
+            response = self.session.post(
+                ORDER_ITEM_SKU_CHANGE_URL,
+                headers={**HEADERS_AJAX, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+                data={'orderItemId': current['itemId'], 'stockId': target['stockId'], 'type': '2'},
+                timeout=REQUEST_TIMEOUT, allow_redirects=True,
+            )
+            result = safe_json(response)
+            diagnostic = normalize_sku_change_response(response, result)
+            if response_looks_unauthenticated(response, result):
+                request_uncertain = True
+                diagnostic['code'] = 'MABANG_AUTH_EXPIRED_DURING_SKU_CHANGE'
+                diagnostic['message'] = '马帮登录状态在写入期间失效'
+        except Exception as error:
+            request_uncertain = True
+            diagnostic['code'] = type(error).__name__[:80]
+            diagnostic['message'] = '马帮写入请求未正常完成'
+        try:
+            verified = self.read_order_warehouse_form(order_reference)
+        except Exception:
+            raise Exception('SKU_REPLACEMENT_VERIFY_FAILED: 写入后无法回读订单，请在马帮人工核对，禁止重试。')
         after = next((item for item in verified['items'] if item['itemId'] == current['itemId']), None)
         if not after:
             candidates = [item for item in verified['items'] if item['stockSku'].strip().upper() == str(replacement_sku).strip().upper()
                           and item['quantity'] == current['quantity']]
             after = candidates[0] if len(candidates) == 1 else None
-        if not after or after['stockSku'].strip().upper() != str(replacement_sku).strip().upper():
-            raise Exception('SKU_REPLACEMENT_VERIFY_FAILED: 写入后 SKU 回读不一致，请立即人工核对，禁止重试。')
-        return {'changed': True, 'stockId': target['stockId'], 'before': current, 'after': after}
+        after_sku = after['stockSku'].strip().upper() if after else ''
+        if after_sku == str(replacement_sku).strip().upper():
+            return {'changed': True, 'stockId': target['stockId'], 'before': current, 'after': after,
+                    'writeResponse': diagnostic}
+        if request_uncertain or diagnostic['confirmed'] or not after or after_sku != str(original_sku).strip().upper():
+            raise Exception('SKU_REPLACEMENT_VERIFY_FAILED: 写入结果无法确认，请在马帮人工核对，禁止重试。')
+        details = ' / '.join(value for value in (diagnostic['code'], diagnostic['message']) if value)
+        suffix = f' {details[:300]}' if details else ''
+        raise Exception(f'SKU_REPLACEMENT_REJECTED: 马帮拒绝 SKU 更换。{suffix}')
 
     def change_order_warehouse(self, order_reference, target_warehouse, expected_items):
         form = self.read_order_warehouse_form(order_reference)
