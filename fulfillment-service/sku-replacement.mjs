@@ -134,6 +134,37 @@ function uniqueWarehouses(values = []) {
   return result;
 }
 
+function verifiedOrderState(order, record) {
+  const activeItems = (order?.items || []).filter((item) => !ignored(item));
+  const selectedItem = activeItems.find((item) => text(item.itemId) === record.item.itemId);
+  return {
+    selectedSku: text(selectedItem?.stockSku),
+    skuMatches: sku(selectedItem?.stockSku) === sku(record.replacement.sku),
+    finalWarehouses: uniqueWarehouses(activeItems.map((item) => item.stockWarehouseName)),
+  };
+}
+
+function warehouseVerificationError(record, state, error) {
+  const failure = coded("SKU_REPLACEMENT_WAREHOUSE_VERIFY_FAILED", "SKU 已更换，但最终仓库状态无法确认，请在马帮人工核对");
+  const rawCauseCode = text(error?.code);
+  failure.diagnostic = {
+    version: 1,
+    phase: state.phase,
+    skuWriteConfirmed: true,
+    warehousePreviewAttempted: state.warehousePreviewAttempted,
+    warehouseWriteAttempted: state.warehouseWriteAttempted,
+    warehouseWriteConfirmed: state.warehouseWriteConfirmed,
+    targetSku: record.replacement.sku,
+    observedSku: text(state.observedSku),
+    targetWarehouse: record.targetWarehouse,
+    finalWarehouses: uniqueWarehouses(state.finalWarehouses),
+    cause: {
+      code: /^[A-Z0-9_]{1,120}$/.test(rawCauseCode) ? rawCauseCode : "WAREHOUSE_STATE_UNCONFIRMED",
+    },
+  };
+  return failure;
+}
+
 function routedReplacementCandidates({ items, item, chineseName, allowedWarehouses, inventory, limit = 8 }) {
   const warehouses = uniqueWarehouses(inventory.map((row) => row.warehouse));
   const grouped = new Map();
@@ -334,19 +365,64 @@ export class SkuReplacementService {
     const account = this.credentials();
     if (!account?.ok || !this.hasShopAccess(record.order.shopId)) throw coded("SKU_REPLACEMENT_ACCESS_CHANGED", "账号或店铺权限已变化，请重新读取");
     this.plans.delete(record.planHash);
+    const phaseState = { phase: "PRE_SKU_WRITE", warehousePreviewAttempted: false, warehouseWriteAttempted: false,
+      warehouseWriteConfirmed: false, observedSku: "", finalWarehouses: [] };
     try {
-      const inventoryResponse = await this.runWorker({ action: "inventory", compact: false, warehouseNames: [warehouseScope(record.item.currentWarehouse)],
+      const inventoryResponse = await this.runWorker({ action: "inventory", compact: false, warehouseNames: [warehouseScope(record.targetWarehouse)],
         username: account.username, password: account.password });
       const inventory = aggregateReplacementInventory(inventoryResponse.records || []);
       const fresh = findSkuReplacementCandidates({ originalSku: record.item.originalSku, originalName: record.item.chineseName,
-        warehouse: record.item.currentWarehouse, quantity: record.item.quantity, inventory, limit: 50 })
+        warehouse: record.targetWarehouse, quantity: record.item.quantity, inventory, limit: 50 })
         .find((candidate) => candidate.sku === record.replacement.sku);
       if (!fresh) throw coded("SKU_REPLACEMENT_INVENTORY_CHANGED", "替换 SKU 库存或商品规则已变化，请重新读取");
       const response = await this.runWorker({ action: "order-sku-change", commit: "ORDER_SKU_CHANGE_CONFIRMED",
         username: account.username, password: account.password, orderReference: record.order.platformOrderId,
         itemId: record.item.itemId, originalSku: record.item.originalSku, replacementSku: record.replacement.sku,
         expectedQuantity: record.item.quantity, expectedWarehouse: record.item.currentWarehouse, expectedStockId: record.replacementStockId });
-      const completed = { ...record, executedAt: this.now().toISOString(), status: "COMPLETED", result: response.result };
+      let warehouseRouting;
+      try {
+        phaseState.phase = "POST_SKU_INSPECT";
+        const afterSku = await this.runWorker({ action: "order-warehouse-inspect", username: account.username, password: account.password,
+          orderReference: record.order.platformOrderId });
+        const afterSkuState = verifiedOrderState(afterSku.order, record);
+        phaseState.observedSku = afterSkuState.selectedSku;
+        phaseState.finalWarehouses = afterSkuState.finalWarehouses;
+        if (!afterSkuState.skuMatches) throw coded("SKU_REPLACEMENT_POST_WRITE_SKU_MISMATCH", "SKU 写入后读取结果与目标 SKU 不一致");
+        const alreadyAtTarget = afterSkuState.finalWarehouses.length === 1
+          && warehouseKey(afterSkuState.finalWarehouses[0]) === warehouseKey(record.targetWarehouse);
+        if (alreadyAtTarget) {
+          warehouseRouting = { mode: record.warehouseMode, targetWarehouse: record.targetWarehouse,
+            transferSkipped: true, finalWarehouses: afterSkuState.finalWarehouses };
+        } else {
+          phaseState.phase = "WAREHOUSE_PREVIEW";
+          phaseState.warehousePreviewAttempted = true;
+          if (!this.warehouseTransferService) throw coded("WAREHOUSE_SERVICE_UNAVAILABLE", "换仓服务不可用");
+          const warehousePlan = await this.warehouseTransferService.preview({ orderReference: record.order.platformOrderId,
+            targetWarehouse: record.targetWarehouse });
+          phaseState.phase = "WAREHOUSE_EXECUTE";
+          phaseState.warehouseWriteAttempted = true;
+          await this.warehouseTransferService.execute({ planHash: warehousePlan.planHash, approvalText: warehousePlan.approvalText });
+          phaseState.warehouseWriteConfirmed = true;
+          phaseState.phase = "FINAL_VERIFY";
+          const finalInspection = await this.runWorker({ action: "order-warehouse-inspect", username: account.username, password: account.password,
+            orderReference: record.order.platformOrderId });
+          const finalState = verifiedOrderState(finalInspection.order, record);
+          phaseState.observedSku = finalState.selectedSku;
+          phaseState.finalWarehouses = finalState.finalWarehouses;
+          const finalWarehouseMatches = finalState.finalWarehouses.length === 1
+            && warehouseKey(finalState.finalWarehouses[0]) === warehouseKey(record.targetWarehouse);
+          if (!finalState.skuMatches || !finalWarehouseMatches) {
+            throw coded("SKU_REPLACEMENT_FINAL_STATE_MISMATCH", "最终 SKU 或整单仓库与计划不一致");
+          }
+          warehouseRouting = { mode: record.warehouseMode, targetWarehouse: record.targetWarehouse,
+            transferSkipped: false, finalWarehouses: finalState.finalWarehouses };
+        }
+      } catch (error) {
+        throw warehouseVerificationError(record, phaseState, error);
+      }
+      const skuResult = response?.result && typeof response.result === "object" ? response.result : { skuChange: response?.result };
+      const completed = { ...record, executedAt: this.now().toISOString(), status: "COMPLETED",
+        result: { ...skuResult, warehouseRouting } };
       this.write("executions", record.planHash, completed);
       return completed;
     } catch (error) {
