@@ -66,7 +66,9 @@ const emptyAllowlistFixture = {
 };
 
 test("keeps the observed single current warehouse when the prospective order fits", () => {
-  assert.equal(evaluateSkuWarehouseRoutes(keepFixture).selected.mode, "KEEP_CURRENT");
+  const result = evaluateSkuWarehouseRoutes(keepFixture);
+  assert.equal(result.selected.mode, "KEEP_CURRENT");
+  assert.equal(result.alternatives.some((item) => item.mode === "MOVE_WHOLE_ORDER"), false);
 });
 
 test("moves the whole prospective order only to an eligible allowlisted warehouse", () => {

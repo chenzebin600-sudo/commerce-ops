@@ -77,6 +77,9 @@ export function evaluateSkuWarehouseRoutes({ items = [], replacementItemId, repl
   const ledger = inventoryLedger(Array.isArray(inventory) ? inventory : []);
   const currentWarehouse = originalWarehouse(prospectiveItems);
   const keep = currentWarehouse ? routeFor({ mode: "KEEP_CURRENT", warehouse: currentWarehouse, required, ledger }) : null;
+  if (keep) {
+    return { originalWarehouse: currentWarehouse, prospectiveItems, selected: keep, alternatives: [keep] };
+  }
 
   const moveWarehouses = [];
   const seen = new Set();
@@ -96,11 +99,10 @@ export function evaluateSkuWarehouseRoutes({ items = [], replacementItemId, repl
     .filter(Boolean)
     .sort((left, right) => right.remaining - left.remaining || left.warehouse.localeCompare(right.warehouse, "zh-CN"));
 
-  const alternatives = keep ? [keep, ...moves] : moves;
   return {
     originalWarehouse: currentWarehouse,
     prospectiveItems,
-    selected: keep || moves[0] || null,
-    alternatives,
+    selected: moves[0] || null,
+    alternatives: moves,
   };
 }
