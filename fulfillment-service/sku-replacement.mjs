@@ -2,11 +2,12 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createMabangWorkerRunner } from "../lib/mabang-worker-runner.mjs";
-import { evaluateSkuWarehouseRoutes, warehouseKey, warehouseScope } from "./sku-warehouse-routing.mjs";
+import { createSkuWarehouseInventoryLedger, evaluateSkuWarehouseRoutes, warehouseKey, warehouseScope } from "./sku-warehouse-routing.mjs";
 
 const MAX_BATCH_ORDERS = 100;
 const PLAN_TTL_MS = 10 * 60 * 1000;
 const BATCH_RECOVERY_MAX_AGE_MS = 45 * 60 * 1000;
+export const SKU_REPLACEMENT_SCHEMA_VERSION = 2;
 const IGNORED_SKUS = new Set(["直播赠品单", "TKZP001"]);
 const COLOR_TERMS = [
   "香槟金色", "香槟金", "香槟色", "玫瑰金色", "玫瑰金", "黑胡桃色", "胡桃木色", "胡桃色", "黑橡木色", "枫樱木色", "樱木色",
@@ -77,11 +78,17 @@ function compareSpecifications(original, candidate) {
 }
 
 function inventoryRow(raw) {
+  const rawName = text(raw["中文名称"] ?? raw["中文名"] ?? raw.chineseName ?? raw.name);
+  const suspiciousName = /^(正常销售|停止销售|停售|禁售|淘汰|下架|在售|已停售)$/u.test(rawName);
+  const explicitConfidence = text(raw["名称置信度"] ?? raw.nameConfidence).toUpperCase();
+  const nameConfidence = explicitConfidence || (rawName && !suspiciousName ? "VERIFIED" : "MISSING");
   return {
     sku: sku(raw["库存SKU编号"] ?? raw["SKU"] ?? raw.sku), warehouse: text(raw["仓库"] ?? raw.warehouse),
-    name: text(raw["中文名称"] ?? raw["中文名"] ?? raw.chineseName ?? raw.name),
+    name: suspiciousName ? "" : rawName,
+    nameSource: text(raw["名称来源"] ?? raw.nameSource) || (rawName ? "inventory_record" : ""),
+    nameConfidence: suspiciousName ? "MISSING" : nameConfidence,
     category1: text(raw["一级目录"] ?? raw.category1), category2: text(raw["二级目录"] ?? raw.category2),
-    productStatus: text(raw["商品状态"] ?? raw.productStatus),
+    productStatus: text(raw["商品状态"] ?? raw.salesState ?? raw.productStatus),
     available: number(raw["可用库存量"] ?? raw["可用库存"] ?? raw["可用量"] ?? raw.availableQuantity ?? raw.available),
   };
 }
@@ -94,31 +101,79 @@ export function aggregateReplacementInventory(records = []) {
     const key = `${warehouseKey(row.warehouse)}\u0000${row.sku}`;
     const current = aggregated.get(key) || { ...row, available: 0 };
     current.available += row.available;
-    if (!current.name && row.name) current.name = row.name;
+    if ((!current.name || current.nameConfidence !== "VERIFIED") && row.nameConfidence === "VERIFIED") {
+      current.name = row.name;
+      current.nameSource = row.nameSource;
+      current.nameConfidence = row.nameConfidence;
+    }
     aggregated.set(key, current);
   }
   return [...aggregated.values()];
 }
 
-export function findSkuReplacementCandidates({ originalSku, originalName, warehouse, quantity = 1, inventory = [], limit = 8 }) {
+export function createReplacementCandidateIndex(inventory = []) {
+  const index = { warehouseNames: [], seenWarehouses: new Set(), byWarehouseCore: new Map(),
+    featuresBySku: new Map(), rowBySku: new Map() };
+  for (const row of inventory) {
+    addReplacementCandidateIndexRow(index, row);
+  }
+  const { seenWarehouses: _seenWarehouses, ...result } = index;
+  return result;
+}
+
+function addReplacementCandidateIndexRow(index, row) {
+    const warehouse = warehouseKey(row?.warehouse);
+    const inventorySku = sku(row?.sku);
+    if (!warehouse || !inventorySku || !row?.name || row?.nameConfidence !== "VERIFIED") return;
+    const features = extractSkuNameFeatures(row.name);
+    if (!features.core) return;
+    if (!index.seenWarehouses.has(warehouse)) { index.seenWarehouses.add(warehouse); index.warehouseNames.push(row.warehouse); }
+    const key = `${warehouse}\u0000${features.core}`;
+    if (!index.byWarehouseCore.has(key)) index.byWarehouseCore.set(key, []);
+    index.byWarehouseCore.get(key).push({ row, features });
+    if (!index.featuresBySku.has(inventorySku)) index.featuresBySku.set(inventorySku, features);
+    if (!index.rowBySku.has(inventorySku)) index.rowBySku.set(inventorySku, row);
+}
+
+export async function createReplacementCandidateIndexAsync(inventory = [], { yieldEvery = 250 } = {}) {
+  const index = { warehouseNames: [], seenWarehouses: new Set(), byWarehouseCore: new Map(),
+    featuresBySku: new Map(), rowBySku: new Map() };
+  const chunkSize = Math.max(1, Number(yieldEvery) || 250);
+  for (let position = 0; position < inventory.length; position += 1) {
+    addReplacementCandidateIndexRow(index, inventory[position]);
+    if ((position + 1) % chunkSize === 0) await new Promise((resolve) => setImmediate(resolve));
+  }
+  const { seenWarehouses: _seenWarehouses, ...result } = index;
+  return result;
+}
+
+export function findSkuReplacementCandidates({ originalSku, originalName, originalNameConfidence = "VERIFIED", warehouse, quantity = 1,
+  inventory = [], candidateIndex = null, limit = 8 }) {
+  if (text(originalNameConfidence).toUpperCase() !== "VERIFIED"
+      || /^(正常销售|停止销售|停售|禁售|淘汰|下架|在售|已停售)$/u.test(text(originalName))) return [];
   const original = extractSkuNameFeatures(originalName);
   if (!original.core) return [];
-  const originalRow = inventory.find((row) => row.sku === sku(originalSku) && row.name);
-  return inventory.filter((row) => row.sku !== sku(originalSku) && warehouseKey(row.warehouse) === warehouseKey(warehouse)
-      && row.available >= number(quantity) && row.name && !/(停售|禁售|淘汰|下架)/.test(row.productStatus)
+  const wantedSku = sku(originalSku);
+  const originalRow = candidateIndex?.rowBySku.get(wantedSku)
+    || inventory.find((row) => row.sku === wantedSku && row.name);
+  const indexedEntries = candidateIndex?.byWarehouseCore.get(`${warehouseKey(warehouse)}\u0000${original.core}`);
+  const entries = indexedEntries || inventory.map((row) => ({ row, features: null }));
+  return entries.filter(({ row }) => row.sku !== wantedSku && warehouseKey(row.warehouse) === warehouseKey(warehouse)
+      && row.available >= number(quantity) && row.name && row.nameConfidence === "VERIFIED" && !/(停售|禁售|淘汰|下架)/.test(row.productStatus)
       && (!originalRow?.category1 || !row.category1 || originalRow.category1 === row.category1))
-    .map((row) => {
-      const candidate = extractSkuNameFeatures(row.name);
+    .map(({ row, features }) => {
+      const candidate = features || extractSkuNameFeatures(row.name);
       if (!candidate.core || candidate.core !== original.core) return null;
       const specRelation = compareSpecifications(original.specifications, candidate.specifications);
-      if (!new Set(["equal", "smaller", "unspecified"]).has(specRelation)) return null;
       const colorChanged = JSON.stringify(original.colors) !== JSON.stringify(candidate.colors);
+      if (!new Set(["equal", "smaller"]).has(specRelation) && !(specRelation === "unspecified" && colorChanged)) return null;
       const kind = specRelation === "smaller" ? (colorChanged ? "SMALLER_COLOR" : "SMALLER") : (colorChanged ? "COLOR" : "SAME");
       return { sku: row.sku, chineseName: row.name, warehouse: row.warehouse, available: row.available,
         productStatus: row.productStatus, category1: row.category1, category2: row.category2, kind,
         label: { SAME: "同款同规格", COLOR: "同款换色", SMALLER: "同款小规格", SMALLER_COLOR: "同款小规格换色" }[kind],
         riskLevel: kind === "SAME" ? "LOW" : kind === "COLOR" ? "MEDIUM" : "HIGH",
-        colorChanged, specRelation, originalColors: original.colors, candidateColors: candidate.colors };
+        colorChanged, specRelation, originalColors: original.colors, candidateColors: candidate.colors,
+        nameSource: row.nameSource, nameConfidence: row.nameConfidence };
     }).filter(Boolean).sort((left, right) => {
       const priority = { SAME: 0, COLOR: 1, SMALLER: 2, SMALLER_COLOR: 3 };
       return priority[left.kind] - priority[right.kind] || right.available - left.available || left.sku.localeCompare(right.sku);
@@ -148,7 +203,13 @@ function canonicalActiveItems(items = []) {
     stockSku: sku(item.stockSku ?? item.sku),
     quantity: number(item.quantity),
     currentWarehouse: warehouseScope(item.stockWarehouseName ?? item.currentWarehouse ?? item.warehouse),
-    warehouseOptions: canonicalWarehouses((item.warehouseOptions || []).map(optionWarehouse)),
+    warehouseOptions: (item.warehouseOptions || []).map((option) => ({
+      value: text(option && typeof option === "object" ? option.value ?? option.id : ""),
+      text: text(option && typeof option === "object" ? option.text ?? option.name ?? option.warehouse : option),
+      warehouseKey: warehouseKey(optionWarehouse(option)),
+    })).filter((option) => option.warehouseKey)
+      .sort((left, right) => left.warehouseKey.localeCompare(right.warehouseKey)
+        || left.value.localeCompare(right.value) || left.text.localeCompare(right.text)),
   })).sort((left, right) => left.itemId.localeCompare(right.itemId)
     || left.stockSku.localeCompare(right.stockSku)
     || left.quantity - right.quantity);
@@ -160,6 +221,10 @@ function canonicalRoute(route) {
     mode: text(route.mode), warehouse: warehouseScope(route.warehouse), remaining: number(route.remaining),
     stock: (route.stock || []).map((item) => ({ sku: sku(item.sku), quantity: number(item.quantity), available: number(item.available) }))
       .sort((left, right) => left.sku.localeCompare(right.sku)),
+    itemBindings: (route.itemBindings || []).map((binding) => ({ itemId: text(binding.itemId),
+      optionValue: text(binding.optionValue), optionText: text(binding.optionText),
+      optionWarehouseKey: text(binding.optionWarehouseKey) }))
+      .sort((left, right) => left.itemId.localeCompare(right.itemId)),
   };
 }
 
@@ -168,6 +233,7 @@ function replacementEvidence(candidate) {
     sku: sku(candidate?.sku), chineseName: text(candidate?.chineseName), productStatus: text(candidate?.productStatus),
     category1: text(candidate?.category1), category2: text(candidate?.category2), kind: text(candidate?.kind),
     riskLevel: text(candidate?.riskLevel), colorChanged: Boolean(candidate?.colorChanged), specRelation: text(candidate?.specRelation),
+    nameSource: text(candidate?.nameSource), nameConfidence: text(candidate?.nameConfidence),
     originalColors: [...(candidate?.originalColors || [])].map(text), candidateColors: [...(candidate?.candidateColors || [])].map(text),
   };
 }
@@ -246,18 +312,21 @@ function warehouseVerificationError(record, state, error) {
   return failure;
 }
 
-function routedReplacementCandidates({ items, item, chineseName, allowedWarehouses, inventory, limit = 8 }) {
-  const warehouses = uniqueWarehouses(inventory.map((row) => row.warehouse));
+function routedReplacementCandidates({ items, item, chineseName, nameConfidence = "VERIFIED", allowedWarehouses, inventory, candidateIndex = null,
+  routeInventoryLedger = null, limit = 8 }) {
+  const index = candidateIndex || createReplacementCandidateIndex(inventory);
+  const inventoryLedger = routeInventoryLedger || createSkuWarehouseInventoryLedger(inventory);
   const grouped = new Map();
-  for (const warehouse of warehouses) {
+  for (const warehouse of index.warehouseNames) {
     for (const candidate of findSkuReplacementCandidates({ originalSku: item.stockSku, originalName: chineseName,
-      warehouse, quantity: item.quantity, inventory, limit: 50 })) {
+      originalNameConfidence: nameConfidence,
+      warehouse, quantity: item.quantity, inventory, candidateIndex: index, limit: 50 })) {
       if (!grouped.has(candidate.sku)) grouped.set(candidate.sku, candidate);
     }
   }
   const candidates = [...grouped.values()].map((candidate) => {
     const routes = evaluateSkuWarehouseRoutes({ items, replacementItemId: item.itemId, replacementSku: candidate.sku,
-      allowedWarehouses, inventory });
+      allowedWarehouses, inventory, inventoryLedger });
     if (!routes.selected) return null;
     const selectedInventory = inventory.find((row) => row.sku === candidate.sku
       && warehouseKey(row.warehouse) === warehouseKey(routes.selected.warehouse));
@@ -307,6 +376,8 @@ export class SkuReplacementService {
     const inventoryResponse = warehouses.length ? await this.runWorker({ action: "inventory", compact: false, warehouseNames: warehouses,
       username: account.username, password: account.password }) : { records: [] };
     const inventory = aggregateReplacementInventory(inventoryResponse.records || []);
+    const candidateIndex = await createReplacementCandidateIndexAsync(inventory);
+    const routeInventoryLedger = createSkuWarehouseInventoryLedger(inventory);
     const plans = inspected.map(({ orderReference, order }) => {
       const activeItems = (order.items || []).filter((item) => !ignored(item));
       const allowedWarehouses = orderWarehouses.get(orderReference) || [];
@@ -317,12 +388,14 @@ export class SkuReplacementService {
         const productInventory = (currentInventory?.name ? currentInventory : null)
           || inventory.find((row) => row.sku === sku(item.stockSku) && row.name);
         const chineseName = productInventory?.name || text(item.title);
+        const nameConfidence = productInventory?.nameConfidence || "MISSING";
         const available = currentInventory?.available || 0;
         const shortage = Math.max(0, number(item.quantity) - available);
         return { itemId: text(item.itemId), originalSku: text(item.stockSku), chineseName, quantity: number(item.quantity),
           currentWarehouse, available, shortage,
-          candidates: shortage > 0 ? routedReplacementCandidates({ items: activeItems, item, chineseName,
-            allowedWarehouses, inventory }).map(publicReplacementCandidate) : [],
+          nameSource: productInventory?.nameSource || "", nameConfidence,
+          candidates: shortage > 0 ? routedReplacementCandidates({ items: activeItems, item, chineseName, nameConfidence,
+            allowedWarehouses, inventory, candidateIndex, routeInventoryLedger }).map(publicReplacementCandidate) : [],
           requiresBundleReview: /(A包|B包|配件包|套装|组合)/i.test(chineseName) };
       });
       return { order: { internalOrderId: text(order.internalOrderId), platformOrderId: text(order.platformOrderId || orderReference),
@@ -332,7 +405,7 @@ export class SkuReplacementService {
       unresolvedItemCount: items.filter((item) => item.shortage > 0 && !item.candidates.length).length };
     });
     const generatedAt = this.now().toISOString();
-    const result = { version: 1, generatedAt, requestedCount: references.length, plans, failures,
+    const result = { version: SKU_REPLACEMENT_SCHEMA_VERSION, generatedAt, requestedCount: references.length, plans, failures,
       executionAvailable: true,
       executionBlockReason: "每个商品行需单独选择候选并输入不可撤销确认文字；仅修改马帮履约 SKU，虾皮买家订单商品不变。",
       summary: { inspected: inspected.length, failed: failures.length, ordersWithCandidates: plans.filter((plan) => plan.candidateCount > 0).length,
@@ -361,6 +434,9 @@ export class SkuReplacementService {
       return recordReferences === wanted && age >= 0 && age <= BATCH_RECOVERY_MAX_AGE_MS;
     }).sort((left, right) => Date.parse(right.generatedAt) - Date.parse(left.generatedAt))[0];
     if (!source) throw coded("SKU_REPLACEMENT_BATCH_RECOVERY_NOT_FOUND", "没有找到这批订单最近完成的 SKU 预览结果");
+    if (source.version !== SKU_REPLACEMENT_SCHEMA_VERSION) {
+      throw coded("PREVIEW_SCHEMA_OBSOLETE", "最近的 SKU 预览由旧版安全规则生成，必须重新获取");
+    }
     return { ...source, recoveredAt: this.now().toISOString() };
   }
 
@@ -388,15 +464,19 @@ export class SkuReplacementService {
       warehouseNames: uniqueWarehouses([...(order.items || []).filter((candidate) => !ignored(candidate)).map((candidate) => candidate.stockWarehouseName), ...allowedWarehouses]),
       username: account.username, password: account.password });
     const inventory = aggregateReplacementInventory(inventoryResponse.records || []);
+    const candidateIndex = await createReplacementCandidateIndexAsync(inventory);
+    const routeInventoryLedger = createSkuWarehouseInventoryLedger(inventory);
     const currentInventory = inventory.find((row) => row.sku === sku(item.stockSku)
       && warehouseKey(row.warehouse) === warehouseKey(currentWarehouse));
     const productInventory = (currentInventory?.name ? currentInventory : null)
       || inventory.find((row) => row.sku === sku(item.stockSku) && row.name);
     const chineseName = productInventory?.name || text(item.title);
+    const nameConfidence = productInventory?.nameConfidence || "MISSING";
     const available = currentInventory?.available || 0;
     if (number(item.quantity) <= available) throw coded("SKU_REPLACEMENT_NOT_SHORT", "原 SKU 当前库存已足够，无需更换");
     const activeItems = (order.items || []).filter((candidate) => !ignored(candidate));
-    const candidate = routedReplacementCandidates({ items: activeItems, item, chineseName, allowedWarehouses, inventory, limit: 50 })
+    const candidate = routedReplacementCandidates({ items: activeItems, item, chineseName, nameConfidence, allowedWarehouses, inventory,
+      candidateIndex, routeInventoryLedger, limit: 50 })
       .find((entry) => entry.sku === wantedSku);
     if (!candidate) throw coded("SKU_REPLACEMENT_CANDIDATE_CHANGED", "所选 SKU 已不满足同款、库存及整单定仓规则，请重新读取");
     const selectedRoute = wantedWarehouse
@@ -409,10 +489,11 @@ export class SkuReplacementService {
       warehouseMode: selectedRoute.mode, targetWarehouse: selectedRoute.warehouse };
     const resolved = await this.runWorker({ action: "order-sku-resolve", username: account.username, password: account.password, replacementSku: wantedSku });
     const createdAt = this.now();
-    const record = { version: 1, createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + PLAN_TTL_MS).toISOString(),
+    const record = { version: SKU_REPLACEMENT_SCHEMA_VERSION, createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + PLAN_TTL_MS).toISOString(),
       order: { internalOrderId: text(order.internalOrderId), platformOrderId: text(order.platformOrderId || reference), shopId: text(order.shopId),
         platformId: text(order.platformId), orderStatus: text(order.orderStatus) },
-      item: { itemId: wantedItemId, originalSku: text(item.stockSku), chineseName, quantity: number(item.quantity), currentWarehouse, available },
+      item: { itemId: wantedItemId, originalSku: text(item.stockSku), chineseName,
+        nameSource: productInventory?.nameSource || "", nameConfidence, quantity: number(item.quantity), currentWarehouse, available },
       replacement, replacementStockId: text(resolved.result?.stockId), warehouseMode: selectedRoute.mode,
       targetWarehouse: selectedRoute.warehouse, warehouseAlternatives: candidate.warehouseAlternatives,
       prospectiveItems: candidate.prospectiveItems,
@@ -429,6 +510,9 @@ export class SkuReplacementService {
     if (!record?.planHash || !record?.order?.platformOrderId || !record?.item?.itemId || !record?.replacement?.sku) {
       throw coded("SKU_REPLACEMENT_PLAN_INVALID", "更换计划记录无效");
     }
+    if (record.version !== SKU_REPLACEMENT_SCHEMA_VERSION) {
+      throw coded("PREVIEW_SCHEMA_OBSOLETE", "更换计划由旧版安全规则生成，禁止执行，请重新读取");
+    }
     if (this.now().getTime() >= Date.parse(record.expiresAt)) throw coded("SKU_REPLACEMENT_PLAN_EXPIRED", "更换计划已过期，请重新读取");
     const expectedHash = hash(Object.fromEntries(Object.entries(record).filter(([key]) => !["planHash", "approvalText"].includes(key))));
     if (record.planHash !== expectedHash) throw coded("SKU_REPLACEMENT_PLAN_HASH_INVALID", "更换计划校验失败");
@@ -441,6 +525,10 @@ export class SkuReplacementService {
   async execute({ planHash, approvalText } = {}) {
     const record = this.plans.get(text(planHash));
     if (!record) throw coded("SKU_REPLACEMENT_PLAN_NOT_FOUND", "更换计划不存在或已经执行，请重新读取");
+    if (record.version !== SKU_REPLACEMENT_SCHEMA_VERSION) {
+      this.plans.delete(record.planHash);
+      throw coded("PREVIEW_SCHEMA_OBSOLETE", "更换计划由旧版安全规则生成，禁止执行，请重新读取");
+    }
     if (this.now().getTime() >= Date.parse(record.expiresAt)) { this.plans.delete(record.planHash); throw coded("SKU_REPLACEMENT_PLAN_EXPIRED", "更换计划已过期，请重新读取"); }
     if (text(approvalText) !== record.approvalText) throw coded("SKU_REPLACEMENT_APPROVAL_INVALID", `请输入完整确认文字：${record.approvalText}`);
     if (record.planHash !== hash(Object.fromEntries(Object.entries(record).filter(([key]) => !["planHash", "approvalText"].includes(key))))) throw coded("SKU_REPLACEMENT_PLAN_HASH_INVALID", "更换计划校验失败");
@@ -464,9 +552,13 @@ export class SkuReplacementService {
       const inventoryResponse = await this.runWorker({ action: "inventory", compact: false, warehouseNames: freshInventoryWarehouses,
         username: account.username, password: account.password });
       const inventory = aggregateReplacementInventory(inventoryResponse.records || []);
+      const candidateIndex = await createReplacementCandidateIndexAsync(inventory);
+      const routeInventoryLedger = createSkuWarehouseInventoryLedger(inventory);
       const currentItem = activeItems.find((item) => text(item.itemId) === record.item.itemId);
       const freshCandidate = currentItem && routedReplacementCandidates({ items: activeItems, item: currentItem,
-        chineseName: record.item.chineseName, allowedWarehouses: currentAllowedWarehouses, inventory, limit: 50 })
+        chineseName: record.item.chineseName, nameConfidence: record.item.nameConfidence,
+        allowedWarehouses: currentAllowedWarehouses, inventory,
+        candidateIndex, routeInventoryLedger, limit: 50 })
         .find((candidate) => candidate.sku === record.replacement.sku);
       const freshSelectedRoute = freshCandidate?.warehouseAlternatives.find((route) => route.mode === record.warehouseMode
         && warehouseKey(route.warehouse) === warehouseKey(record.targetWarehouse));

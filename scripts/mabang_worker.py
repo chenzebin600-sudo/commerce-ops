@@ -277,7 +277,9 @@ def collect_inventory(payload):
     catalog = client.get_warehouse_catalog()
     requested_warehouse_names = [str(value or '').strip() for value in (payload.get('warehouseNames') or []) if str(value or '').strip()]
     warehouse_ids = inventory_source.resolve_inventory_warehouse_scope(catalog, requested_warehouse_names)
-    use_html_source = bool(payload.get('compact') and requested_warehouse_names)
+    use_html_source = inventory_source.should_use_html_inventory_source(
+        payload.get('compact'), requested_warehouse_names
+    )
     html_page_size = 200
     client.initialize_default_search(warehouse_ids=warehouse_ids, rows_per_page=html_page_size if use_html_source else inventory_source.SEARCH_ROWS_PER_PAGE)
     record_count = client.get_record_count()
@@ -590,11 +592,13 @@ def change_order_warehouse(payload):
     reference = str(payload.get('orderReference') or '').strip()
     target = str(payload.get('targetWarehouse') or '').strip()
     expected_items = payload.get('expectedItems') or []
-    if not reference or not target or not isinstance(expected_items, list):
+    item_bindings = payload.get('itemBindings') or []
+    if not reference or not target or not isinstance(expected_items, list) or not isinstance(item_bindings, list):
         raise ValueError('换仓参数不完整。')
     client = order_source.MabangClient()
     client.login(username, password)
-    return {'ok': True, 'kind': 'order-warehouse-change', 'result': json_safe(client.change_order_warehouse(reference, target, expected_items))}
+    return {'ok': True, 'kind': 'order-warehouse-change', 'result': json_safe(
+        client.change_order_warehouse(reference, target, expected_items, item_bindings))}
 
 
 def resolve_order_sku(payload):

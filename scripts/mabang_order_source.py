@@ -1060,9 +1060,10 @@ class MabangClient:
         raise SkuReplacementOperationError(
             'SKU_REPLACEMENT_REJECTED', f'马帮拒绝 SKU 更换。{suffix}', diagnostic)
 
-    def change_order_warehouse(self, order_reference, target_warehouse, expected_items):
+    def change_order_warehouse(self, order_reference, target_warehouse, expected_items, item_bindings=None):
         form = self.read_order_warehouse_form(order_reference)
         expected = {str(item.get('itemId') or ''): item for item in (expected_items or [])}
+        bindings = {str(item.get('itemId') or ''): item for item in (item_bindings or [])}
         form_item_ids = {item['itemId'] for item in form['items']}
         if not expected or not set(expected).issubset(form_item_ids):
             raise Exception('WAREHOUSE_PLAN_STALE: 订单商品行已变化，请重新预览。')
@@ -1085,9 +1086,20 @@ class MabangClient:
             current_warehouse = re.sub(r'/[-\d.]+$', '', item['stockWarehouseName']).strip()
             if expected_warehouse and expected_warehouse != current_warehouse:
                 raise Exception('WAREHOUSE_PLAN_STALE: 商品当前仓库已变化，请重新预览。')
-            option = next((candidate for candidate in item['warehouseOptions'] if candidate['text'] == target_warehouse or candidate['value'] == target_warehouse), None)
+            binding = bindings.get(item['itemId'])
+            if not binding:
+                raise Exception(f'WAREHOUSE_LINE_BINDING_CHANGED: 商品 {item["stockSku"]} 缺少目标仓库选项绑定。')
+            option = next((candidate for candidate in item['warehouseOptions']
+                if str(candidate.get('value') or '') == str(binding.get('optionValue') or '')), None)
             if not option:
-                raise Exception(f'WAREHOUSE_TARGET_UNAVAILABLE: 商品 {item["stockSku"]} 不支持目标仓库。')
+                option = next((candidate for candidate in item['warehouseOptions']
+                    if str(candidate.get('text') or '') == str(binding.get('optionText') or '')), None)
+            if not option:
+                raise Exception(f'WAREHOUSE_LINE_BINDING_CHANGED: 商品 {item["stockSku"]} 的目标仓库选项已变化。')
+            option_warehouse = re.sub(r'/[-\d.]+$', '', str(option.get('text') or '')).strip()
+            canonical_target = re.sub(r'/[-\d.]+$', '', str(target_warehouse or '')).strip()
+            if option_warehouse != canonical_target:
+                raise Exception(f'WAREHOUSE_TARGET_UNAVAILABLE: 商品 {item["stockSku"]} 的绑定不属于目标仓库。')
             payload = [(key, value) for key, value in payload if key not in {
                 f'stockWarehouseId[{item["itemId"]}]', f'stockGridId[{item["itemId"]}]', f'stockGrid[{item["itemId"]}]'
             }]
@@ -1104,7 +1116,8 @@ class MabangClient:
         if not (result.get('success') is True or result.get('success') == 1 or result.get('success') == '1'):
             raise Exception('WAREHOUSE_CHANGE_REJECTED: 马帮未确认换仓成功。')
         verified = self.read_order_warehouse_form(order_reference)
-        if any(item['itemId'] in expected and item['stockWarehouseName'] != target_warehouse for item in verified['items']):
+        if any(item['itemId'] in expected and re.sub(r'/[-\d.]+$', '', item['stockWarehouseName']).strip()
+                != re.sub(r'/[-\d.]+$', '', target_warehouse).strip() for item in verified['items']):
             raise Exception('WAREHOUSE_CHANGE_VERIFY_FAILED: 写入后仓库回读不一致。')
         return {'changed': True, 'targetWarehouse': target_warehouse, 'items': selected, 'after': verified}
 

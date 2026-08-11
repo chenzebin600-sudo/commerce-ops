@@ -9,6 +9,7 @@ const BATCH_PLAN_TTL_MS = 60 * 60 * 1000;
 const BATCH_RECOVERY_MAX_AGE_MS = 45 * 60 * 1000;
 const MAX_BATCH_ORDERS = 100;
 const IGNORED_SKUS = new Set(["直播赠品单", "TKZP001"]);
+const WAREHOUSE_TRANSFER_SCHEMA_VERSION = 2;
 
 function text(value) { return String(value ?? "").trim(); }
 function sku(value) { return text(value).toUpperCase().replace(/\s+/g, ""); }
@@ -37,6 +38,13 @@ function reconciliationIdentity(items = []) {
 }
 function inventoryFields(row) {
   return { warehouse: text(row["仓库"] ?? row.warehouse), sku: sku(row["库存SKU编号"] ?? row["SKU"] ?? row.sku), available: number(row["可用库存"] ?? row["可用量"] ?? row["可用库存量"] ?? row.availableQuantity ?? row.available) };
+}
+
+function warehouseOptionBinding(item, warehouse) {
+  const option = (item.warehouseOptions || []).find((candidate) => warehouseKey(candidate?.text ?? candidate?.name ?? candidate?.warehouse) === warehouseKey(warehouse));
+  if (!option) return null;
+  return { itemId: text(item.itemId), optionValue: text(option.value ?? option.id),
+    optionText: text(option.text ?? option.name ?? option.warehouse), optionWarehouseKey: warehouseKey(option.text ?? option.name ?? option.warehouse) };
 }
 
 function inventoryLedger(records = []) {
@@ -98,10 +106,9 @@ export class WarehouseTransferService {
     const policyWarehouses = new Set((this.allowedWarehouses(order.shopId) || []).map(text).filter(Boolean));
     if (!policyWarehouses.size && !reconciliationAuthorized) throw coded("WAREHOUSE_POLICY_EMPTY", "请先在自动发货店铺设置中配置该店铺允许的仓库");
     const eligibleWarehouses = reconciliationAuthorized ? [wanted] : [...policyWarehouses];
-    const optionMaps = activeItems.map((item) => new Map((item.warehouseOptions || []).map((option) => [warehouseKey(option.text), text(option.text)]).filter(([key]) => key)));
-    const candidates = eligibleWarehouses.map((warehouse) => optionMaps[0].get(warehouseKey(warehouse)))
-      .filter((warehouse, index, all) => warehouse && all.indexOf(warehouse) === index
-        && optionMaps.every((options) => options.has(warehouseKey(warehouse)))
+    const candidates = eligibleWarehouses.map(warehouseScopeLabel)
+      .filter((warehouse, index, all) => warehouse && all.findIndex((candidate) => warehouseKey(candidate) === warehouseKey(warehouse)) === index
+        && activeItems.every((item) => warehouseOptionBinding(item, warehouse))
         && !activeItems.every((item) => warehouseKey(item.stockWarehouseName) === warehouseKey(warehouse)));
     if (!candidates.length) throw coded("WAREHOUSE_NO_COMMON_OPTION", "店铺允许仓库中没有所有订单商品行共同支持的目标仓");
     const cacheKey = candidates.map(warehouseKey).sort().join("|");
@@ -124,9 +131,12 @@ export class WarehouseTransferService {
     if (!selected?.ready) throw coded("WAREHOUSE_NO_COMMON_STOCK", "允许仓库中没有一个仓库可同时满足订单内全部 SKU 库存");
     const createdAt = this.now();
     const planTtlMs = Number(context.planTtlMs) || PLAN_TTL_MS;
-    const record = { version: 1, createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + planTtlMs).toISOString(),
+    const itemBindings = activeItems.map((item) => warehouseOptionBinding(item, selected.warehouse));
+    if (itemBindings.some((binding) => !binding)) throw coded("WAREHOUSE_LINE_BINDING_CHANGED", "商品行的目标仓库选项无法绑定，请重新预览");
+    const record = { version: WAREHOUSE_TRANSFER_SCHEMA_VERSION, createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + planTtlMs).toISOString(),
       order: { internalOrderId: order.internalOrderId, platformOrderId: order.platformOrderId, shopId: order.shopId, platformId: order.platformId, orderStatus: order.orderStatus },
       targetWarehouse: selected.warehouse,
+      itemBindings,
       items: activeItems.map((item) => ({ itemId: text(item.itemId), stockSku: text(item.stockSku), title: text(item.title), quantity: number(item.quantity), currentWarehouse: text(item.stockWarehouseName) })),
       stock: selected.stock, alternatives: evaluated.filter((item) => item.ready).map((item) => ({ warehouse: item.warehouse, remaining: item.remaining })),
       ...(reconciliationAuthorized ? { reconciliation: { mode: "KEEP_CURRENT", originalWarehouse: reconciliation.originalWarehouse } } : {}) };
@@ -158,7 +168,7 @@ export class WarehouseTransferService {
       catch (error) { failures.push({ orderReference, code: error.code || "WAREHOUSE_PREVIEW_FAILED", message: text(error.message || "换仓预览失败").slice(0, 300) }); }
     }
     const createdAt = this.now();
-    const record = { version: 1, createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + PLAN_TTL_MS).toISOString(),
+    const record = { version: WAREHOUSE_TRANSFER_SCHEMA_VERSION, createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + PLAN_TTL_MS).toISOString(),
       requestedCount: references.length, plans, failures };
     record.batchHash = hash({ version: record.version, createdAt: record.createdAt, expiresAt: record.expiresAt,
       requestedCount: record.requestedCount, planHashes: plans.map((plan) => plan.planHash), failures });
@@ -190,6 +200,10 @@ export class WarehouseTransferService {
       return recordReferences === wanted && age >= 0 && age <= BATCH_RECOVERY_MAX_AGE_MS;
     }).sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
     if (!source) throw coded("WAREHOUSE_BATCH_RECOVERY_NOT_FOUND", "没有找到这批订单最近完成的预览结果，请重新读取");
+    if (source.version !== WAREHOUSE_TRANSFER_SCHEMA_VERSION
+        || (source.plans || []).some((plan) => plan.version !== WAREHOUSE_TRANSFER_SCHEMA_VERSION || !Array.isArray(plan.itemBindings))) {
+      throw coded("PREVIEW_SCHEMA_OBSOLETE", "最近的换仓预览由旧版安全规则生成，必须重新获取");
+    }
     const createdAt = this.now();
     const recoveredPlans = source.plans.map((plan) => {
       const refreshed = { ...plan, createdAt: createdAt.toISOString(), expiresAt: new Date(createdAt.getTime() + BATCH_PLAN_TTL_MS).toISOString(),
@@ -214,6 +228,11 @@ export class WarehouseTransferService {
   async executeBatch({ batchHash, planHashes = [], approvalText } = {}) {
     const record = this.batches.get(text(batchHash));
     if (!record) throw coded("WAREHOUSE_BATCH_NOT_FOUND", "批量换仓预览不存在或已经执行，请重新预览");
+    if (record.version !== WAREHOUSE_TRANSFER_SCHEMA_VERSION
+        || (record.plans || []).some((plan) => plan.version !== WAREHOUSE_TRANSFER_SCHEMA_VERSION || !Array.isArray(plan.itemBindings))) {
+      this.batches.delete(record.batchHash);
+      throw coded("PREVIEW_SCHEMA_OBSOLETE", "批量换仓预览由旧版安全规则生成，禁止执行，请重新预览");
+    }
     if (this.now().getTime() >= Date.parse(record.expiresAt)) { this.batches.delete(record.batchHash); throw coded("WAREHOUSE_BATCH_EXPIRED", "批量换仓预览已过期，请重新预览"); }
     const requested = new Set((Array.isArray(planHashes) ? planHashes : []).map(text).filter(Boolean));
     const available = new Map(record.plans.map((plan) => [plan.planHash, plan]));
@@ -244,6 +263,10 @@ export class WarehouseTransferService {
   async execute({ planHash, approvalText } = {}, context = {}) {
     const record = this.plans.get(text(planHash));
     if (!record) throw coded("WAREHOUSE_PLAN_NOT_FOUND", "换仓预览不存在或已经执行，请重新预览");
+    if (record.version !== WAREHOUSE_TRANSFER_SCHEMA_VERSION || !Array.isArray(record.itemBindings)) {
+      this.plans.delete(record.planHash);
+      throw coded("PREVIEW_SCHEMA_OBSOLETE", "换仓计划由旧版安全规则生成，禁止执行，请重新预览");
+    }
     if (this.now().getTime() >= Date.parse(record.expiresAt)) { this.plans.delete(record.planHash); throw coded("WAREHOUSE_PLAN_EXPIRED", "换仓预览已过期，请重新预览"); }
     if (text(approvalText) !== record.approvalText) throw coded("WAREHOUSE_APPROVAL_INVALID", `请输入完整确认文字：${record.approvalText}`);
     if (record.planHash !== hash(Object.fromEntries(Object.entries(record).filter(([key]) => !["planHash", "approvalText"].includes(key))))) throw coded("WAREHOUSE_PLAN_HASH_INVALID", "换仓计划校验失败");
@@ -253,6 +276,21 @@ export class WarehouseTransferService {
     const keepCurrentReconciliation = record.reconciliation?.mode === "KEEP_CURRENT"
       && warehouseKey(record.reconciliation.originalWarehouse) === warehouseKey(record.targetWarehouse);
     if (!currentAllowed && !keepCurrentReconciliation) throw coded("WAREHOUSE_POLICY_CHANGED", "店铺允许仓库已变化，请重新预览");
+    const inspected = await this.runWorker({ action: "order-warehouse-inspect", username: account.username, password: account.password,
+      orderReference: record.order.platformOrderId });
+    const activeItems = (inspected.order?.items || []).filter((item) => !ignored(item));
+    const bindingByItem = new Map(record.itemBindings.map((binding) => [text(binding.itemId), binding]));
+    const lineBindingsValid = activeItems.length === record.items.length && activeItems.every((item) => {
+      const plannedItem = record.items.find((candidate) => candidate.itemId === text(item.itemId));
+      const plannedBinding = bindingByItem.get(text(item.itemId));
+      const currentBinding = warehouseOptionBinding(item, record.targetWarehouse);
+      return plannedItem && plannedBinding && currentBinding
+        && sku(plannedItem.stockSku) === sku(item.stockSku) && number(plannedItem.quantity) === number(item.quantity)
+        && warehouseKey(plannedItem.currentWarehouse) === warehouseKey(item.stockWarehouseName)
+        && text(plannedBinding.optionValue) === text(currentBinding.optionValue)
+        && text(plannedBinding.optionText) === text(currentBinding.optionText);
+    });
+    if (!lineBindingsValid) throw coded("WAREHOUSE_LINE_BINDING_CHANGED", "订单商品或目标仓库选项已变化，请重新预览");
     this.plans.delete(record.planHash); // 从重新验库存开始即占用计划，保证并发请求也只能进入一次写入流程。
     const freshLedger = context.inventoryLedger || inventoryLedger((await this.inventoryForWarehouses(account, [record.targetWarehouse], { allowSnapshot: false })).records);
     const freshRequired = new Map();
@@ -268,7 +306,7 @@ export class WarehouseTransferService {
     }
     const result = await this.runWorker({ action: "order-warehouse-change", commit: "WAREHOUSE_CHANGE_CONFIRMED",
       username: account.username, password: account.password, orderReference: record.order.platformOrderId,
-      targetWarehouse: record.targetWarehouse, expectedItems: record.items });
+      targetWarehouse: record.targetWarehouse, expectedItems: record.items, itemBindings: record.itemBindings });
     const completed = { ...record, executedAt: this.now().toISOString(), status: "COMPLETED", result: result.result };
     this.write("executions", record.planHash, completed);
     return completed;

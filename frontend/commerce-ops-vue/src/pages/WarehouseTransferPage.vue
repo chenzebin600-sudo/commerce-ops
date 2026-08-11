@@ -2,10 +2,14 @@
 import { ArrowRight, CheckCircle2, CircleAlert, Clock3, Layers3, ShieldCheck } from "@lucide/vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
-import { createSkuReplacementBatchPlan, executeSkuReplacementBatch, executeWarehouseTransferBatch, getSkuReplacementBatchTask, previewSkuReplacementBatch, previewWarehouseTransferBatch, probeFulfillmentHealth, recoverSkuReplacementBatch, recoverWarehouseTransferBatch,
-  type SkuReplacementBatch, type SkuReplacementBatchTask, type SkuReplacementCandidate, type SkuReplacementPlan, type WarehouseTransferBatch } from "@/services/warehouse-transfer";
+import { createSkuReplacementBatchPlan, executeSkuReplacementBatch, executeWarehouseTransferBatch, getSkuReplacementBatchPreviewTask,
+  getSkuReplacementBatchTask, getWarehouseTransferBatchPreviewTask, probeFulfillmentHealth, recoverSkuReplacementBatch,
+  recoverWarehouseTransferBatch, startSkuReplacementBatchPreview, startWarehouseTransferBatchPreview,
+  type PreviewTask, type SkuReplacementBatch, type SkuReplacementBatchTask, type SkuReplacementCandidate,
+  type SkuReplacementPlan, type WarehouseTransferBatch } from "@/services/warehouse-transfer";
 import { ApiError } from "@/services/api";
 import { createFulfillmentConnectionRecovery } from "@/services/fulfillment-connection-recovery";
+import { recoverSkuPreviewWithRetry } from "@/services/sku-preview-recovery";
 import { buildSkuReplacementSelections, executionStatusesFromTask, filterSkuReplacementPlans, replacementItemKey, replacementItemStatus,
   diagnosticRows, setSkuSelectionWarehouse, summarizeSkuSelections, taskItemFor, toggleSkuSelection,
   type ReplacementFilters, type SkuSelections } from "@/services/sku-replacement-selection";
@@ -48,6 +52,9 @@ const fulfillmentRecovery = createFulfillmentConnectionRecovery({
   },
 });
 const SKU_REPLACEMENT_TASK_KEY = "commerce-ops-sku-replacement-task-id";
+const WAREHOUSE_PREVIEW_TASK_KEY = "commerce-ops-warehouse-preview-task-id";
+const SKU_PREVIEW_TASK_KEY = "commerce-ops-sku-preview-task-id";
+const activeWarehousePreviewTaskId = ref(sessionStorage.getItem(WAREHOUSE_PREVIEW_TASK_KEY) || "");
 const orderReferences = computed(() => [...new Set(orderInput.value.split(/[\s,，;；]+/).map((value) => value.trim()).filter(Boolean))]);
 const inputOverflow = computed(() => Math.max(0, orderReferences.value.length - MAX_BATCH_ORDERS));
 const selectedCount = computed(() => selectedHashes.value.length);
@@ -97,6 +104,10 @@ onMounted(() => {
   clockTimer = window.setInterval(() => { nowMs.value = Date.now(); }, 1000);
   const taskId = sessionStorage.getItem(SKU_REPLACEMENT_TASK_KEY);
   if (taskId) void recoverReplacementTask(taskId, true);
+  const warehousePreviewTaskId = sessionStorage.getItem(WAREHOUSE_PREVIEW_TASK_KEY);
+  if (warehousePreviewTaskId) void recoverWarehousePreviewTask(warehousePreviewTaskId, true);
+  const skuPreviewTaskId = sessionStorage.getItem(SKU_PREVIEW_TASK_KEY);
+  if (skuPreviewTaskId) void recoverSkuPreviewTask(skuPreviewTaskId, true);
 });
 onUnmounted(() => {
   stopElapsedTimer(); stopPreviewTimer();
@@ -143,6 +154,62 @@ function replacementTaskItem(orderReference: string, itemId: string) {
 }
 function replacementStatusLabel(status: string) {
   return ({ UNSELECTED:"未选择",SELECTED:"已选择",NO_CANDIDATE:"无候选",RUNNING:"执行中",COMPLETED:"已完成",FAILED:"失败",MANUAL_REVIEW:"人工核对" } as Record<string,string>)[status] || status;
+}
+
+function previewSleep(milliseconds = 1500) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function waitForPreviewTask<T>(taskId: string, getTask: (id: string) => Promise<PreviewTask<T>>): Promise<T> {
+  let transientFailures = 0;
+  for (;;) {
+    let task: PreviewTask<T>;
+    try { task = await getTask(taskId); transientFailures = 0; }
+    catch (error) {
+      const transient = error instanceof ApiError && [0, 502, 503, 504].includes(error.status);
+      if (!transient || ++transientFailures >= 40) throw error;
+      await previewSleep();
+      continue;
+    }
+    if (task.state === "SUCCEEDED" && task.result) return task.result;
+    if (task.state === "FAILED") throw new ApiError(task.error?.message || "后台预览失败", 409, task.error?.code || "PREVIEW_TASK_FAILED");
+    await previewSleep();
+  }
+}
+
+async function recoverWarehousePreviewTask(taskId: string, silent = false) {
+  loading.value = true;
+  try {
+    const result = await waitForPreviewTask(taskId, getWarehouseTransferBatchPreviewTask);
+    sessionStorage.removeItem(WAREHOUSE_PREVIEW_TASK_KEY);
+    activeWarehousePreviewTaskId.value = "";
+    applyBatch(result);
+    if (!silent) ElMessage.success("已恢复后台换仓预览任务");
+    return true;
+  } catch (error) {
+    if (error instanceof ApiError && ["PREVIEW_TASK_NOT_FOUND", "PREVIEW_TASK_INTERRUPTED"].includes(error.code)) {
+      sessionStorage.removeItem(WAREHOUSE_PREVIEW_TASK_KEY);
+      activeWarehousePreviewTaskId.value = "";
+    }
+    if (!silent) throw error;
+    return false;
+  } finally { loading.value = false; stopPreviewTimer(); }
+}
+
+async function recoverSkuPreviewTask(taskId: string, silent = false) {
+  replacementLoading.value = true;
+  try {
+    replacementBatch.value = await waitForPreviewTask(taskId, getSkuReplacementBatchPreviewTask);
+    sessionStorage.removeItem(SKU_PREVIEW_TASK_KEY);
+    if (!silent) ElMessage.success("已恢复后台 SKU 预览任务");
+    return true;
+  } catch (error) {
+    if (error instanceof ApiError && ["PREVIEW_TASK_NOT_FOUND", "PREVIEW_TASK_INTERRUPTED"].includes(error.code)) {
+      sessionStorage.removeItem(SKU_PREVIEW_TASK_KEY);
+    }
+    if (!silent) throw error;
+    return false;
+  } finally { replacementLoading.value = false; }
 }
 function dismissReplacementTask() {
   if (replacementExecuting.value) return;
@@ -207,10 +274,20 @@ async function loadReplacementSuggestionsForReferences(orderReferences: string[]
   const references = [...new Set(orderReferences.map((reference) => reference.trim()).filter(Boolean))];
   if (!references.length) return;
   replacementLoading.value = true;
-  try { replacementBatch.value = await previewSkuReplacementBatch(references); }
+  try {
+    const task = await startSkuReplacementBatchPreview(references);
+    sessionStorage.setItem(SKU_PREVIEW_TASK_KEY, task.taskId);
+    replacementBatch.value = await waitForPreviewTask(task.taskId, getSkuReplacementBatchPreviewTask);
+    sessionStorage.removeItem(SKU_PREVIEW_TASK_KEY);
+  }
   catch (error) {
     try {
-      replacementBatch.value = await recoverSkuReplacementBatch(references);
+      const shouldWaitForBackground = error instanceof ApiError
+        && ["FULFILLMENT_TIMEOUT", "FULFILLMENT_UNAVAILABLE"].includes(error.code);
+      replacementBatch.value = await recoverSkuPreviewWithRetry(
+        () => recoverSkuReplacementBatch(references),
+        { attempts: shouldWaitForBackground ? 6 : 1, delayMs: 3000 },
+      );
       ElMessage.warning("第二步响应中断，已恢复后台完成的 SKU 预览结果");
     } catch { replacementError.value = String((error as Error)?.message || "替换 SKU 建议生成失败"); }
   } finally { replacementLoading.value = false; }
@@ -233,6 +310,8 @@ async function recoverRecentBatch(silent = false) {
   if (!orderReferences.value.length || inputOverflow.value) return false;
   recovering.value = true;
   try {
+    const activeTaskId = sessionStorage.getItem(WAREHOUSE_PREVIEW_TASK_KEY);
+    if (activeTaskId) return await recoverWarehousePreviewTask(activeTaskId, silent);
     const result = await recoverWarehouseTransferBatch(orderReferences.value);
     applyBatch(result);
     completed.value = null;
@@ -259,7 +338,11 @@ async function previewBatch() {
   dismissReplacementTask(); selectedReplacementSkus.value = {};
   startPreviewTimer();
   try {
-    const result = await previewWarehouseTransferBatch(orderReferences.value);
+    const task = await startWarehouseTransferBatchPreview(orderReferences.value);
+    sessionStorage.setItem(WAREHOUSE_PREVIEW_TASK_KEY, task.taskId);
+    activeWarehousePreviewTaskId.value = task.taskId;
+    const result = await waitForPreviewTask(task.taskId, getWarehouseTransferBatchPreviewTask);
+    sessionStorage.removeItem(WAREHOUSE_PREVIEW_TASK_KEY);
     applyBatch(result);
     if (result.plans.length) ElMessage.success(`已生成 ${result.plans.length} 单换仓计划，尚未修改马帮订单`);
     else {
@@ -331,7 +414,7 @@ async function executeBatch() {
     </section>
 
     <el-alert v-if="previewError" class="preview-error" type="error" :closable="false" show-icon :title="previewError">
-      <template #default><el-button :loading="recovering" size="small" @click="recoverRecentBatch()">恢复最近结果</el-button></template>
+      <template #default><el-button :loading="recovering" size="small" @click="recoverRecentBatch()">{{ activeWarehousePreviewTaskId ? "恢复后台任务" : "恢复最近结果" }}</el-button></template>
     </el-alert>
 
     <section class="search-panel">

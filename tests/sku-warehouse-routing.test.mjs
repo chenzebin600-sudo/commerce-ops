@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { evaluateSkuWarehouseRoutes, warehouseKey, warehouseScope } from "../fulfillment-service/sku-warehouse-routing.mjs";
+import { createSkuWarehouseInventoryLedger, evaluateSkuWarehouseRoutes, warehouseKey, warehouseScope } from "../fulfillment-service/sku-warehouse-routing.mjs";
 
 const keepFixture = {
   replacementItemId: "replace-line",
@@ -25,8 +25,10 @@ const moveFixture = {
   replacementSku: "NEW-SKU",
   allowedWarehouses: ["允许仓A", "允许仓B"],
   items: [
-    { itemId: "replace-line", stockSku: "OLD-SKU", quantity: 2, stockWarehouseName: "当前仓", warehouseOptions: [{ text: "当前仓" }] },
-    { itemId: "other-line", stockSku: "OTHER-SKU", quantity: 3, stockWarehouseName: "当前仓", warehouseOptions: [{ text: "当前仓" }, { text: "允许仓A" }, { text: "允许仓B" }] },
+    { itemId: "replace-line", stockSku: "OLD-SKU", quantity: 2, stockWarehouseName: "当前仓", warehouseOptions: [
+      { value: "replace-a", text: "允许仓A/43" }, { value: "replace-b", text: "允许仓B/43" }] },
+    { itemId: "other-line", stockSku: "OTHER-SKU", quantity: 3, stockWarehouseName: "当前仓", warehouseOptions: [
+      { text: "当前仓" }, { value: "other-a", text: "允许仓A/98" }, { value: "other-b", text: "允许仓B/98" }] },
   ],
   inventory: [
     { warehouse: "当前仓", sku: "NEW-SKU", available: 1 },
@@ -72,8 +74,19 @@ test("keeps the observed single current warehouse when the prospective order fit
 });
 
 test("moves the whole prospective order only to an eligible allowlisted warehouse", () => {
-  assert.equal(evaluateSkuWarehouseRoutes(moveFixture).selected.warehouse, "允许仓B");
-  assert.deepEqual(evaluateSkuWarehouseRoutes(moveFixture).alternatives.map((item) => item.warehouse), ["允许仓B", "允许仓A"]);
+  const result = evaluateSkuWarehouseRoutes(moveFixture);
+  assert.equal(result.selected.warehouse, "允许仓B");
+  assert.deepEqual(result.alternatives.map((item) => item.warehouse), ["允许仓B", "允许仓A"]);
+  assert.deepEqual(result.selected.itemBindings.map((binding) => [binding.itemId, binding.optionValue, binding.optionText]), [
+    ["replace-line", "replace-b", "允许仓B/43"],
+    ["other-line", "other-b", "允许仓B/98"],
+  ]);
+});
+
+test("reuses a prebuilt inventory ledger across candidate route evaluations", () => {
+  const inventoryLedger = createSkuWarehouseInventoryLedger(moveFixture.inventory);
+  const result = evaluateSkuWarehouseRoutes({ ...moveFixture, inventory: [], inventoryLedger });
+  assert.equal(result.selected.warehouse, "允许仓B");
 });
 
 test("does not offer KEEP_CURRENT when active items have multiple observed warehouses", () => {

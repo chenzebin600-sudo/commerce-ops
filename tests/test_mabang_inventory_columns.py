@@ -149,6 +149,46 @@ class MabangInventoryColumnTests(unittest.TestCase):
         self.assertEqual(shape[0]["tokenTypes"], ["identifier"])
         self.assertNotIn("SKU-100", json.dumps(shape, ensure_ascii=False))
 
+    def test_scoped_full_inventory_uses_html_source_and_keeps_chinese_name(self):
+        self.assertTrue(runtime_inventory.should_use_html_inventory_source(
+            compact=False,
+            requested_warehouse_names=["A仓"],
+        ))
+        records = runtime_inventory.parse_inventory_search_records("""
+          <ul><li class="thumb">图</li><li class="pct30 skulabel"><p>SKU-100</p><p>人体工学椅 白色 3层</p></li>
+          <li>父仓</li><li class="warehouseIds" data-id="9">A仓</li><li>A-01</li><li>7 / 28 / 42</li>
+          <li><span>12</span><br><span>9</span><br><span>3.5</span></li><li>0</li><li>0</li><li>2026-08-01</li></ul>
+        """)
+        self.assertEqual(records, [{
+            "库存SKU编号": "SKU-100",
+            "中文名称": "人体工学椅 白色 3层",
+            "名称来源": "inventory_search_sku_cell",
+            "名称置信度": "VERIFIED",
+            "商品状态": "",
+            "仓库": "A仓",
+            "可用库存量": 9,
+        }])
+
+    def test_inventory_sales_state_is_never_used_as_chinese_name(self):
+        records = runtime_inventory.parse_inventory_search_records("""
+          <ul><li class="thumb">图</li><li class="pct30 skulabel"><p>T3AA1353145</p><p>正常销售</p></li>
+          <li>父仓</li><li class="warehouseIds" data-id="9">A仓</li><li>A-01</li><li>7 / 28 / 42</li>
+          <li><span>12</span><br><span>9</span><br><span>3.5</span></li><li>0</li><li>0</li><li>2026-08-01</li></ul>
+        """)
+        self.assertEqual(records[0]["中文名称"], "")
+        self.assertEqual(records[0]["名称置信度"], "MISSING")
+        self.assertEqual(records[0]["商品状态"], "正常销售")
+
+    def test_inventory_name_can_follow_an_explicit_sales_state_token(self):
+        records = runtime_inventory.parse_inventory_search_records("""
+          <ul><li>图</li><li class="skulabel"><p>SKU-100</p><p>正常销售</p><p>人体工学椅 白色 3层</p></li>
+          <li>父仓</li><li data-id="9">A仓</li><li>A-01</li><li>7 / 28 / 42</li>
+          <li><span>12</span><span>9</span></li><li>0</li><li>0</li><li>2026-08-01</li></ul>
+        """)
+        self.assertEqual(records[0]["中文名称"], "人体工学椅 白色 3层")
+        self.assertEqual(records[0]["名称置信度"], "VERIFIED")
+        self.assertEqual(records[0]["商品状态"], "正常销售")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@ export interface WarehouseTransferPlan {
   planHash: string; approvalText: string; createdAt: string; expiresAt: string;
   order: { internalOrderId: string; platformOrderId: string; shopId: string; platformId: string; orderStatus: string };
   targetWarehouse: string; items: WarehouseTransferItem[];
+  itemBindings: Array<{ itemId: string; optionValue: string; optionText: string; optionWarehouseKey: string }>;
   stock: Array<{ sku: string; quantity: number; available: number }>;
   alternatives: Array<{ warehouse: string; remaining: number }>;
   executedAt?: string; status?: string;
@@ -29,6 +30,7 @@ export interface SkuReplacementCandidate {
   category1: string; category2: string; kind: SkuReplacementKind; label: string;
   riskLevel: "LOW" | "MEDIUM" | "HIGH"; colorChanged: boolean; specRelation: string;
   originalColors: string[]; candidateColors: string[];
+  nameSource?: string; nameConfidence?: "VERIFIED" | "MISSING" | "AMBIGUOUS";
   warehouseMode: SkuReplacementWarehouseMode; targetWarehouse: string;
   warehouseAlternatives: SkuReplacementWarehouseAlternative[];
 }
@@ -99,6 +101,11 @@ export function previewWarehouseTransfer(orderReference: string, targetWarehouse
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ orderReference, targetWarehouse }),
   });
 }
+export interface PreviewTask<T> {
+  taskId: string; kind: string; fingerprint: string; state: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
+  createdAt: string; startedAt: string | null; finishedAt: string | null; progress: Record<string, unknown> | null;
+  result: T | null; error: { code: string; message: string } | null;
+}
 
 export function probeFulfillmentHealth() {
   return apiJson<{ success: boolean }>("/api/fulfillment-dashboard/health");
@@ -114,6 +121,16 @@ export function previewWarehouseTransferBatch(orderReferences: string[]) {
   return apiJson<WarehouseTransferBatch>("/api/fulfillment-dashboard/warehouse-transfers/batch-preview", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ orderReferences }),
   });
+}
+
+export function startWarehouseTransferBatchPreview(orderReferences: string[]) {
+  return apiJson<PreviewTask<WarehouseTransferBatch>>("/api/fulfillment-dashboard/warehouse-transfers/batch-preview-tasks", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ orderReferences }),
+  });
+}
+
+export function getWarehouseTransferBatchPreviewTask(taskId: string) {
+  return apiJson<PreviewTask<WarehouseTransferBatch>>(`/api/fulfillment-dashboard/warehouse-transfers/batch-preview-tasks/${encodeURIComponent(taskId)}`);
 }
 
 export function recoverWarehouseTransferBatch(orderReferences: string[]) {
@@ -132,6 +149,16 @@ export function previewSkuReplacementBatch(orderReferences: string[]) {
   return apiJson<SkuReplacementBatch>("/api/fulfillment-dashboard/sku-replacements/batch-preview", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ orderReferences }),
   });
+}
+
+export function startSkuReplacementBatchPreview(orderReferences: string[]) {
+  return apiJson<PreviewTask<SkuReplacementBatch>>("/api/fulfillment-dashboard/sku-replacements/batch-preview-tasks", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ orderReferences }),
+  });
+}
+
+export function getSkuReplacementBatchPreviewTask(taskId: string) {
+  return apiJson<PreviewTask<SkuReplacementBatch>>(`/api/fulfillment-dashboard/sku-replacements/batch-preview-tasks/${encodeURIComponent(taskId)}`);
 }
 
 export function recoverSkuReplacementBatch(orderReferences: string[]) {

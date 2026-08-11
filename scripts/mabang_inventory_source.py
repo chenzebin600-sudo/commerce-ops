@@ -37,6 +37,10 @@ HEADERS_AJAX = {'Accept': 'application/json, text/javascript, */*; q=0.01', 'Use
 HEADERS_PAGE = {'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Referer': INITIAL_URL}
 TARGET_FIELDS = ['库存SKU编号', '商品状态', '活跃度', '是否新款', '一级目录', '二级目录', '三级目录', '一级品牌', '二级品牌', '采购员', '中文名称', '英文名称', '父级仓库', '仓库', '仓位', '销量(7/28/42)', '预测日销量(个)', '仓位库存', '当前可售天数', '在途量', '海外仓预调入量', '分仓调拨预调入量', '警戒量', '警戒天数', '未发货量', '分仓调拨未发货量', '可用库存量', '最后出库时间', '最后入库时间', '商品备注']
 REQUIRED_FIELDS = ['库存SKU编号', '仓库', '可用库存量']
+
+
+def should_use_html_inventory_source(compact, requested_warehouse_names):
+    return bool(requested_warehouse_names)
 NUMERIC_FIELDS = ['预测日销量(个)', '仓位库存', '当前可售天数', '在途量', '海外仓预调入量', '分仓调拨预调入量', '警戒量', '警戒天数', '未发货量', '分仓调拨未发货量', '可用库存量']
 
 class WPSLogger:
@@ -336,8 +340,18 @@ def parse_inventory_search_records(document):
         if not re.fullmatch(r'-?\d+(?:\.\d+)?', available_text):
             raise Exception(f'库存 HTML 第 {row_index} 行可用库存不是数字')
         available_number = float(available_text) if '.' in available_text else int(available_text)
+        sales_states = {'正常销售', '停止销售', '停售', '禁售', '淘汰', '下架', '在售', '已停售'}
+        trailing_tokens = [str(value).strip() for value in sku_tokens[1:] if str(value).strip()]
+        sales_state = next((value for value in trailing_tokens if value in sales_states), '')
+        name_tokens = [value for value in trailing_tokens if value not in sales_states]
+        chinese_name = name_tokens[0] if len(name_tokens) == 1 else ''
+        name_confidence = 'VERIFIED' if chinese_name else ('AMBIGUOUS' if len(name_tokens) > 1 else 'MISSING')
         records.append({
             '库存SKU编号': str(sku_tokens[0]).strip(),
+            '中文名称': chinese_name,
+            '名称来源': 'inventory_search_sku_cell',
+            '名称置信度': name_confidence,
+            '商品状态': sales_state,
             '仓库': str(warehouse_tokens[0]).strip(),
             '可用库存量': available_number,
         })

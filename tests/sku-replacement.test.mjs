@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { aggregateReplacementInventory, findSkuReplacementCandidates, SkuReplacementService } from "../fulfillment-service/sku-replacement.mjs";
+import { aggregateReplacementInventory, createReplacementCandidateIndex, createReplacementCandidateIndexAsync, findSkuReplacementCandidates,
+  SKU_REPLACEMENT_SCHEMA_VERSION, SkuReplacementService } from "../fulfillment-service/sku-replacement.mjs";
 import { SkuReplacementBatchService } from "../fulfillment-service/sku-replacement-batch.mjs";
 import { WarehouseTransferService } from "../fulfillment-service/warehouse-transfer.mjs";
 
@@ -15,6 +16,22 @@ const rows = aggregateReplacementInventory([
   { 仓库: "广州仓", 库存SKU编号: "CHAIR-BLACK-3", 中文名称: "人体工学椅 黑色 3层", 一级目录: "家具", 可用库存量: 20 },
   { 仓库: "深圳仓", 库存SKU编号: "TABLE-WHITE-3", 中文名称: "书桌 白色 3层", 一级目录: "家具", 可用库存量: 10 },
 ]);
+
+test("候选索引只解析一次中文名并按仓库与同款核心分桶", () => {
+  const index = createReplacementCandidateIndex(rows);
+  const chairCore = index.featuresBySku.get("CHAIR-WHITE-3").core;
+  assert.equal(index.warehouseNames.length, 2);
+  assert.equal(index.byWarehouseCore.get(`深圳仓\u0000${chairCore}`).length, 4);
+  assert.equal(index.byWarehouseCore.get(`广州仓\u0000${chairCore}`).length, 1);
+});
+
+test("大批候选索引分片构建时会让出事件循环", async () => {
+  let eventLoopAdvanced = false;
+  setImmediate(() => { eventLoopAdvanced = true; });
+  const index = await createReplacementCandidateIndexAsync(rows, { yieldEvery: 1 });
+  assert.equal(eventLoopAdvanced, true);
+  assert.equal(index.featuresBySku.size, 5);
+});
 
 const fixtureDiagnostic = {
   version: 1, capturedAt: "2026-08-11T01:02:03+00:00", stage: "mabang_response", endpoint: "order.doChanegOrderItem",
@@ -70,6 +87,31 @@ test("仅推荐同仓同款的换色或更小规格 SKU", () => {
   ]);
   assert.ok(!candidates.some((item) => item.sku === "CHAIR-WHITE-4"), "更大规格不能替换");
   assert.ok(!candidates.some((item) => item.sku === "TABLE-WHITE-3"), "不同产品不能替换");
+});
+
+test("销售状态、未验证名称和无规格同名项不能伪装成同款同规格", () => {
+  const unsafe = aggregateReplacementInventory([
+    { 仓库: "A仓", 库存SKU编号: "ORIGINAL", 中文名称: "正常销售", 名称置信度: "MISSING", 可用库存量: 0 },
+    { 仓库: "A仓", 库存SKU编号: "OTHER", 中文名称: "正常销售", 名称置信度: "MISSING", 可用库存量: 100 },
+  ]);
+  assert.deepEqual(findSkuReplacementCandidates({ originalSku: "ORIGINAL", originalName: "正常销售",
+    originalNameConfidence: "MISSING", warehouse: "A仓", inventory: unsafe }), []);
+
+  const unspecified = aggregateReplacementInventory([
+    { 仓库: "A仓", 库存SKU编号: "CHAIR-A", 中文名称: "办公椅", 可用库存量: 0 },
+    { 仓库: "A仓", 库存SKU编号: "CHAIR-B", 中文名称: "办公椅", 可用库存量: 100 },
+  ]);
+  assert.deepEqual(findSkuReplacementCandidates({ originalSku: "CHAIR-A", originalName: "办公椅",
+    warehouse: "A仓", inventory: unspecified }), []);
+});
+
+test("无数字规格但有明确颜色差异时仍可作为换色候选", () => {
+  const colorOnly = aggregateReplacementInventory([
+    { 仓库: "A仓", 库存SKU编号: "CHAIR-W", 中文名称: "办公椅 白色", 可用库存量: 0 },
+    { 仓库: "A仓", 库存SKU编号: "CHAIR-B", 中文名称: "办公椅 黑色", 可用库存量: 5 },
+  ]);
+  assert.equal(findSkuReplacementCandidates({ originalSku: "CHAIR-W", originalName: "办公椅 白色",
+    warehouse: "A仓", inventory: colorOnly })[0]?.kind, "COLOR");
 });
 
 test("批量建议只拉取一次涉及仓库的完整库存", async () => {
@@ -473,6 +515,14 @@ test("更换计划绑定选定仓库、路线备选和预期商品集合", async
   }
 });
 
+test("旧版 SKU 预览计划即使内容完整也禁止恢复执行", async () => {
+  const { service } = warehouseRouteFixture();
+  const plan = await service.createPlan({ orderReference: "ORDER_ROUTE_10001", itemId: "123",
+    replacementSku: "CHAIR-WHITE-2", targetWarehouse: "允许仓A" });
+  assert.throws(() => service.restorePlan({ ...plan, version: 1 }),
+    (error) => error.code === "PREVIEW_SCHEMA_OBSOLETE");
+});
+
 test("单项更换失败会持久化马帮诊断", async () => {
   const rootDir = mkdtempSync(path.join(tmpdir(), "sku-replacement-failed-"));
   const inventoryRecords = rows.map((row) => ({ 仓库: row.warehouse, 库存SKU编号: row.sku, 中文名称: row.name,
@@ -502,7 +552,7 @@ test("单项更换失败会持久化马帮诊断", async () => {
 
 function batchPlanRecord(selection, index) {
   return {
-    version: 1, createdAt: "2026-08-10T04:00:00.000Z", expiresAt: "2026-08-10T04:10:00.000Z",
+    version: SKU_REPLACEMENT_SCHEMA_VERSION, createdAt: "2026-08-10T04:00:00.000Z", expiresAt: "2026-08-10T04:10:00.000Z",
     order: { internalOrderId: String(index), platformOrderId: selection.orderReference, shopId: "10", platformId: "17", orderStatus: "pending" },
     item: { itemId: selection.itemId, originalSku: `OLD-${index}`, chineseName: `商品 ${index}`, quantity: 1, currentWarehouse: "深圳仓", available: 0 },
     replacement: { sku: selection.replacementSku, chineseName: `替换 ${index}`, warehouse: "深圳仓", available: 8,

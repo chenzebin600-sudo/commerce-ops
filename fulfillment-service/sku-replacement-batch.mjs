@@ -4,6 +4,7 @@ import path from "node:path";
 
 const MAX_BATCH_ITEMS = 100;
 const BATCH_PLAN_TTL_MS = 10 * 60 * 1000;
+const SKU_REPLACEMENT_SCHEMA_VERSION = 2;
 
 function text(value) { return String(value ?? "").trim(); }
 function coded(code, message) { const error = new Error(message); error.code = code; return error; }
@@ -65,7 +66,7 @@ export class SkuReplacementBatchService {
       }
     }
     const createdAt = this.now();
-    const semantic = { version: 1, createdAt: createdAt.toISOString(),
+    const semantic = { version: SKU_REPLACEMENT_SCHEMA_VERSION, createdAt: createdAt.toISOString(),
       expiresAt: new Date(createdAt.getTime() + BATCH_PLAN_TTL_MS).toISOString(), items, failures };
     const batchHash = hash(semantic);
     const record = { ...semantic, batchHash, approvalText: `确认批量更换SKU ${items.length}项`,
@@ -79,6 +80,10 @@ export class SkuReplacementBatchService {
     if (!/^[a-f0-9]{64}$/.test(normalizedHash)) throw coded("SKU_REPLACEMENT_BATCH_NOT_FOUND", "批量更换计划不存在，请重新生成");
     const plan = this.read("batch-plans", normalizedHash);
     if (!plan) throw coded("SKU_REPLACEMENT_BATCH_NOT_FOUND", "批量更换计划不存在，请重新生成");
+    if (plan.version !== SKU_REPLACEMENT_SCHEMA_VERSION
+        || (plan.items || []).some((item) => item?.plan?.version !== SKU_REPLACEMENT_SCHEMA_VERSION)) {
+      throw coded("PREVIEW_SCHEMA_OBSOLETE", "批量更换计划由旧版安全规则生成，禁止执行，请重新生成");
+    }
     const semantic = { version: plan.version, createdAt: plan.createdAt, expiresAt: plan.expiresAt, items: plan.items, failures: plan.failures };
     const expectedApproval = `确认批量更换SKU ${(plan.items || []).length}项`;
     if (hash(semantic) !== normalizedHash || text(plan.approvalText) !== expectedApproval) {

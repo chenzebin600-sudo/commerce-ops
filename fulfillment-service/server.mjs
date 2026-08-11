@@ -25,6 +25,7 @@ import { authorizationSettingsForIdentity, authorizedShopIdsForIdentity,
 import { WarehouseTransferService } from "./warehouse-transfer.mjs";
 import { SkuReplacementService } from "./sku-replacement.mjs";
 import { SkuReplacementBatchService } from "./sku-replacement-batch.mjs";
+import { PreviewTaskStore } from "./preview-task-store.mjs";
 import { OperationDrainController } from "../lib/operation-drain.mjs";
 import { presentFulfillmentError } from "./http-error.mjs";
 
@@ -516,6 +517,7 @@ const skuReplacementService = new SkuReplacementService({
   warehouseTransferService,
 });
 const skuReplacementBatchService = new SkuReplacementBatchService({ rootDir, skuReplacementService });
+const previewTaskStore = new PreviewTaskStore({ rootDir });
 const recoveredSkuReplacementTasks = skuReplacementBatchService.reconcileInterruptedExecutions();
 if (recoveredSkuReplacementTasks.length) {
   console.warn(`Recovered ${recoveredSkuReplacementTasks.length} interrupted SKU replacement task(s) for manual review.`);
@@ -590,6 +592,18 @@ const server = http.createServer(async (req, res) => {
       try { return send(res, 201, { success: true, data: await trackedOperation("warehouse-batch-preview", {}, () => warehouseTransferService.previewBatch(payload)) }); }
       catch (error) { throw new FulfillmentError(error.code || "WAREHOUSE_BATCH_PREVIEW_FAILED", error.message || "批量换仓预览失败", 409); }
     }
+    if (req.method === "POST" && url.pathname === "/api/fulfillment/warehouse-transfers/batch-preview-tasks") {
+      const payload = await body(req, 32 * 1024);
+      const task = previewTaskStore.start({ kind: "warehouse-batch-preview", input: payload,
+        run: () => trackedOperation("warehouse-batch-preview", {}, () => warehouseTransferService.previewBatch(payload)) });
+      return send(res, 202, { success: true, data: task });
+    }
+    const warehousePreviewTaskMatch = url.pathname.match(/^\/api\/fulfillment\/warehouse-transfers\/batch-preview-tasks\/([A-Za-z0-9-]{1,80})$/);
+    if (req.method === "GET" && warehousePreviewTaskMatch) {
+      const task = previewTaskStore.get(warehousePreviewTaskMatch[1]);
+      if (!task || task.kind !== "warehouse-batch-preview") throw new FulfillmentError("PREVIEW_TASK_NOT_FOUND", "换仓预览任务不存在", 404);
+      return send(res, 200, { success: true, data: task });
+    }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/warehouse-transfers/batch-recover") {
       const payload = await body(req, 32 * 1024);
       try { return send(res, 200, { success: true, data: warehouseTransferService.recoverBatch(payload) }); }
@@ -605,6 +619,18 @@ const server = http.createServer(async (req, res) => {
       const payload = await body(req, 32 * 1024);
       try { return send(res, 201, { success: true, data: await trackedOperation("sku-batch-preview", {}, () => skuReplacementService.previewBatch(payload)) }); }
       catch (error) { throw new FulfillmentError(error.code || "SKU_REPLACEMENT_PREVIEW_FAILED", error.message || "替换 SKU 建议生成失败", 409); }
+    }
+    if (req.method === "POST" && url.pathname === "/api/fulfillment/sku-replacements/batch-preview-tasks") {
+      const payload = await body(req, 32 * 1024);
+      const task = previewTaskStore.start({ kind: "sku-batch-preview", input: payload,
+        run: () => trackedOperation("sku-batch-preview", {}, () => skuReplacementService.previewBatch(payload)) });
+      return send(res, 202, { success: true, data: task });
+    }
+    const skuPreviewTaskMatch = url.pathname.match(/^\/api\/fulfillment\/sku-replacements\/batch-preview-tasks\/([A-Za-z0-9-]{1,80})$/);
+    if (req.method === "GET" && skuPreviewTaskMatch) {
+      const task = previewTaskStore.get(skuPreviewTaskMatch[1]);
+      if (!task || task.kind !== "sku-batch-preview") throw new FulfillmentError("PREVIEW_TASK_NOT_FOUND", "SKU 预览任务不存在", 404);
+      return send(res, 200, { success: true, data: task });
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/sku-replacements/batch-recover") {
       const payload = await body(req, 32 * 1024);

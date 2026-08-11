@@ -20,7 +20,19 @@ function optionWarehouse(option) {
   return warehouseScope(option);
 }
 
-function inventoryLedger(records = []) {
+function bindingFor(item, warehouse) {
+  const option = (item.warehouseOptions || []).find((candidate) => warehouseKey(optionWarehouse(candidate)) === warehouseKey(warehouse));
+  if (!option) return null;
+  const object = option && typeof option === "object" ? option : { text: option };
+  return {
+    itemId: itemId(item),
+    optionValue: text(object.value ?? object.id),
+    optionText: text(object.text ?? object.name ?? object.warehouse ?? option),
+    optionWarehouseKey: warehouseKey(optionWarehouse(option)),
+  };
+}
+
+export function createSkuWarehouseInventoryLedger(records = []) {
   const ledger = new Map();
   for (const row of records) {
     const warehouse = warehouseKey(row?.["仓库"] ?? row?.warehouse);
@@ -42,7 +54,7 @@ function requirements(items) {
   return required;
 }
 
-function routeFor({ mode, warehouse, required, ledger }) {
+function routeFor({ mode, warehouse, required, ledger, items }) {
   const key = warehouseKey(warehouse);
   const stock = [...required].map(([requiredSku, requiredQuantity]) => ({
     sku: requiredSku,
@@ -50,11 +62,14 @@ function routeFor({ mode, warehouse, required, ledger }) {
     available: ledger.get(`${key}\u0000${requiredSku}`) || 0,
   }));
   if (!stock.every((item) => item.available >= item.quantity)) return null;
+  const itemBindings = (items || []).map((item) => bindingFor(item, warehouse));
+  if (mode === "MOVE_WHOLE_ORDER" && itemBindings.some((binding) => !binding)) return null;
   return {
     mode,
     warehouse,
     remaining: stock.reduce((total, item) => total + item.available - item.quantity, 0),
     stock,
+    itemBindings: itemBindings.filter(Boolean),
   };
 }
 
@@ -68,15 +83,17 @@ function exposesWarehouse(item, warehouse) {
   return (item.warehouseOptions || []).some((option) => warehouseKey(optionWarehouse(option)) === warehouseKey(warehouse));
 }
 
-export function evaluateSkuWarehouseRoutes({ items = [], replacementItemId, replacementSku, allowedWarehouses = [], inventory = [] } = {}) {
+export function evaluateSkuWarehouseRoutes({ items = [], replacementItemId, replacementSku, allowedWarehouses = [], inventory = [], inventoryLedger = null } = {}) {
   const replacementId = text(replacementItemId);
   const replacement = sku(replacementSku);
   const prospectiveItems = (Array.isArray(items) ? items : []).map((item) =>
     itemId(item) === replacementId ? { ...item, stockSku: replacement } : { ...item });
   const required = requirements(prospectiveItems);
-  const ledger = inventoryLedger(Array.isArray(inventory) ? inventory : []);
+  const ledger = inventoryLedger instanceof Map
+    ? inventoryLedger
+    : createSkuWarehouseInventoryLedger(Array.isArray(inventory) ? inventory : []);
   const currentWarehouse = originalWarehouse(prospectiveItems);
-  const keep = currentWarehouse ? routeFor({ mode: "KEEP_CURRENT", warehouse: currentWarehouse, required, ledger }) : null;
+  const keep = currentWarehouse ? routeFor({ mode: "KEEP_CURRENT", warehouse: currentWarehouse, required, ledger, items: prospectiveItems }) : null;
   if (keep) {
     return { originalWarehouse: currentWarehouse, prospectiveItems, selected: keep, alternatives: [keep] };
   }
@@ -91,11 +108,10 @@ export function evaluateSkuWarehouseRoutes({ items = [], replacementItemId, repl
       moveWarehouses.push(warehouse);
     }
   }
-  const nonReplacedItems = prospectiveItems.filter((item) => itemId(item) !== replacementId);
   const moves = moveWarehouses
     .filter((warehouse) => !currentWarehouse || warehouseKey(warehouse) !== warehouseKey(currentWarehouse))
-    .filter((warehouse) => nonReplacedItems.every((item) => exposesWarehouse(item, warehouse)))
-    .map((warehouse) => routeFor({ mode: "MOVE_WHOLE_ORDER", warehouse, required, ledger }))
+    .filter((warehouse) => prospectiveItems.every((item) => exposesWarehouse(item, warehouse)))
+    .map((warehouse) => routeFor({ mode: "MOVE_WHOLE_ORDER", warehouse, required, ledger, items: prospectiveItems }))
     .filter(Boolean)
     .sort((left, right) => right.remaining - left.remaining || left.warehouse.localeCompare(right.warehouse, "zh-CN"));
 

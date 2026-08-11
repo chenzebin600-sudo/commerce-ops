@@ -13,8 +13,8 @@ function fixtureService({ allowedWarehouses = ["目标仓"] } = {}) {
     if (payload.action === "order-warehouse-inspect") return { order: {
       internalOrderId: `I_${payload.orderReference}`, platformOrderId: payload.orderReference, shopId: "88", platformId: "17", orderStatus: "2",
       items: [
-        { itemId: "1", stockSku: "AA001234", title: "上衣", quantity: 2, stockWarehouseName: "旧仓", warehouseOptions: [{ value: "10", text: "旧仓" }, { value: "20", text: "目标仓" }] },
-        { itemId: "2", stockSku: "BB005678", title: "裤子", quantity: 1, stockWarehouseName: "旧仓", warehouseOptions: [{ value: "10", text: "旧仓" }, { value: "20", text: "目标仓" }] },
+        { itemId: "1", stockSku: "AA001234", title: "上衣", quantity: 2, stockWarehouseName: "旧仓", warehouseOptions: [{ value: "10", text: "旧仓" }, { value: "20", text: "目标仓/43" }] },
+        { itemId: "2", stockSku: "BB005678", title: "裤子", quantity: 1, stockWarehouseName: "旧仓", warehouseOptions: [{ value: "11", text: "旧仓" }, { value: "99", text: "目标仓/98" }] },
       ],
     } };
     if (payload.action === "inventory") return { records: [
@@ -34,6 +34,9 @@ test("换仓预览仅选择整单 SKU 库存均充足的允许仓", async () => 
     const plan = await service.preview({ orderReference: "ORDER_10001" });
     assert.equal(plan.targetWarehouse, "目标仓");
     assert.equal(plan.items.length, 2);
+    assert.deepEqual(plan.itemBindings.map((binding) => [binding.itemId, binding.optionValue, binding.optionText]), [
+      ["1", "20", "目标仓/43"], ["2", "99", "目标仓/98"],
+    ]);
     assert.equal(plan.stock.every((item) => item.available >= item.quantity), true);
     assert.match(plan.approvalText, /确认换仓 ORDER_10001 -> 目标仓/);
   } finally { fs.rmSync(rootDir, { recursive: true, force: true }); }
@@ -55,6 +58,8 @@ test("换仓计划要求精确确认且只能执行一次", async () => {
     const completed = await service.execute({ planHash: plan.planHash, approvalText: plan.approvalText });
     assert.equal(completed.status, "COMPLETED");
     assert.equal(calls.filter((call) => call.action === "order-warehouse-change").length, 1);
+    assert.deepEqual(calls.find((call) => call.action === "order-warehouse-change").itemBindings,
+      plan.itemBindings);
     await assert.rejects(() => service.execute({ planHash: plan.planHash, approvalText: plan.approvalText }), /不存在或已经执行/);
   } finally { fs.rmSync(rootDir, { recursive: true, force: true }); }
 });
