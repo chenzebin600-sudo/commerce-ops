@@ -68,7 +68,7 @@ def test_html_body_is_never_preserved(self):
 Run:
 
 ```powershell
-& 'D:\znwx-ai\.venv\Scripts\python.exe' -m unittest \
+& '.\.venv\Scripts\python.exe' -m unittest \
   tests.test_mabang_fulfillment_safety.MabangFulfillmentSafetyTests.test_sku_diagnostic_keeps_request_contract_and_json_field_names_only \
   tests.test_mabang_fulfillment_safety.MabangFulfillmentSafetyTests.test_html_body_is_never_preserved -v
 ```
@@ -163,7 +163,7 @@ Pass exactly `request_fields` to `session.post`. Build a diagnostic after JSON, 
 Run:
 
 ```powershell
-& 'D:\znwx-ai\.venv\Scripts\python.exe' -m unittest tests.test_mabang_fulfillment_safety -v
+& '.\.venv\Scripts\python.exe' -m unittest tests.test_mabang_fulfillment_safety -v
 ```
 
 Expected: all tests pass and every request-count assertion remains `1`.
@@ -232,7 +232,7 @@ Run:
 
 ```powershell
 node --test tests/mabang-worker-runner.test.mjs
-& 'D:\znwx-ai\.venv\Scripts\python.exe' -m unittest tests.test_mabang_fulfillment_safety -v
+& '.\.venv\Scripts\python.exe' -m unittest tests.test_mabang_fulfillment_safety -v
 ```
 
 Expected: both pass.
@@ -436,8 +436,8 @@ git commit -m "feat: show SKU interface diagnostics"
 Run:
 
 ```powershell
-& 'D:\znwx-ai\.venv\Scripts\python.exe' -m unittest tests.test_mabang_fulfillment_safety -v
-$env:PYTHON_EXECUTABLE='D:\znwx-ai\.venv\Scripts\python.exe'
+& '.\.venv\Scripts\python.exe' -m unittest tests.test_mabang_fulfillment_safety -v
+$env:PYTHON_EXECUTABLE='.\.venv\Scripts\python.exe'
 npm.cmd test
 npm.cmd run build
 ```
