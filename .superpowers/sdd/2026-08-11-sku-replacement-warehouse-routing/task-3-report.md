@@ -130,3 +130,91 @@ Separate tests cover:
 ## Concerns
 
 No known correctness concern remains in the scoped implementation. Per the task constraint, verification used deterministic service doubles and did not exercise live Mabang; production integration therefore still relies on the already-tested public warehouse transfer contracts and existing worker response shapes.
+
+## Review-fix evidence
+
+The Task 3 review findings were verified against commit `a7e8d8c` before production edits:
+
+- The already-at-target branch returned from the first post-SKU readback instead of performing an independent final inspection.
+- Final warehouse success was inferred from the deduplicated non-empty warehouse list, allowing an active line with a blank warehouse to disappear from validation.
+- `warehousePreviewAttempted` was set before confirming that a warehouse service existed and before invoking `preview`.
+
+### Review-fix RED
+
+Command:
+
+```text
+node --test tests/sku-replacement.test.mjs
+```
+
+Observed exit code: `1`.
+
+Exact summary:
+
+```text
+tests 24
+pass 21
+fail 3
+cancelled 0
+skipped 0
+todo 0
+```
+
+Exact regression failures:
+
+```text
+SKU 写入后已经整单位于目标仓会跳过仓库写入
+  expected: [order-sku-change, order-warehouse-inspect, order-warehouse-inspect]
+  actual:   [order-sku-change, order-warehouse-inspect]
+
+最终复核要求每个活动商品行都有精确目标仓库
+  Missing expected rejection.
+
+换仓服务不可用时诊断不会声称已经调用预览
+  true !== false
+```
+
+### Review-fix implementation
+
+- Both branches now converge on one independent `FINAL_VERIFY` inspection after the conditional warehouse transfer.
+- `verifiedOrderState` now requires every active line to have a non-empty `warehouseKey` equal to the hashed target; `finalWarehouses` remains diagnostic/result metadata only.
+- `warehousePreviewAttempted` is set immediately before `preview(...)`, after validating that the injected service exists.
+- The already-at-target sequence is now exactly `order-sku-change`, `order-warehouse-inspect`, `order-warehouse-inspect`, with no warehouse preview or execute.
+
+### Review-fix GREEN
+
+Focused SKU command after the fix:
+
+```text
+node --test tests/sku-replacement.test.mjs
+```
+
+Observed exit code: `0`; exact summary: `tests 24`, `pass 24`, `fail 0`.
+
+Required final command:
+
+```text
+node --test tests/sku-replacement.test.mjs tests/warehouse-transfer.test.mjs
+```
+
+Observed exit code: `0`.
+
+Exact final summary:
+
+```text
+tests 32
+pass 32
+fail 0
+cancelled 0
+skipped 0
+todo 0
+duration_ms 484.9627
+```
+
+The combined run explicitly reported all three new regressions as passing:
+
+```text
+✔ SKU 写入后已经整单位于目标仓会跳过仓库写入 (10.0581ms)
+✔ 最终复核要求每个活动商品行都有精确目标仓库 (11.5511ms)
+✔ 换仓服务不可用时诊断不会声称已经调用预览 (9.4879ms)
+```

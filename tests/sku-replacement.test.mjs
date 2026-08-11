@@ -174,7 +174,7 @@ test("更换计划需精确确认、可从持久化记录恢复且只能执行�
 });
 
 async function skuExecutionFixture({ replacementSku = "CHAIR-WHITE-2", targetWarehouse = "广州仓",
-  afterSkuItems = null, finalItems = null, warehouseExecuteError = null } = {}) {
+  afterSkuItems = null, finalItems = null, warehouseExecuteError = null, warehouseServiceAvailable = true } = {}) {
   const rootDir = mkdtempSync(path.join(tmpdir(), "sku-replacement-two-phase-"));
   const originalItems = [
     { itemId: "123", stockSku: "CHAIR-WHITE-3", title: "人体工学椅 白色 3层", quantity: 2,
@@ -211,7 +211,8 @@ async function skuExecutionFixture({ replacementSku = "CHAIR-WHITE-2", targetWar
   };
   const service = new SkuReplacementService({ rootDir, credentials: () => ({ ok: true, username: "u", password: "p" }),
     hasShopAccess: () => true, allowedWarehouses: () => ["深圳仓", "广州仓"],
-    warehouseTransferService, now: () => new Date("2026-08-11T04:00:00.000Z"), runWorker: async (payload) => {
+    warehouseTransferService: warehouseServiceAvailable ? warehouseTransferService : null,
+    now: () => new Date("2026-08-11T04:00:00.000Z"), runWorker: async (payload) => {
       if (payload.action === "order-warehouse-inspect") {
         if (!executing) return { order };
         actions.push("order-warehouse-inspect");
@@ -276,14 +277,48 @@ test("SKU 写入后已经整单位于目标仓会跳过仓库写入", async () =
     { itemId: "456", stockSku: "TABLE-BASIC", quantity: 1, stockWarehouseName: "深圳仓" },
   ];
   const { service, plan, actions, warehouseCalls } = await skuExecutionFixture({ replacementSku: "CHAIR-BLACK-3",
-    targetWarehouse: "深圳仓", afterSkuItems });
+    targetWarehouse: "深圳仓", afterSkuItems, finalItems: afterSkuItems.map((item) => ({ ...item })) });
 
   const completed = await service.execute({ planHash: plan.planHash, approvalText: plan.approvalText });
 
-  assert.deepEqual(actions, ["order-sku-change", "order-warehouse-inspect"]);
+  assert.deepEqual(actions, ["order-sku-change", "order-warehouse-inspect", "order-warehouse-inspect"]);
   assert.deepEqual(warehouseCalls, []);
   assert.equal(completed.result.warehouseRouting.transferSkipped, true);
   assert.deepEqual(completed.result.warehouseRouting.finalWarehouses, ["深圳仓"]);
+});
+
+test("最终复核要求每个活动商品行都有精确目标仓库", async () => {
+  const afterSkuItems = [
+    { itemId: "123", stockSku: "CHAIR-WHITE-2", quantity: 2, stockWarehouseName: "深圳仓" },
+    { itemId: "456", stockSku: "TABLE-BASIC", quantity: 1, stockWarehouseName: "深圳仓" },
+  ];
+  const finalItems = [
+    { ...afterSkuItems[0], stockWarehouseName: "广州仓" },
+    { ...afterSkuItems[1], stockWarehouseName: "" },
+  ];
+  const { service, plan } = await skuExecutionFixture({ afterSkuItems, finalItems });
+
+  await assert.rejects(service.execute({ planHash: plan.planHash, approvalText: plan.approvalText }), (error) => {
+    assert.equal(error.code, "SKU_REPLACEMENT_WAREHOUSE_VERIFY_FAILED");
+    assert.equal(error.diagnostic.phase, "FINAL_VERIFY");
+    assert.deepEqual(error.diagnostic.finalWarehouses, ["广州仓"]);
+    return true;
+  });
+});
+
+test("换仓服务不可用时诊断不会声称已经调用预览", async () => {
+  const afterSkuItems = [
+    { itemId: "123", stockSku: "CHAIR-WHITE-2", quantity: 2, stockWarehouseName: "深圳仓" },
+    { itemId: "456", stockSku: "TABLE-BASIC", quantity: 1, stockWarehouseName: "深圳仓" },
+  ];
+  const { service, plan } = await skuExecutionFixture({ afterSkuItems, warehouseServiceAvailable: false });
+
+  await assert.rejects(service.execute({ planHash: plan.planHash, approvalText: plan.approvalText }), (error) => {
+    assert.equal(error.code, "SKU_REPLACEMENT_WAREHOUSE_VERIFY_FAILED");
+    assert.equal(error.diagnostic.phase, "WAREHOUSE_PREVIEW");
+    assert.equal(error.diagnostic.warehousePreviewAttempted, false);
+    return true;
+  });
 });
 
 test("已确认 SKU 后仓库写入失败会转为安全人工核对且不重试或回滚", async () => {

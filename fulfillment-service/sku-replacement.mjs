@@ -137,9 +137,14 @@ function uniqueWarehouses(values = []) {
 function verifiedOrderState(order, record) {
   const activeItems = (order?.items || []).filter((item) => !ignored(item));
   const selectedItem = activeItems.find((item) => text(item.itemId) === record.item.itemId);
+  const targetWarehouseKey = warehouseKey(record.targetWarehouse);
   return {
     selectedSku: text(selectedItem?.stockSku),
     skuMatches: sku(selectedItem?.stockSku) === sku(record.replacement.sku),
+    warehousesMatch: activeItems.length > 0 && activeItems.every((item) => {
+      const itemWarehouseKey = warehouseKey(item.stockWarehouseName);
+      return Boolean(itemWarehouseKey) && itemWarehouseKey === targetWarehouseKey;
+    }),
     finalWarehouses: uniqueWarehouses(activeItems.map((item) => item.stockWarehouseName)),
   };
 }
@@ -379,6 +384,7 @@ export class SkuReplacementService {
         username: account.username, password: account.password, orderReference: record.order.platformOrderId,
         itemId: record.item.itemId, originalSku: record.item.originalSku, replacementSku: record.replacement.sku,
         expectedQuantity: record.item.quantity, expectedWarehouse: record.item.currentWarehouse, expectedStockId: record.replacementStockId });
+      let transferSkipped = false;
       let warehouseRouting;
       try {
         phaseState.phase = "POST_SKU_INSPECT";
@@ -388,35 +394,30 @@ export class SkuReplacementService {
         phaseState.observedSku = afterSkuState.selectedSku;
         phaseState.finalWarehouses = afterSkuState.finalWarehouses;
         if (!afterSkuState.skuMatches) throw coded("SKU_REPLACEMENT_POST_WRITE_SKU_MISMATCH", "SKU 写入后读取结果与目标 SKU 不一致");
-        const alreadyAtTarget = afterSkuState.finalWarehouses.length === 1
-          && warehouseKey(afterSkuState.finalWarehouses[0]) === warehouseKey(record.targetWarehouse);
-        if (alreadyAtTarget) {
-          warehouseRouting = { mode: record.warehouseMode, targetWarehouse: record.targetWarehouse,
-            transferSkipped: true, finalWarehouses: afterSkuState.finalWarehouses };
+        if (afterSkuState.warehousesMatch) {
+          transferSkipped = true;
         } else {
           phaseState.phase = "WAREHOUSE_PREVIEW";
-          phaseState.warehousePreviewAttempted = true;
           if (!this.warehouseTransferService) throw coded("WAREHOUSE_SERVICE_UNAVAILABLE", "换仓服务不可用");
+          phaseState.warehousePreviewAttempted = true;
           const warehousePlan = await this.warehouseTransferService.preview({ orderReference: record.order.platformOrderId,
             targetWarehouse: record.targetWarehouse });
           phaseState.phase = "WAREHOUSE_EXECUTE";
           phaseState.warehouseWriteAttempted = true;
           await this.warehouseTransferService.execute({ planHash: warehousePlan.planHash, approvalText: warehousePlan.approvalText });
           phaseState.warehouseWriteConfirmed = true;
-          phaseState.phase = "FINAL_VERIFY";
-          const finalInspection = await this.runWorker({ action: "order-warehouse-inspect", username: account.username, password: account.password,
-            orderReference: record.order.platformOrderId });
-          const finalState = verifiedOrderState(finalInspection.order, record);
-          phaseState.observedSku = finalState.selectedSku;
-          phaseState.finalWarehouses = finalState.finalWarehouses;
-          const finalWarehouseMatches = finalState.finalWarehouses.length === 1
-            && warehouseKey(finalState.finalWarehouses[0]) === warehouseKey(record.targetWarehouse);
-          if (!finalState.skuMatches || !finalWarehouseMatches) {
-            throw coded("SKU_REPLACEMENT_FINAL_STATE_MISMATCH", "最终 SKU 或整单仓库与计划不一致");
-          }
-          warehouseRouting = { mode: record.warehouseMode, targetWarehouse: record.targetWarehouse,
-            transferSkipped: false, finalWarehouses: finalState.finalWarehouses };
         }
+        phaseState.phase = "FINAL_VERIFY";
+        const finalInspection = await this.runWorker({ action: "order-warehouse-inspect", username: account.username, password: account.password,
+          orderReference: record.order.platformOrderId });
+        const finalState = verifiedOrderState(finalInspection.order, record);
+        phaseState.observedSku = finalState.selectedSku;
+        phaseState.finalWarehouses = finalState.finalWarehouses;
+        if (!finalState.skuMatches || !finalState.warehousesMatch) {
+          throw coded("SKU_REPLACEMENT_FINAL_STATE_MISMATCH", "最终 SKU 或整单仓库与计划不一致");
+        }
+        warehouseRouting = { mode: record.warehouseMode, targetWarehouse: record.targetWarehouse,
+          transferSkipped, finalWarehouses: finalState.finalWarehouses };
       } catch (error) {
         throw warehouseVerificationError(record, phaseState, error);
       }
