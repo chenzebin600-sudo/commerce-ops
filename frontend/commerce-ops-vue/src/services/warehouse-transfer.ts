@@ -55,11 +55,21 @@ export interface SkuReplacementBatchPlan {
   summary: { requested: number; executable: number; failed: number };
 }
 export interface SkuReplacementSelection { orderReference: string; itemId: string; replacementSku: string }
+export interface SkuReplacementDiagnostic {
+  version: 1; capturedAt: string;
+  stage: "mabang_response" | "mabang_request_uncertain" | "readback" | "service_precheck";
+  endpoint: "order.doChanegOrderItem";
+  request: { fieldNames: string[]; orderItemId: string; stockId: string; type: string };
+  response: { httpStatus: number | null; contentType: string; success: string | number | boolean | null;
+    code: string; message: string; fieldNames: string[]; bodyKind: string; bodyLength: number; textPreview?: string };
+  verification: { beforeSku: string; targetSku: string; afterSku: string; result: string };
+}
 export type SkuReplacementTaskItemStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "MANUAL_REVIEW" | "NOT_EXECUTED";
 export interface SkuReplacementBatchTaskItem {
   orderReference: string; itemId: string; originalSku: string; replacementSku: string; planHash: string;
   status: SkuReplacementTaskItemStatus; startedAt: string | null; finishedAt: string | null;
-  code: string | null; message: string | null; result: SkuReplacementExecutionPlan | null;
+  code: string | null; message: string | null; diagnostic: SkuReplacementDiagnostic | null;
+  result: SkuReplacementExecutionPlan | null;
 }
 export interface SkuReplacementBatchTask {
   taskId: string; batchHash: string; status: "QUEUED" | "RUNNING" | "COMPLETED" | "COMPLETED_WITH_FAILURES";

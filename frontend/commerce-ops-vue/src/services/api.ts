@@ -7,8 +7,16 @@ export interface AuthenticationStatus {
 }
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  readonly status: number;
+  readonly code: string;
+  readonly details: unknown;
+
+  constructor(message: string, status: number, code = "", details: unknown = undefined) {
     super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.details = details;
   }
 }
 
@@ -48,10 +56,12 @@ export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await authorizedFetch(path, init);
   const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok || payload.ok === false || payload.success === false) {
-    const error = payload.error as { message?: string } | string | undefined;
+    const error = payload.error as { message?: string; code?: string; details?: unknown } | string | undefined;
     const responseMessage = typeof payload.message === "string" ? payload.message : "";
     const message = (typeof error === "string" ? error : error?.message) || responseMessage;
-    throw new ApiError(message || `请求失败 (${response.status})`, response.status);
+    throw new ApiError(message || `请求失败 (${response.status})`, response.status,
+      typeof error === "object" ? error?.code || "" : "",
+      typeof error === "object" ? error?.details : undefined);
   }
   return ((payload.data ?? payload.dashboard ?? payload) as T);
 }

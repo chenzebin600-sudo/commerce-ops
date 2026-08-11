@@ -1,4 +1,5 @@
-import type { SkuReplacementKind, SkuReplacementPlan } from "./warehouse-transfer";
+import type { SkuReplacementBatchTask, SkuReplacementBatchTaskItem, SkuReplacementDiagnostic,
+  SkuReplacementKind, SkuReplacementPlan } from "./warehouse-transfer";
 
 export type ReplacementKindFilter = "ALL" | SkuReplacementKind;
 export type ReplacementRiskFilter = "ALL" | "LOW" | "MEDIUM" | "HIGH";
@@ -88,4 +89,32 @@ export function executionStatusesFromTask(task: { items?: Array<{ orderReference
     }
   }
   return result;
+}
+
+export function taskItemFor(orderReference: string, itemId: string,
+  task: Pick<SkuReplacementBatchTask, "items"> | { items?: SkuReplacementBatchTaskItem[] } | null) {
+  return task?.items?.find((item) => item.orderReference === orderReference && item.itemId === itemId) || null;
+}
+
+export function diagnosticRows(diagnostic: SkuReplacementDiagnostic | null | undefined) {
+  if (!diagnostic || diagnostic.version !== 1) return [];
+  const rows: Array<{ label: string; value: string }> = [];
+  const add = (label: string, value: unknown) => {
+    const text = String(value ?? "").trim();
+    if (text) rows.push({ label, value: text });
+  };
+  add("阶段", diagnostic.stage);
+  add("HTTP", diagnostic.response?.httpStatus);
+  const requestFields = ["orderItemId", "stockId", "type"]
+    .map((key) => `${key}=${String(diagnostic.request?.[key as keyof typeof diagnostic.request] ?? "").trim()}`)
+    .filter((value) => !value.endsWith("="));
+  add("请求字段", requestFields.join(" · "));
+  add("业务码", diagnostic.response?.code);
+  add("马帮信息", diagnostic.response?.message);
+  add("返回字段", diagnostic.response?.fieldNames?.join(" · "));
+  const verification = diagnostic.verification;
+  if (verification && (verification.beforeSku || verification.targetSku || verification.afterSku || verification.result)) {
+    add("回读", `${verification.beforeSku || "?"} → ${verification.targetSku || "?"}，最终 ${verification.afterSku || "?"}${verification.result ? `（${verification.result}）` : ""}`);
+  }
+  return rows;
 }

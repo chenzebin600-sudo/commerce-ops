@@ -2,12 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildSkuReplacementSelections,
+  diagnosticRows,
   executionStatusesFromTask,
   filterSkuReplacementPlans,
   replacementItemKey,
   summarizeSkuSelections,
+  taskItemFor,
   toggleSkuSelection,
 } from "../frontend/commerce-ops-vue/src/services/sku-replacement-selection.ts";
+import { ApiError } from "../frontend/commerce-ops-vue/src/services/api.ts";
 
 const plans = [
   {
@@ -94,4 +97,42 @@ test("后台批量任务逐项状态可恢复为页面筛选状态", () => {
     [replacementItemKey("ORDER_1", "2")]: "COMPLETED",
     [replacementItemKey("ORDER_2", "3")]: "MANUAL_REVIEW",
   });
+});
+
+test("接口诊断会转换为固定、可读且无 HTML 的字段行", () => {
+  const diagnostic = {
+    version: 1, capturedAt: "2026-08-11T01:02:03+00:00", stage: "mabang_response", endpoint: "order.doChanegOrderItem",
+    request: { fieldNames: ["orderItemId", "stockId", "type"], orderItemId: "477372993", stockId: "2679193", type: "2" },
+    response: { httpStatus: 409, contentType: "application/json", success: false, code: "FIELD_INVALID",
+      message: "type 字段无效", fieldNames: ["code", "message", "success"], bodyKind: "json", bodyLength: 63 },
+    verification: { beforeSku: "OLD", targetSku: "NEW", afterSku: "OLD", result: "original" },
+  };
+  assert.deepEqual(diagnosticRows(diagnostic), [
+    { label: "阶段", value: "mabang_response" },
+    { label: "HTTP", value: "409" },
+    { label: "请求字段", value: "orderItemId=477372993 · stockId=2679193 · type=2" },
+    { label: "业务码", value: "FIELD_INVALID" },
+    { label: "马帮信息", value: "type 字段无效" },
+    { label: "返回字段", value: "code · message · success" },
+    { label: "回读", value: "OLD → NEW，最终 OLD（original）" },
+  ]);
+  assert.equal(diagnosticRows(null).length, 0);
+});
+
+test("按订单和商品行精确定位批量任务结果", () => {
+  const expected = { orderReference: "ORDER_1", itemId: "2", status: "FAILED" };
+  const task = { items: [
+    { orderReference: "ORDER_1", itemId: "1", status: "COMPLETED" },
+    expected,
+    { orderReference: "ORDER_2", itemId: "2", status: "MANUAL_REVIEW" },
+  ] };
+  assert.equal(taskItemFor("ORDER_1", "2", task), expected);
+  assert.equal(taskItemFor("ORDER_1", "9", task), null);
+});
+
+test("ApiError 保留服务端业务码和详情", () => {
+  const details = { diagnostic: { version: 1 } };
+  const error = new ApiError("马帮拒绝", 409, "SKU_REPLACEMENT_REJECTED", details);
+  assert.equal(error.code, "SKU_REPLACEMENT_REJECTED");
+  assert.equal(error.details, details);
 });
