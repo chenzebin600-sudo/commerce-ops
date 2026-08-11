@@ -28,6 +28,7 @@ temp/
 tmp/
 logs/
 .codex-work/
+.worktrees/
 deliverables/
 outputs/
 .mabang-exports/
