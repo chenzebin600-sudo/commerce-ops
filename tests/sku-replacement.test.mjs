@@ -23,7 +23,8 @@ const fixtureDiagnostic = {
   verification: { beforeSku: "CHAIR-WHITE-3", targetSku: "CHAIR-BLACK-3", afterSku: "CHAIR-WHITE-3", result: "original" },
 };
 
-function warehouseRouteFixture({ allowedWarehouses = ["允许仓A", "允许仓B"] } = {}) {
+function warehouseRouteFixture({ allowedWarehouses = ["允许仓A", "允许仓B"], currentOriginalAvailable = 0,
+  remoteOriginalAvailable = 0 } = {}) {
   const order = { internalOrderId: "99", platformOrderId: "ORDER_ROUTE_10001", shopId: "10", platformId: "17", orderStatus: "pending",
     trackNumber: "", items: [
       { itemId: "123", stockSku: "CHAIR-WHITE-3", title: "人体工学椅 白色 3层", quantity: 2,
@@ -32,9 +33,14 @@ function warehouseRouteFixture({ allowedWarehouses = ["允许仓A", "允许仓B"
         stockWarehouseName: "当前仓", warehouseOptions: [{ text: "允许仓A" }, { text: "允许仓B" }], isCombo: false },
     ] };
   const inventoryRecords = [
-    { 仓库: "当前仓", 库存SKU编号: "CHAIR-WHITE-3", 中文名称: "人体工学椅 白色 3层", 一级目录: "家具", 可用库存量: 0 },
+    ...(currentOriginalAvailable == null ? [] : [
+      { 仓库: "当前仓", 库存SKU编号: "CHAIR-WHITE-3", 中文名称: "人体工学椅 白色 3层", 一级目录: "家具", 可用库存量: currentOriginalAvailable },
+    ]),
     { 仓库: "当前仓", 库存SKU编号: "CHAIR-BLACK-3", 中文名称: "人体工学椅 黑色 3层", 一级目录: "家具", 可用库存量: 8 },
     { 仓库: "当前仓", 库存SKU编号: "TABLE-BASIC", 中文名称: "书桌", 一级目录: "家具", 可用库存量: 5 },
+    ...(remoteOriginalAvailable ? [
+      { 仓库: "允许仓A", 库存SKU编号: "CHAIR-WHITE-3", 中文名称: "人体工学椅 白色 3层", 一级目录: "家具", 可用库存量: remoteOriginalAvailable },
+    ] : []),
     { 仓库: "允许仓A", 库存SKU编号: "CHAIR-WHITE-2", 中文名称: "人体工学椅 白色 2层", 一级目录: "家具", 可用库存量: 4 },
     { 仓库: "允许仓A", 库存SKU编号: "TABLE-BASIC", 中文名称: "书桌", 一级目录: "家具", 可用库存量: 2 },
     { 仓库: "允许仓B", 库存SKU编号: "CHAIR-WHITE-2", 中文名称: "人体工学椅 白色 2层", 一级目录: "家具", 可用库存量: 9 },
@@ -113,6 +119,20 @@ test("空店铺仓库白名单允许保留当前仓但不会产生整单换仓�
   assert.equal(candidates.find((candidate) => candidate.sku === "CHAIR-BLACK-3").warehouseMode, "KEEP_CURRENT");
   assert.equal(candidates.some((candidate) => candidate.warehouseMode === "MOVE_WHOLE_ORDER"), false);
   assert.equal(candidates.some((candidate) => candidate.sku === "CHAIR-WHITE-2"), false);
+});
+
+test("允许仓中的原 SKU 库存不能掩盖当前仓缺货", async () => {
+  const { service } = warehouseRouteFixture({ currentOriginalAvailable: null, remoteOriginalAvailable: 50 });
+  const preview = await service.previewBatch({ orderReferences: ["ORDER_ROUTE_10001"] });
+  const item = preview.plans[0].items[0];
+
+  assert.equal(item.available, 0);
+  assert.equal(item.shortage, 2);
+  assert.equal(item.candidates.some((candidate) => candidate.sku === "CHAIR-WHITE-2"), true);
+  const plan = await service.createPlan({ orderReference: "ORDER_ROUTE_10001", itemId: "123",
+    replacementSku: "CHAIR-WHITE-2", targetWarehouse: "允许仓A" });
+  assert.equal(plan.item.available, 0);
+  assert.equal(plan.targetWarehouse, "允许仓A");
 });
 
 test("库存不足的候选不会进入建议", () => {

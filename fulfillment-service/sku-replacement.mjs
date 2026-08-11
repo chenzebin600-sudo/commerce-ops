@@ -200,10 +200,12 @@ export class SkuReplacementService {
       const allowedWarehouses = orderWarehouses.get(orderReference) || [];
       const items = activeItems.map((item) => {
         const currentWarehouse = text(item.stockWarehouseName);
-        const originalInventory = inventory.find((row) => row.sku === sku(item.stockSku) && warehouseKey(row.warehouse) === warehouseKey(currentWarehouse))
-          || inventory.find((row) => row.sku === sku(item.stockSku));
-        const chineseName = originalInventory?.name || text(item.title);
-        const available = originalInventory?.available || 0;
+        const currentInventory = inventory.find((row) => row.sku === sku(item.stockSku)
+          && warehouseKey(row.warehouse) === warehouseKey(currentWarehouse));
+        const productInventory = (currentInventory?.name ? currentInventory : null)
+          || inventory.find((row) => row.sku === sku(item.stockSku) && row.name);
+        const chineseName = productInventory?.name || text(item.title);
+        const available = currentInventory?.available || 0;
         const shortage = Math.max(0, number(item.quantity) - available);
         return { itemId: text(item.itemId), originalSku: text(item.stockSku), chineseName, quantity: number(item.quantity),
           currentWarehouse, available, shortage,
@@ -274,10 +276,12 @@ export class SkuReplacementService {
       warehouseNames: uniqueWarehouses([...(order.items || []).filter((candidate) => !ignored(candidate)).map((candidate) => candidate.stockWarehouseName), ...allowedWarehouses]),
       username: account.username, password: account.password });
     const inventory = aggregateReplacementInventory(inventoryResponse.records || []);
-    const originalInventory = inventory.find((row) => row.sku === sku(item.stockSku) && warehouseKey(row.warehouse) === warehouseKey(currentWarehouse))
-      || inventory.find((row) => row.sku === sku(item.stockSku));
-    const chineseName = originalInventory?.name || text(item.title);
-    const available = originalInventory?.available || 0;
+    const currentInventory = inventory.find((row) => row.sku === sku(item.stockSku)
+      && warehouseKey(row.warehouse) === warehouseKey(currentWarehouse));
+    const productInventory = (currentInventory?.name ? currentInventory : null)
+      || inventory.find((row) => row.sku === sku(item.stockSku) && row.name);
+    const chineseName = productInventory?.name || text(item.title);
+    const available = currentInventory?.available || 0;
     if (number(item.quantity) <= available) throw coded("SKU_REPLACEMENT_NOT_SHORT", "原 SKU 当前库存已足够，无需更换");
     const activeItems = (order.items || []).filter((candidate) => !ignored(candidate));
     const candidate = routedReplacementCandidates({ items: activeItems, item, chineseName, allowedWarehouses, inventory, limit: 50 })
