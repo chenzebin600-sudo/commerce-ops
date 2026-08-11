@@ -931,7 +931,12 @@ def main():
             result = dispatch(payload)
         print(json.dumps(json_safe(result), ensure_ascii=False), flush=True)
     except Exception as error:
-        print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False), flush=True)
+        failure = {"ok": False, "error": str(error)}
+        if getattr(error, 'code', None):
+            failure['code'] = str(error.code)[:80]
+        if isinstance(getattr(error, 'diagnostic', None), dict):
+            failure['diagnostic'] = json_safe(error.diagnostic)
+        print(json.dumps(failure, ensure_ascii=False), flush=True)
         raise SystemExit(1)
 
 
