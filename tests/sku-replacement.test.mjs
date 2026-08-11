@@ -192,6 +192,32 @@ test("批量 SKU 串行执行且单项失败后继续后续项目", async () => 
   assert.deepEqual(persisted.items.map((item) => item.status), ["COMPLETED", "FAILED", "COMPLETED"]);
 });
 
+test("an uncertain SKU write is persisted as manual review and is not retried", async () => {
+  const rootDir = mkdtempSync(path.join(tmpdir(), "sku-replacement-uncertain-"));
+  let writes = 0;
+  const single = {
+    createPlan: async (selection) => batchPlanRecord(selection, 1),
+    restorePlan() {},
+    execute: async () => {
+      writes += 1;
+      throw Object.assign(new Error("写入结果无法确认"), { code: "SKU_REPLACEMENT_VERIFY_FAILED" });
+    },
+  };
+  const service = new SkuReplacementBatchService({ rootDir, skuReplacementService: single,
+    now: () => new Date("2026-08-11T04:00:00.000Z"), randomUUID: () => "task-uncertain" });
+  const plan = await service.createPlan({ selections: [
+    { orderReference: "ORDER_10001", itemId: "1", replacementSku: "SKU-A" },
+  ] });
+  const task = service.createExecution({ batchHash: plan.batchHash, approvalText: plan.approvalText });
+
+  await service.runExecution(task.taskId);
+
+  const completed = service.getExecution(task.taskId);
+  assert.equal(writes, 1);
+  assert.equal(completed.items[0].status, "MANUAL_REVIEW");
+  assert.equal(completed.items[0].code, "SKU_REPLACEMENT_VERIFY_FAILED");
+});
+
 test("服务重启会把状态不确定项标记为人工核对且不重放待执行项", () => {
   const rootDir = mkdtempSync(path.join(tmpdir(), "sku-replacement-batch-reconcile-"));
   const directory = path.join(rootDir, "storage", "sku-replacements", "batch-executions");
