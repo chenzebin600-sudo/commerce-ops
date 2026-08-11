@@ -26,6 +26,7 @@ import { WarehouseTransferService } from "./warehouse-transfer.mjs";
 import { SkuReplacementService } from "./sku-replacement.mjs";
 import { SkuReplacementBatchService } from "./sku-replacement-batch.mjs";
 import { OperationDrainController } from "../lib/operation-drain.mjs";
+import { presentFulfillmentError } from "./http-error.mjs";
 
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 loadLocalEnv(rootDir);
@@ -614,7 +615,9 @@ const server = http.createServer(async (req, res) => {
       trustedActor(req);
       const payload = await body(req, 16 * 1024);
       try { return send(res, 200, { success: true, data: await trackedOperation("sku-execute", { write: true }, () => skuReplacementService.execute(payload)) }); }
-      catch (error) { throw new FulfillmentError(error.code || "SKU_REPLACEMENT_EXECUTE_FAILED", error.message || "替换 SKU 执行失败", 409); }
+      catch (error) { throw new FulfillmentError(error.code || "SKU_REPLACEMENT_EXECUTE_FAILED",
+        error.message || "替换 SKU 执行失败", 409,
+        error.diagnostic ? { diagnostic: error.diagnostic } : undefined); }
     }
     if (req.method === "POST" && url.pathname === "/api/fulfillment/sku-replacements/batch-plan") {
       const payload = await body(req, 32 * 1024);
@@ -1044,10 +1047,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && match) return send(res, 200, { success: true, data: service.getBatch(match[1]) });
     return send(res, 404, { success: false, error: { code: "NOT_FOUND", message: "接口不存在" } });
   } catch (error) {
-    const status = error instanceof FulfillmentError ? error.status : 500;
-    const errorBody = { code: error.code || "INTERNAL_ERROR", message: status === 500 ? "服务内部错误" : error.message };
-    if (status !== 500 && error.details) errorBody.details = error.details;
-    send(res, status, { success: false, error: errorBody });
+    const presented = presentFulfillmentError(error instanceof FulfillmentError ? error : null);
+    send(res, presented.status, presented.body);
   }
 });
 

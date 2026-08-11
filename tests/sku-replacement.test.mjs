@@ -15,6 +15,14 @@ const rows = aggregateReplacementInventory([
   { 仓库: "深圳仓", 库存SKU编号: "TABLE-WHITE-3", 中文名称: "书桌 白色 3层", 一级目录: "家具", 可用库存量: 10 },
 ]);
 
+const fixtureDiagnostic = {
+  version: 1, capturedAt: "2026-08-11T01:02:03+00:00", stage: "mabang_response", endpoint: "order.doChanegOrderItem",
+  request: { fieldNames: ["orderItemId", "stockId", "type"], orderItemId: "123", stockId: "2679193", type: "2" },
+  response: { httpStatus: 409, contentType: "application/json", success: false, code: "FIELD_INVALID",
+    message: "type 字段无效", fieldNames: ["code", "message", "success"], bodyKind: "json", bodyLength: 63 },
+  verification: { beforeSku: "CHAIR-WHITE-3", targetSku: "CHAIR-BLACK-3", afterSku: "CHAIR-WHITE-3", result: "original" },
+};
+
 test("仅推荐同仓同款的换色或更小规格 SKU", () => {
   const candidates = findSkuReplacementCandidates({ originalSku: "CHAIR-WHITE-3", originalName: "人体工学椅 白色 3层",
     warehouse: "深圳仓", quantity: 2, inventory: rows });
@@ -84,6 +92,33 @@ test("更换计划需精确确认、可从持久化记录恢复且只能执行�
   assert.equal(write.commit, "ORDER_SKU_CHANGE_CONFIRMED");
   assert.equal(write.expectedStockId, "2679193");
   await assert.rejects(service.execute({ planHash: plan.planHash, approvalText: plan.approvalText }), /不存在或已经执行/);
+});
+
+test("单项更换失败会持久化马帮诊断", async () => {
+  const rootDir = mkdtempSync(path.join(tmpdir(), "sku-replacement-failed-"));
+  const inventoryRecords = rows.map((row) => ({ 仓库: row.warehouse, 库存SKU编号: row.sku, 中文名称: row.name,
+    一级目录: row.category1, 可用库存量: row.available }));
+  const order = { internalOrderId: "99", platformOrderId: "ORDER_10001", shopId: "10", platformId: "17", orderStatus: "pending",
+    trackNumber: "", items: [{ itemId: "123", stockSku: "CHAIR-WHITE-3", title: "人体工学椅 白色 3层", quantity: 2,
+      stockWarehouseName: "深圳仓", warehouseOptions: [], isCombo: false }] };
+  const service = new SkuReplacementService({ rootDir, credentials: () => ({ ok: true, username: "u", password: "p" }),
+    hasShopAccess: () => true, now: () => new Date("2026-08-11T04:00:00.000Z"), runWorker: async (payload) => {
+      if (payload.action === "order-warehouse-inspect") return { order };
+      if (payload.action === "inventory") return { records: inventoryRecords };
+      if (payload.action === "order-sku-resolve") return { result: { stockId: "2679193", stockSku: payload.replacementSku } };
+      if (payload.action === "order-sku-change") throw Object.assign(new Error("马帮拒绝写入"), {
+        code: "SKU_REPLACEMENT_REJECTED", diagnostic: fixtureDiagnostic,
+      });
+      throw new Error(`unexpected ${payload.action}`);
+    } });
+  const plan = await service.createPlan({ orderReference: "ORDER_10001", itemId: "123", replacementSku: "CHAIR-BLACK-3" });
+
+  await assert.rejects(service.execute({ planHash: plan.planHash, approvalText: plan.approvalText }),
+    (error) => error.code === "SKU_REPLACEMENT_REJECTED" && error.diagnostic.response.httpStatus === 409);
+  const saved = JSON.parse(readFileSync(path.join(rootDir, "storage", "sku-replacements", "executions", `${plan.planHash}.json`), "utf8"));
+  assert.equal(saved.status, "FAILED");
+  assert.equal(saved.code, "SKU_REPLACEMENT_REJECTED");
+  assert.equal(saved.diagnostic.request.type, "2");
 });
 
 function batchPlanRecord(selection, index) {
@@ -169,7 +204,9 @@ test("批量 SKU 串行执行且单项失败后继续后续项目", async () => 
       activeWrites += 1; maxConcurrentWrites = Math.max(maxConcurrentWrites, activeWrites); executionOrder.push(planHash);
       await new Promise((resolve) => setTimeout(resolve, 2));
       activeWrites -= 1;
-      if (planHash === "plan-2") throw Object.assign(new Error("马帮拒绝写入"), { code: "SKU_REPLACEMENT_REJECTED" });
+      if (planHash === "plan-2") throw Object.assign(new Error("马帮拒绝写入"), {
+        code: "SKU_REPLACEMENT_REJECTED", diagnostic: fixtureDiagnostic,
+      });
       return { status: "COMPLETED", planHash };
     },
   };
@@ -190,6 +227,7 @@ test("批量 SKU 串行执行且单项失败后继续后续项目", async () => 
   assert.equal(completed.status, "COMPLETED_WITH_FAILURES");
   const persisted = JSON.parse(readFileSync(path.join(rootDir, "storage", "sku-replacements", "batch-executions", "task-run.json"), "utf8"));
   assert.deepEqual(persisted.items.map((item) => item.status), ["COMPLETED", "FAILED", "COMPLETED"]);
+  assert.deepEqual(persisted.items[1].diagnostic, fixtureDiagnostic);
 });
 
 test("an uncertain SKU write is persisted as manual review and is not retried", async () => {

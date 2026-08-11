@@ -271,20 +271,33 @@ export class SkuReplacementService {
     const account = this.credentials();
     if (!account?.ok || !this.hasShopAccess(record.order.shopId)) throw coded("SKU_REPLACEMENT_ACCESS_CHANGED", "账号或店铺权限已变化，请重新读取");
     this.plans.delete(record.planHash);
-    const inventoryResponse = await this.runWorker({ action: "inventory", compact: false, warehouseNames: [warehouseScope(record.item.currentWarehouse)],
-      username: account.username, password: account.password });
-    const inventory = aggregateReplacementInventory(inventoryResponse.records || []);
-    const fresh = findSkuReplacementCandidates({ originalSku: record.item.originalSku, originalName: record.item.chineseName,
-      warehouse: record.item.currentWarehouse, quantity: record.item.quantity, inventory, limit: 50 })
-      .find((candidate) => candidate.sku === record.replacement.sku);
-    if (!fresh) throw coded("SKU_REPLACEMENT_INVENTORY_CHANGED", "替换 SKU 库存或商品规则已变化，请重新读取");
-    const response = await this.runWorker({ action: "order-sku-change", commit: "ORDER_SKU_CHANGE_CONFIRMED",
-      username: account.username, password: account.password, orderReference: record.order.platformOrderId,
-      itemId: record.item.itemId, originalSku: record.item.originalSku, replacementSku: record.replacement.sku,
-      expectedQuantity: record.item.quantity, expectedWarehouse: record.item.currentWarehouse, expectedStockId: record.replacementStockId });
-    const completed = { ...record, executedAt: this.now().toISOString(), status: "COMPLETED", result: response.result };
-    this.write("executions", record.planHash, completed);
-    return completed;
+    try {
+      const inventoryResponse = await this.runWorker({ action: "inventory", compact: false, warehouseNames: [warehouseScope(record.item.currentWarehouse)],
+        username: account.username, password: account.password });
+      const inventory = aggregateReplacementInventory(inventoryResponse.records || []);
+      const fresh = findSkuReplacementCandidates({ originalSku: record.item.originalSku, originalName: record.item.chineseName,
+        warehouse: record.item.currentWarehouse, quantity: record.item.quantity, inventory, limit: 50 })
+        .find((candidate) => candidate.sku === record.replacement.sku);
+      if (!fresh) throw coded("SKU_REPLACEMENT_INVENTORY_CHANGED", "替换 SKU 库存或商品规则已变化，请重新读取");
+      const response = await this.runWorker({ action: "order-sku-change", commit: "ORDER_SKU_CHANGE_CONFIRMED",
+        username: account.username, password: account.password, orderReference: record.order.platformOrderId,
+        itemId: record.item.itemId, originalSku: record.item.originalSku, replacementSku: record.replacement.sku,
+        expectedQuantity: record.item.quantity, expectedWarehouse: record.item.currentWarehouse, expectedStockId: record.replacementStockId });
+      const completed = { ...record, executedAt: this.now().toISOString(), status: "COMPLETED", result: response.result };
+      this.write("executions", record.planHash, completed);
+      return completed;
+    } catch (error) {
+      const code = text(error?.code || "SKU_REPLACEMENT_EXECUTE_FAILED");
+      this.write("executions", record.planHash, {
+        ...record,
+        executedAt: this.now().toISOString(),
+        status: /VERIFY_FAILED$/.test(code) ? "MANUAL_REVIEW" : "FAILED",
+        code,
+        message: text(error?.message || "SKU 更换失败").slice(0, 500),
+        diagnostic: error?.diagnostic || null,
+      });
+      throw error;
+    }
   }
 
   write(folder, id, value) {

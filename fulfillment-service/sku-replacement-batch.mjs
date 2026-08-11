@@ -92,7 +92,7 @@ export class SkuReplacementBatchService {
       items: plan.items.map(({ selection, plan: itemPlan }) => ({
         orderReference: selection.orderReference, itemId: selection.itemId, originalSku: itemPlan.item.originalSku,
         replacementSku: selection.replacementSku, planHash: itemPlan.planHash, plan: itemPlan, status: "PENDING",
-        startedAt: null, finishedAt: null, code: null, message: null, result: null,
+        startedAt: null, finishedAt: null, code: null, message: null, diagnostic: null, result: null,
       })),
     };
     task.summary = this.summary(task);
@@ -130,6 +130,7 @@ export class SkuReplacementBatchService {
       } catch (error) {
         item.code = text(error?.code || "SKU_REPLACEMENT_EXECUTE_FAILED");
         item.message = text(error?.message || "SKU 更换失败").slice(0, 300);
+        item.diagnostic = error?.diagnostic || null;
         item.status = /VERIFY_FAILED$/.test(item.code) ? "MANUAL_REVIEW" : "FAILED";
       }
       item.finishedAt = this.now().toISOString();
