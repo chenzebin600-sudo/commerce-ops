@@ -100,6 +100,10 @@ export function previewWarehouseTransfer(orderReference: string, targetWarehouse
   });
 }
 
+export function probeFulfillmentHealth() {
+  return apiJson<{ success: boolean }>("/api/fulfillment-dashboard/health");
+}
+
 export function executeWarehouseTransfer(planHash: string, approvalText: string) {
   return apiJson<WarehouseTransferPlan>("/api/fulfillment-dashboard/warehouse-transfers/execute", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ planHash, approvalText }),

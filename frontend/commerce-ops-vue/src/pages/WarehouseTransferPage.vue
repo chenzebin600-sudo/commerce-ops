@@ -2,8 +2,10 @@
 import { ArrowRight, CheckCircle2, CircleAlert, Clock3, Layers3, ShieldCheck } from "@lucide/vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
-import { createSkuReplacementBatchPlan, executeSkuReplacementBatch, executeWarehouseTransferBatch, getSkuReplacementBatchTask, previewSkuReplacementBatch, previewWarehouseTransferBatch, recoverSkuReplacementBatch, recoverWarehouseTransferBatch,
+import { createSkuReplacementBatchPlan, executeSkuReplacementBatch, executeWarehouseTransferBatch, getSkuReplacementBatchTask, previewSkuReplacementBatch, previewWarehouseTransferBatch, probeFulfillmentHealth, recoverSkuReplacementBatch, recoverWarehouseTransferBatch,
   type SkuReplacementBatch, type SkuReplacementBatchTask, type SkuReplacementCandidate, type SkuReplacementPlan, type WarehouseTransferBatch } from "@/services/warehouse-transfer";
+import { ApiError } from "@/services/api";
+import { createFulfillmentConnectionRecovery } from "@/services/fulfillment-connection-recovery";
 import { buildSkuReplacementSelections, executionStatusesFromTask, filterSkuReplacementPlans, replacementItemKey, replacementItemStatus,
   diagnosticRows, setSkuSelectionWarehouse, summarizeSkuSelections, taskItemFor, toggleSkuSelection,
   type ReplacementFilters, type SkuSelections } from "@/services/sku-replacement-selection";
@@ -14,6 +16,7 @@ const approvalText = ref("");
 const loading = ref(false);
 const recovering = ref(false);
 const previewError = ref("");
+const previewErrorCode = ref("");
 const executing = ref(false);
 const batch = ref<WarehouseTransferBatch | null>(null);
 const replacementBatch = ref<SkuReplacementBatch | null>(null);
@@ -35,6 +38,15 @@ let elapsedTimer: number | undefined;
 let previewElapsedTimer: number | undefined;
 let clockTimer: number | undefined;
 let replacementPollTimer: number | undefined;
+const fulfillmentRecovery = createFulfillmentConnectionRecovery({
+  probe: probeFulfillmentHealth,
+  onRecovered: () => {
+    if (!["FULFILLMENT_UNAVAILABLE", "FULFILLMENT_TIMEOUT"].includes(previewErrorCode.value)) return;
+    previewError.value = "";
+    previewErrorCode.value = "";
+    ElMessage.success("履约服务已恢复连接");
+  },
+});
 const SKU_REPLACEMENT_TASK_KEY = "commerce-ops-sku-replacement-task-id";
 const orderReferences = computed(() => [...new Set(orderInput.value.split(/[\s,，;；]+/).map((value) => value.trim()).filter(Boolean))]);
 const inputOverflow = computed(() => Math.max(0, orderReferences.value.length - MAX_BATCH_ORDERS));
@@ -88,6 +100,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   stopElapsedTimer(); stopPreviewTimer();
+  fulfillmentRecovery.stop();
   if (clockTimer !== undefined) window.clearInterval(clockTimer);
   if (replacementPollTimer !== undefined) window.clearTimeout(replacementPollTimer);
 });
@@ -212,6 +225,8 @@ function applyBatch(result: WarehouseTransferBatch) {
   selectedHashes.value = nowMs.value < Date.parse(result.expiresAt) ? result.plans.map((plan) => plan.planHash) : [];
   approvalText.value = "";
   previewError.value = "";
+  previewErrorCode.value = "";
+  fulfillmentRecovery.stop();
 }
 
 async function recoverRecentBatch(silent = false) {
@@ -224,7 +239,10 @@ async function recoverRecentBatch(silent = false) {
     if (!silent) ElMessage.success("已恢复这批订单最近完成的预览结果");
     return true;
   } catch (error) {
-    if (!silent) previewError.value = String((error as Error)?.message || "没有找到可恢复的批次结果");
+    if (!silent) {
+      previewError.value = String((error as Error)?.message || "没有找到可恢复的批次结果");
+      previewErrorCode.value = error instanceof ApiError ? error.code : "";
+    }
     return false;
   } finally { recovering.value = false; }
 }
@@ -235,6 +253,8 @@ async function previewBatch() {
   if (inputOverflow.value) return ElMessage.warning(`每批最多处理 ${MAX_BATCH_ORDERS} 个订单`);
   previewOrderReferences.value = [...orderReferences.value];
   previewError.value = "";
+  previewErrorCode.value = "";
+  fulfillmentRecovery.stop();
   loading.value = true; completed.value = null; batch.value = null; replacementBatch.value = null; replacementError.value = "";
   dismissReplacementTask(); selectedReplacementSkus.value = {};
   startPreviewTimer();
@@ -251,7 +271,12 @@ async function previewBatch() {
   } catch (error) {
     const message = String((error as Error)?.message || "批量换仓预览失败");
     if (await recoverRecentBatch(true)) ElMessage.warning("本次结果回传中断，已恢复最近完成的同批结果");
-    else { previewError.value = message; ElMessage.error(message); }
+    else {
+      previewError.value = message;
+      previewErrorCode.value = error instanceof ApiError ? error.code : "";
+      if (["FULFILLMENT_UNAVAILABLE", "FULFILLMENT_TIMEOUT"].includes(previewErrorCode.value)) fulfillmentRecovery.start();
+      ElMessage.error(message);
+    }
   }
   finally { loading.value = false; stopPreviewTimer(); }
 }
