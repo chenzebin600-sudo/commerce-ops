@@ -102,17 +102,18 @@ test("后台批量任务逐项状态可恢复为页面筛选状态", () => {
 test("接口诊断会转换为固定、可读且无 HTML 的字段行", () => {
   const diagnostic = {
     version: 1, capturedAt: "2026-08-11T01:02:03+00:00", stage: "mabang_response", endpoint: "order.doChanegOrderItem",
-    request: { fieldNames: ["orderItemId", "stockId", "type"], orderItemId: "477372993", stockId: "2679193", type: "2" },
+    request: { fieldNames: ["orderItemId", "stockId", "IsChangeWarehouse", "isChangeOrderItemPrice"],
+      orderItemId: "477372993", stockId: "2679193", IsChangeWarehouse: "1", isChangeOrderItemPrice: "2" },
     response: { httpStatus: 409, contentType: "application/json", success: false, code: "FIELD_INVALID",
-      message: "type 字段无效", fieldNames: ["code", "message", "success"], bodyKind: "json", bodyLength: 63 },
+      message: "商品编号数据不存在", fieldNames: ["code", "message", "success"], bodyKind: "json", bodyLength: 63 },
     verification: { beforeSku: "OLD", targetSku: "NEW", afterSku: "OLD", result: "original" },
   };
   assert.deepEqual(diagnosticRows(diagnostic), [
     { label: "阶段", value: "mabang_response" },
     { label: "HTTP", value: "409" },
-    { label: "请求字段", value: "orderItemId=477372993 · stockId=2679193 · type=2" },
+    { label: "请求字段", value: "orderItemId=477372993 · stockId=2679193 · IsChangeWarehouse=1 · isChangeOrderItemPrice=2" },
     { label: "业务码", value: "FIELD_INVALID" },
-    { label: "马帮信息", value: "type 字段无效" },
+    { label: "马帮信息", value: "商品编号数据不存在" },
     { label: "返回字段", value: "code · message · success" },
     { label: "回读", value: "OLD → NEW，最终 OLD（original）" },
   ]);

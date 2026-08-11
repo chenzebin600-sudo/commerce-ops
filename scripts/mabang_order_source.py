@@ -304,9 +304,9 @@ def build_sku_change_diagnostic(response, result, request_fields, *, body_kind='
         'stage': 'mabang_response',
         'endpoint': 'order.doChanegOrderItem',
         'request': {
-            'fieldNames': ['orderItemId', 'stockId', 'type'],
+            'fieldNames': ['orderItemId', 'stockId', 'IsChangeWarehouse', 'isChangeOrderItemPrice'],
             **{key: str((request_fields or {}).get(key) or '')[:80]
-               for key in ('orderItemId', 'stockId', 'type')},
+               for key in ('orderItemId', 'stockId', 'IsChangeWarehouse', 'isChangeOrderItemPrice')},
         },
         'response': response_data,
         'verification': {
@@ -986,7 +986,12 @@ class MabangClient:
         target = self.resolve_stock_sku(replacement_sku)
         if expected_stock_id and target['stockId'] != str(expected_stock_id):
             raise Exception('SKU_REPLACEMENT_TARGET_CHANGED: 替换 SKU 的马帮库存标识已变化，请重新预览。')
-        request_fields = {'orderItemId': current['itemId'], 'stockId': target['stockId'], 'type': '2'}
+        request_fields = {
+            'orderItemId': current['itemId'],
+            'stockId': target['stockId'],
+            'IsChangeWarehouse': '1',
+            'isChangeOrderItemPrice': '2',
+        }
         diagnostic = build_sku_change_diagnostic(None, None, request_fields, body_kind='no_response')
         diagnostic['stage'] = 'mabang_request_uncertain'
         request_uncertain = False

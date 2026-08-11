@@ -505,22 +505,28 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
         diagnostic = build_sku_change_diagnostic(response, {
             'success': False,
             'code': 'FIELD_INVALID',
-            'message': 'type 字段无效',
+            'message': '商品编号数据不存在',
             'token': 'must-not-appear',
             'html': '<input name="password" value="secret">',
-        }, {'orderItemId': '477372993', 'stockId': '2679193', 'type': '2'})
-
-        self.assertEqual(diagnostic['request'], {
-            'fieldNames': ['orderItemId', 'stockId', 'type'],
+        }, {
             'orderItemId': '477372993',
             'stockId': '2679193',
-            'type': '2',
+            'IsChangeWarehouse': '1',
+            'isChangeOrderItemPrice': '2',
+        })
+
+        self.assertEqual(diagnostic['request'], {
+            'fieldNames': ['orderItemId', 'stockId', 'IsChangeWarehouse', 'isChangeOrderItemPrice'],
+            'orderItemId': '477372993',
+            'stockId': '2679193',
+            'IsChangeWarehouse': '1',
+            'isChangeOrderItemPrice': '2',
         })
         self.assertEqual(diagnostic['response']['httpStatus'], 409)
         self.assertEqual(diagnostic['response']['contentType'], 'application/json; charset=utf-8')
         self.assertEqual(diagnostic['response']['fieldNames'], ['code', 'html', 'message', 'success', 'token'])
         self.assertEqual(diagnostic['response']['code'], 'FIELD_INVALID')
-        self.assertEqual(diagnostic['response']['message'], 'type 字段无效')
+        self.assertEqual(diagnostic['response']['message'], '商品编号数据不存在')
         self.assertNotIn('secret', json.dumps(diagnostic, ensure_ascii=False))
 
     def test_html_body_is_never_preserved(self):
@@ -563,6 +569,12 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
         self.assertTrue(changed['changed'])
         self.assertEqual(changed['after']['stockSku'], 'T3AA1673198')
         client.session.post.assert_called_once()
+        self.assertEqual(client.session.post.call_args.kwargs['data'], {
+            'orderItemId': '477372993',
+            'stockId': 'target-1',
+            'IsChangeWarehouse': '1',
+            'isChangeOrderItemPrice': '2',
+        })
 
     def test_rejected_response_with_original_readback_reports_business_rejection(self):
         client = MabangClient()
@@ -585,7 +597,8 @@ class MabangFulfillmentSafetyTests(unittest.TestCase):
                 '印尼KSB-A仓-1308/3', 'target-1')
 
         self.assertEqual(raised.exception.code, 'SKU_REPLACEMENT_REJECTED')
-        self.assertEqual(raised.exception.diagnostic['request']['type'], '2')
+        self.assertEqual(raised.exception.diagnostic['request']['IsChangeWarehouse'], '1')
+        self.assertEqual(raised.exception.diagnostic['request']['isChangeOrderItemPrice'], '2')
         self.assertEqual(raised.exception.diagnostic['response']['httpStatus'], 409)
         self.assertEqual(raised.exception.diagnostic['verification'], {
             'beforeSku': 'T5AA3413198',

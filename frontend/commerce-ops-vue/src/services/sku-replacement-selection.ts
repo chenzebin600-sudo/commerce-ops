@@ -105,7 +105,7 @@ export function diagnosticRows(diagnostic: SkuReplacementDiagnostic | null | und
   };
   add("阶段", diagnostic.stage);
   add("HTTP", diagnostic.response?.httpStatus);
-  const requestFields = ["orderItemId", "stockId", "type"]
+  const requestFields = ["orderItemId", "stockId", "IsChangeWarehouse", "isChangeOrderItemPrice"]
     .map((key) => `${key}=${String(diagnostic.request?.[key as keyof typeof diagnostic.request] ?? "").trim()}`)
     .filter((value) => !value.endsWith("="));
   add("请求字段", requestFields.join(" · "));

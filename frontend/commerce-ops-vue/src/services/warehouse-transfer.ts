@@ -59,7 +59,8 @@ export interface SkuReplacementDiagnostic {
   version: 1; capturedAt: string;
   stage: "mabang_response" | "mabang_request_uncertain" | "readback" | "service_precheck";
   endpoint: "order.doChanegOrderItem";
-  request: { fieldNames: string[]; orderItemId: string; stockId: string; type: string };
+  request: { fieldNames: string[]; orderItemId: string; stockId: string;
+    IsChangeWarehouse: string; isChangeOrderItemPrice: string };
   response: { httpStatus: number | null; contentType: string; success: string | number | boolean | null;
     code: string; message: string; fieldNames: string[]; bodyKind: string; bodyLength: number; textPreview?: string };
   verification: { beforeSku: string; targetSku: string; afterSku: string; result: string };
