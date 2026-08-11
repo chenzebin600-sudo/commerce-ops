@@ -17,10 +17,14 @@ function hash(value) { return crypto.createHash("sha256").update(stable(value)).
 function normalizedSelection(raw) {
   const selection = { orderReference: text(raw?.orderReference), itemId: text(raw?.itemId),
     replacementSku: text(raw?.replacementSku).toUpperCase().replace(/\s+/g, "") };
+  const rawTargetWarehouse = String(raw?.targetWarehouse ?? "");
+  const targetWarehouse = text(rawTargetWarehouse);
   if (!/^[A-Za-z0-9_-]{4,100}$/.test(selection.orderReference) || !/^\d{1,40}$/.test(selection.itemId)
-      || !selection.replacementSku || selection.replacementSku.length > 160) {
+      || !selection.replacementSku || selection.replacementSku.length > 160 || targetWarehouse.length > 160
+      || /[\u0000-\u001f\u007f]/.test(rawTargetWarehouse)) {
     throw coded("SKU_REPLACEMENT_BATCH_SELECTION_INVALID", "批量更换中存在无效的订单、商品行或替换 SKU");
   }
+  if (targetWarehouse) selection.targetWarehouse = targetWarehouse;
   return selection;
 }
 

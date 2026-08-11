@@ -509,6 +509,11 @@ const skuReplacementService = new SkuReplacementService({
   rootDir,
   credentials: () => selectedMabangAccount,
   hasShopAccess,
+  allowedWarehouses: (shopId) => {
+    const policy = repository.getShopPolicy(String(shopId || ""));
+    return policy?.warehousePolicy === "allowlist" ? policy.allowedWarehouses || [] : [];
+  },
+  warehouseTransferService,
 });
 const skuReplacementBatchService = new SkuReplacementBatchService({ rootDir, skuReplacementService });
 const recoveredSkuReplacementTasks = skuReplacementBatchService.reconcileInterruptedExecutions();
