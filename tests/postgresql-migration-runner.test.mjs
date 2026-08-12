@@ -57,6 +57,34 @@ test("migration loader returns ordered SQL with literal SHA-256 checksums", asyn
   }
 });
 
+test("shared migration set contains the additive bridge for every missing C module table", async () => {
+  const migrations = await loadPostgresqlMigrations(path.resolve("migrations", "postgresql"));
+  assert.deepEqual(migrations.map(({ version }) => version), [
+    "001_shared_baseline",
+    "033_shared_development_modules",
+  ]);
+  const additive = migrations[1].sql;
+  for (const table of [
+    "advertising_performance_facts",
+    "advertising_source_batches",
+    "advertising_target_policies",
+    "foundation_operation_plan_events",
+    "foundation_operation_plans",
+    "shopee_health_appeal_events",
+    "shopee_health_appeals",
+    "shopee_health_issues",
+    "shopee_health_notifications",
+    "shopee_health_runs",
+    "shopee_health_settings",
+    "shopee_health_snapshots",
+    "shopee_health_thresholds",
+  ]) {
+    assert.match(additive, new RegExp(`CREATE TABLE "app"\\."${table}"`));
+  }
+  assert.equal((additive.match(/CREATE TABLE /g) || []).length, 13);
+  assert.doesNotMatch(additive, /DROP\s|TRUNCATE\s|DELETE\s+FROM|UPDATE\s+"app"/i);
+});
+
 test("migration runner locks, verifies identity, and records each migration", async () => {
   const provider = new FakeMigrationProvider();
   const migrations = [
@@ -95,6 +123,49 @@ test("migration runner rejects checksum drift before executing SQL", async () =>
     expectedSchema: "app",
   }), { code: "PG_MIGRATION_DRIFT" });
   assert.equal(provider.calls.some(({ kind, text }) => kind === "script" && text === "SELECT 1;"), false);
+});
+
+test("existing shared database adopts the bootstrap baseline before additive migrations", async () => {
+  const provider = new FakeMigrationProvider({
+    applied: [{ version: "032_legacy_feature.sql", checksum: "0".repeat(64) }],
+  });
+  const migrations = [
+    { version: "001_shared_baseline", checksum: "a".repeat(64), sql: "CREATE TABLE app.must_not_run(id integer);" },
+    { version: "033_shared_development_modules", checksum: "b".repeat(64), sql: "CREATE TABLE app.additive(id integer);" },
+  ];
+
+  const result = await runPostgresqlMigrations({
+    provider,
+    migrations,
+    expectedDatabase: "commerce_ops",
+    expectedUser: "commerce_migrator",
+    expectedSchema: "app",
+    adoptExistingDatabase: true,
+  });
+
+  assert.deepEqual(result, {
+    applied: ["033_shared_development_modules"],
+    adopted: ["001_shared_baseline"],
+    existing: ["032_legacy_feature.sql"],
+  });
+  assert.equal(provider.calls.some(({ kind, text }) => kind === "script" && text.includes("must_not_run")), false);
+  assert.equal(provider.calls.some(({ kind, text }) => kind === "script" && text.includes("additive")), true);
+  assert.deepEqual(provider.calls.filter(({ kind }) => kind === "execute").map(({ values }) => values), [
+    ["001_shared_baseline", "a".repeat(64)],
+    ["033_shared_development_modules", "b".repeat(64)],
+  ]);
+});
+
+test("bootstrap adoption refuses an empty migration ledger", async () => {
+  const provider = new FakeMigrationProvider();
+  await assert.rejects(() => runPostgresqlMigrations({
+    provider,
+    migrations: [{ version: "001_shared_baseline", checksum: "a".repeat(64), sql: "SELECT 1;" }],
+    expectedDatabase: "commerce_ops",
+    expectedUser: "commerce_migrator",
+    expectedSchema: "app",
+    adoptExistingDatabase: true,
+  }), { code: "PG_MIGRATION_ADOPTION_EMPTY" });
 });
 
 test("migration runner rejects the wrong target without exposing its identity", async () => {

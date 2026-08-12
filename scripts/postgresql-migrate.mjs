@@ -11,7 +11,13 @@ function required(env, name) {
   return value;
 }
 
-export async function migrateSharedPostgresql({ rootDir, env = process.env, apply = false, PoolClass } = {}) {
+export async function migrateSharedPostgresql({
+  rootDir,
+  env = process.env,
+  apply = false,
+  adoptExistingDatabase = false,
+  PoolClass,
+} = {}) {
   const config = loadSharedPostgresqlConfig({ rootDir, env });
   const migrations = await loadPostgresqlMigrations(path.join(rootDir, "migrations", "postgresql"));
   const summary = Object.freeze({
@@ -38,8 +44,9 @@ export async function migrateSharedPostgresql({ rootDir, env = process.env, appl
       expectedDatabase: config.database,
       expectedUser: migratorUser,
       expectedSchema: config.schema,
+      adoptExistingDatabase,
     });
-    return Object.freeze({ status: "APPLIED", ...summary, ...result });
+    return Object.freeze({ status: "APPLIED", ...summary, adoptExistingDatabase, ...result });
   } finally {
     await provider.close();
   }
@@ -48,7 +55,11 @@ export async function migrateSharedPostgresql({ rootDir, env = process.env, appl
 async function main() {
   const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   loadLocalEnv(rootDir, { filenames: [".env.postgres.local", ".env.local", ".env"] });
-  const result = await migrateSharedPostgresql({ rootDir, apply: process.argv.includes("--apply") });
+  const result = await migrateSharedPostgresql({
+    rootDir,
+    apply: process.argv.includes("--apply"),
+    adoptExistingDatabase: process.argv.includes("--adopt-existing"),
+  });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 

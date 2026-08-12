@@ -70,6 +70,14 @@ INSTANCE_ID=commerce-ops-executor-c
 4. 由持有 `commerce_migrator` 凭据的人执行 `npm run postgres:migrate -- --apply`。
 5. 普通 `commerce_app` 仅执行 DML，不应拥有 DDL 权限。
 
+C 端 `commerce_ops` 是带既有迁移历史的共享库，首次接入本仓库时使用显式收养模式：
+
+```powershell
+npm run postgres:migrate -- --apply --adopt-existing
+```
+
+收养模式仅在迁移账本非空时生效：它登记只用于新建空库的 `001_shared_baseline`，不执行该基线，不重建现有表，然后只执行后续增量迁移。空库会拒绝该模式；后续日常迁移仍使用普通 `--apply`。迁移密码只放在 Git 忽略的本地环境文件中，不写入命令行、日志或 Navicat 截图。
+
 真实双实例测试必须使用隔离测试库：
 
 ```powershell
