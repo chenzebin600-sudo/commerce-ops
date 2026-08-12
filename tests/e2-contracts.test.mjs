@@ -58,5 +58,8 @@ test("PostgreSQL readiness covers every formal SQLite table and isolates the dri
     const source = await fs.readFile(path.resolve("lib", file), "utf8");
     if (/from\s+["'](?:pg|postgres|postgresql)["']/i.test(source)) driverImports.push(file.replaceAll("\\", "/"));
   }
-  assert.deepEqual(driverImports, ["data/postgresql/postgresql-provider.mjs"]);
+  assert.deepEqual(driverImports, [
+    "data/postgresql/postgresql-provider.mjs",
+    "data/postgresql/shared-runtime-config.mjs",
+  ]);
 });

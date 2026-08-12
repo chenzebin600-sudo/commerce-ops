@@ -211,7 +211,7 @@ Run:
 
 ```powershell
 node --test tests/sku-replacement-selection.test.mjs
-D:\znwx-ai\frontend\commerce-ops-vue\node_modules\.bin\tsc.cmd --noEmit --strict --skipLibCheck --moduleResolution Bundler --module ESNext --target ES2022 frontend\commerce-ops-vue\src\services\sku-replacement-selection.ts frontend\commerce-ops-vue\src\services\warehouse-transfer.ts
+frontend\commerce-ops-vue\node_modules\.bin\tsc.cmd --noEmit --strict --skipLibCheck --moduleResolution Bundler --module ESNext --target ES2022 frontend\commerce-ops-vue\src\services\sku-replacement-selection.ts frontend\commerce-ops-vue\src\services\warehouse-transfer.ts
 ```
 
 Expected: tests and type check pass.
@@ -232,7 +232,7 @@ Expected: tests and type check pass.
 Run:
 
 ```powershell
-D:\znwx-ai\.venv\Scripts\python.exe -m unittest tests.test_mabang_fulfillment_safety -v
+.venv\Scripts\python.exe -m unittest tests.test_mabang_fulfillment_safety -v
 node --test tests\sku-warehouse-routing.test.mjs tests\sku-replacement.test.mjs tests\sku-replacement-selection.test.mjs tests\warehouse-transfer.test.mjs tests\mabang-worker-runner.test.mjs
 ```
 
@@ -241,7 +241,7 @@ node --test tests\sku-warehouse-routing.test.mjs tests\sku-replacement.test.mjs 
 Run:
 
 ```powershell
-$env:PYTHON_EXECUTABLE='D:\znwx-ai\.venv\Scripts\python.exe'; npm.cmd test
+$env:PYTHON_EXECUTABLE='.venv\Scripts\python.exe'; npm.cmd test
 ```
 
 Expected: zero failures; the existing external-advertising skip may remain.

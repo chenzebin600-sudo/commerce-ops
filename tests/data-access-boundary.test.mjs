@@ -61,8 +61,8 @@ test("explicit PostgreSQL data access selects shared adapters without touching S
   } finally { await dataAccess.close(); await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test("configured PostgreSQL startup rejects a missing local password", () => {
-  assert.throws(() => openConfiguredCommerceDataAccess({
+test("configured PostgreSQL startup rejects a missing local password", async () => {
+  await assert.rejects(() => openConfiguredCommerceDataAccess({
     runtimeConfig: { databaseProvider: "postgres", appRoot: path.resolve("."), databasePath: "ignored.sqlite" },
     env: {},
   }), /POSTGRES_APP_PASSWORD is required/);

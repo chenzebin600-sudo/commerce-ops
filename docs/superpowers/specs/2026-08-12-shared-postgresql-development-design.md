@@ -45,7 +45,7 @@ POSTGRES_DATABASE=commerce_ops
 POSTGRES_SCHEMA=app
 POSTGRES_APP_USER=commerce_app
 POSTGRES_SSLMODE=verify-full
-POSTGRES_SSLROOTCERT=C:/CommerceOps/certs/commerce-ops-postgresql-ca.crt
+POSTGRES_SSLROOTCERT=<B-local-public-CA-path>
 POSTGRES_CHANNEL_BINDING=require
 EXTERNAL_TASKS_ENABLED=false|true
 ```

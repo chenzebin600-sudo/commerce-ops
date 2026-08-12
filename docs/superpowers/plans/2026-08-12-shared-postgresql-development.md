@@ -12,7 +12,7 @@
 
 - Shared endpoint is `10.110.80.117:5432`, database `commerce_ops`, schema `app`, app role `commerce_app`.
 - Ordinary runtime must use `commerce_app`; DDL uses `commerce_migrator` only through an explicit migration command.
-- TLS mode is `verify-full` with `C:/CommerceOps/certs/commerce-ops-postgresql-ca.crt` and required channel binding.
+- TLS mode is `verify-full` with the B-local public CA certificate path and required channel binding.
 - Passwords, private keys, and complete connection strings never enter Git, logs, reports, or test snapshots.
 - `DATABASE_PROVIDER=postgres` never falls back to SQLite.
 - Exactly one designated machine sets `EXTERNAL_TASKS_ENABLED=true`.

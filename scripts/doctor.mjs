@@ -3,10 +3,15 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import { loadLocalEnv } from "../lib/env.mjs";
 import { inspectRuntimeIsolation, resolveRuntimeConfig } from "../lib/runtime-config.mjs";
 import { resolvePythonRuntime } from "../lib/python-runtime.mjs";
 import { resolveChromeRuntime } from "../lib/chrome-runtime.mjs";
+import { loadSharedPostgresqlConfig } from "../lib/data/postgresql/shared-runtime-config.mjs";
+import { openProvider } from "../lib/data/open-provider.mjs";
+import { inspectPostgresqlReadiness } from "../lib/data/postgresql/postgresql-doctor.mjs";
+import { createExternalTaskPolicy } from "../lib/runtime/external-task-policy.mjs";
 
 const bootstrapRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 loadLocalEnv(bootstrapRoot);
@@ -37,7 +42,7 @@ if (existsSync(packagePath)) {
 
 if (config) {
   add("OK", "runtime profile", config.runtimeProfile);
-  add("OK", "SQLite path", path.relative(config.appRoot, config.databasePath) || path.basename(config.databasePath));
+  add("OK", "database provider", config.databaseProvider);
   add("OK", "storage path", path.relative(config.appRoot, config.storageRoot) || ".");
   const python = resolvePythonRuntime({
     appRoot: config.appRoot,
@@ -47,8 +52,11 @@ if (config) {
   add(python.ok ? "OK" : "ERROR", "Python", python.ok ? `${python.version} (${python.source})` : python.errorCode);
   add(existsSync(config.mabangWorkerPath) ? "OK" : "ERROR", "Mabang worker", existsSync(config.mabangWorkerPath) ? "available" : "missing");
   add(existsSync(path.join(config.adServiceDir, "server.mjs")) ? "OK" : (config.adServiceMode === "external" ? "WARNING" : "ERROR"), "advertising service", `${config.adServiceMode} mode`);
-  add(existsSync(config.databasePath) ? "OK" : "ERROR", "SQLite", existsSync(config.databasePath) ? "configured database exists" : "configured database is missing");
-  if (existsSync(config.databasePath)) {
+  if (config.databaseProvider === "sqlite") {
+    add("OK", "SQLite path", path.relative(config.appRoot, config.databasePath) || path.basename(config.databasePath));
+    add(existsSync(config.databasePath) ? "OK" : "ERROR", "SQLite", existsSync(config.databasePath) ? "configured database exists" : "configured database is missing");
+  }
+  if (config.databaseProvider === "sqlite" && existsSync(config.databasePath)) {
     try {
       const db = new DatabaseSync(config.databasePath, { readOnly: true });
       const integrity = db.prepare("PRAGMA integrity_check").get().integrity_check;
@@ -57,6 +65,22 @@ if (config) {
     } catch {
       add("ERROR", "SQLite integrity", "read-only check failed");
     }
+  }
+  if (config.databaseProvider === "postgres") {
+    let provider;
+    try {
+      const postgresql = loadSharedPostgresqlConfig({ rootDir: config.appRoot, env: process.env });
+      const password = String(process.env.POSTGRES_APP_PASSWORD || "");
+      if (!password) throw new Error("POSTGRES_APP_PASSWORD is required");
+      const fingerprint = `sha256:${createHash("sha256").update(postgresql.ssl.ca).digest("hex")}`;
+      provider = await openProvider({ providerName: "postgres", postgresqlConfig: postgresql, credentials: { password } });
+      const external = createExternalTaskPolicy({ databaseProvider: "postgres", env: process.env }).status().state;
+      const report = await inspectPostgresqlReadiness({ provider, config: postgresql, caFingerprint: fingerprint,
+        externalTaskStatus: external, tcpCheck: portOpen });
+      for (const [name, detail] of Object.entries(report.details)) add(report.ready ? "OK" : "ERROR", `PostgreSQL ${name}`, String(detail));
+    } catch (error) {
+      add("ERROR", "PostgreSQL readiness", String(error?.code || error?.message || "check failed").slice(0, 120));
+    } finally { await provider?.close().catch(() => {}); }
   }
   try {
     accessSync(config.storageRoot, constants.R_OK | constants.W_OK);
