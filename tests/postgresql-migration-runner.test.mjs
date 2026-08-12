@@ -1,0 +1,182 @@
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
+import {
+  loadPostgresqlMigrations,
+  runPostgresqlMigrations,
+} from "../lib/data/postgresql/migration-runner.mjs";
+import { migrateSharedPostgresql } from "../scripts/postgresql-migrate.mjs";
+import { buildSharedPostgresqlBaseline } from "../scripts/postgresql-build-baseline.mjs";
+
+class FakeMigrationProvider {
+  constructor({ identity, applied = [] } = {}) {
+    this.identity = identity || { database: "commerce_ops", username: "commerce_migrator", schema: "app" };
+    this.applied = applied;
+    this.calls = [];
+  }
+
+  async transaction(callback) {
+    this.calls.push({ kind: "transaction" });
+    return callback(this);
+  }
+
+  async query(text, values = []) {
+    this.calls.push({ kind: "query", text, values });
+    if (text.includes("pg_advisory_xact_lock")) return { rows: [{ locked: null }], rowCount: 1 };
+    if (text.includes("current_database")) return { rows: [this.identity], rowCount: 1 };
+    if (text.includes("SELECT version, checksum")) return { rows: this.applied, rowCount: this.applied.length };
+    return { rows: [], rowCount: 0 };
+  }
+
+  async execute(text, values = []) {
+    this.calls.push({ kind: "execute", text, values });
+    return { rows: [], rowCount: 1 };
+  }
+
+  async executeScript(text) {
+    this.calls.push({ kind: "script", text });
+    return { rows: [], rowCount: 0 };
+  }
+}
+
+test("migration loader returns ordered SQL with literal SHA-256 checksums", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "postgresql-migrations-"));
+  try {
+    await fs.writeFile(path.join(root, "002_second.sql"), "SELECT 2;\n", "utf8");
+    await fs.writeFile(path.join(root, "001_first.sql"), "SELECT 1;\n", "utf8");
+    const migrations = await loadPostgresqlMigrations(root);
+    assert.deepEqual(migrations.map(({ version }) => version), ["001_first", "002_second"]);
+    assert.equal(migrations[0].checksum, crypto.createHash("sha256").update("SELECT 1;\n").digest("hex"));
+    assert.equal(migrations[0].sql, "SELECT 1;\n");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("migration runner locks, verifies identity, and records each migration", async () => {
+  const provider = new FakeMigrationProvider();
+  const migrations = [
+    { version: "001_first", checksum: "a".repeat(64), sql: "CREATE TABLE app.first(id integer);" },
+    { version: "002_second", checksum: "b".repeat(64), sql: "CREATE TABLE app.second(id integer);" },
+  ];
+  const result = await runPostgresqlMigrations({
+    provider,
+    migrations,
+    expectedDatabase: "commerce_ops",
+    expectedUser: "commerce_migrator",
+    expectedSchema: "app",
+  });
+  assert.deepEqual(result, { applied: ["001_first", "002_second"], existing: [] });
+  const operations = provider.calls.filter(({ kind }) => kind !== "transaction");
+  assert.match(operations[0].text, /pg_advisory_xact_lock/);
+  assert.match(operations[1].text, /current_database/);
+  assert.deepEqual(operations.filter(({ kind }) => kind === "script").map(({ text }) => text), [
+    expectLedgerCreation(),
+    "CREATE TABLE app.first(id integer);",
+    "CREATE TABLE app.second(id integer);",
+  ]);
+  assert.deepEqual(operations.filter(({ kind }) => kind === "execute").map(({ values }) => values), [
+    ["001_first", "a".repeat(64)],
+    ["002_second", "b".repeat(64)],
+  ]);
+});
+
+test("migration runner rejects checksum drift before executing SQL", async () => {
+  const provider = new FakeMigrationProvider({ applied: [{ version: "001_first", checksum: "0".repeat(64) }] });
+  await assert.rejects(() => runPostgresqlMigrations({
+    provider,
+    migrations: [{ version: "001_first", checksum: "1".repeat(64), sql: "SELECT 1;" }],
+    expectedDatabase: "commerce_ops",
+    expectedUser: "commerce_migrator",
+    expectedSchema: "app",
+  }), { code: "PG_MIGRATION_DRIFT" });
+  assert.equal(provider.calls.some(({ kind, text }) => kind === "script" && text === "SELECT 1;"), false);
+});
+
+test("migration runner rejects the wrong target without exposing its identity", async () => {
+  const provider = new FakeMigrationProvider({ identity: { database: "production_secret", username: "commerce_migrator", schema: "app" } });
+  await assert.rejects(() => runPostgresqlMigrations({
+    provider,
+    migrations: [],
+    expectedDatabase: "commerce_ops",
+    expectedUser: "commerce_migrator",
+    expectedSchema: "app",
+  }), (error) => {
+    assert.equal(error.code, "PG_MIGRATION_TARGET_MISMATCH");
+    assert.equal(error.message.includes("production_secret"), false);
+    return true;
+  });
+});
+
+function expectLedgerCreation() {
+  return `CREATE TABLE IF NOT EXISTS "app"."schema_migrations" (
+  version text PRIMARY KEY,
+  checksum text NOT NULL CHECK (length(checksum) = 64),
+  applied_at timestamptz NOT NULL DEFAULT clock_timestamp()
+)`;
+}
+
+test("migration command defaults to a redacted plan without credentials or connections", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "postgresql-migration-plan-"));
+  try {
+    const migrationDir = path.join(rootDir, "migrations", "postgresql");
+    const certificatePath = path.join(rootDir, "public-ca.crt");
+    await fs.mkdir(migrationDir, { recursive: true });
+    await fs.writeFile(path.join(migrationDir, "001_baseline.sql"), "SELECT 1;\n", "utf8");
+    await fs.writeFile(certificatePath, "-----BEGIN CERTIFICATE-----\nPUBLIC\n-----END CERTIFICATE-----\n", "utf8");
+    const result = await migrateSharedPostgresql({
+      rootDir,
+      env: {
+        POSTGRES_HOST: "10.110.80.117",
+        POSTGRES_PORT: "5432",
+        POSTGRES_DATABASE: "commerce_ops",
+        POSTGRES_SCHEMA: "app",
+        POSTGRES_APP_USER: "commerce_app",
+        POSTGRES_SSLMODE: "verify-full",
+        POSTGRES_SSLROOTCERT: certificatePath,
+        POSTGRES_CHANNEL_BINDING: "require",
+      },
+    });
+    assert.deepEqual(result, {
+      status: "PLAN",
+      database: "commerce_ops",
+      schema: "app",
+      migrationCount: 1,
+      versions: ["001_baseline"],
+      apply: false,
+    });
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("baseline builder uses a consistent snapshot and excludes the legacy ledger", async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "postgresql-baseline-builder-"));
+  const sourcePath = path.join(rootDir, "source.sqlite");
+  const outputPath = path.join(rootDir, "migrations", "postgresql", "001_shared_baseline.sql");
+  const database = new DatabaseSync(sourcePath);
+  database.exec(`
+    PRAGMA foreign_keys=ON;
+    CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+    CREATE TABLE shared_records(id TEXT PRIMARY KEY, name TEXT NOT NULL);
+    INSERT INTO schema_migrations(version,applied_at) VALUES ('001','2026-08-12T00:00:00Z');
+    INSERT INTO shared_records(id,name) VALUES ('record-1','must-not-appear-in-ddl');
+  `);
+  database.close();
+  try {
+    const result = await buildSharedPostgresqlBaseline({ sourcePath, outputPath });
+    const sql = await fs.readFile(outputPath, "utf8");
+    assert.equal(result.tableCount, 1);
+    assert.equal(result.columnCount, 2);
+    assert.match(sql, /CREATE TABLE "app"\."shared_records"/);
+    assert.match(sql, /Tables: 1; columns: 2; source rows inspected: 1\./);
+    assert.doesNotMatch(sql, /CREATE TABLE "app"\."schema_migrations"/);
+    assert.doesNotMatch(sql, /must-not-appear-in-ddl/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});

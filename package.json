@@ -33,6 +33,7 @@
     "postgres:f2:check": "node --disable-warning=ExperimentalWarning scripts/postgresql-f2-provider-check.mjs",
     "postgres:f3:migrate-test": "node --disable-warning=ExperimentalWarning scripts/postgresql-f3-migration-test.mjs",
     "postgres:f4:check": "node --disable-warning=ExperimentalWarning scripts/postgresql-f4-compatibility-check.mjs",
+    "postgres:migrate": "node --disable-warning=ExperimentalWarning scripts/postgresql-migrate.mjs",
     "validate:growth-radar:g1a5": "node --disable-warning=ExperimentalWarning scripts/validate-growth-radar-g1a5.mjs",
     "build:growth-radar:v2": "npm --prefix frontend/growth-radar-v2 run build",
     "build:sales-assortment": "npm --prefix frontend/sales-assortment-dashboard run build",
