@@ -147,9 +147,9 @@ test("only one lifecycle scan can run at a time", async () => {
   const scanner = { scan: () => new Promise((resolve) => { release = () => resolve(emptyReport()); }) };
   const context = await setup({ scanner });
   try {
-    const first = context.service.startScan(["main_export"]);
+    const first = await context.service.startScan(["main_export"]);
     await new Promise((resolve) => setImmediate(resolve));
-    const second = context.service.startScan(["main_export"]);
+    const second = await context.service.startScan(["main_export"]);
     assert.equal(second.reused, true);
     assert.equal(second.scan.id, first.scan.id);
     release();
@@ -160,7 +160,7 @@ test("only one lifecycle scan can run at a time", async () => {
 test("scan scope input cannot contain an arbitrary path", async () => {
   const context = await setup();
   try {
-    assert.throws(() => context.service.startScan(["C:/Users"]), /Unsupported lifecycle scan scope/);
+    await assert.rejects(() => context.service.startScan(["C:/Users"]), /Unsupported lifecycle scan scope/);
     assert.equal(context.repository.listScans().total, 0);
   } finally { await close(context); }
 });
@@ -168,7 +168,7 @@ test("scan scope input cannot contain an arbitrary path", async () => {
 test("a scanner failure is persisted and does not escape the asynchronous worker", async () => {
   const context = await setup({ scanner: { scan: async () => { throw Object.assign(new Error("failed"), { code: "SCAN_TEST_FAILURE" }); } } });
   try {
-    const { scan } = context.service.startScan(["main_export"]);
+    const { scan } = await context.service.startScan(["main_export"]);
     await context.service.waitForIdle();
     const failed = context.repository.getScan(scan.id);
     assert.equal(failed.status, "failed");
@@ -255,7 +255,7 @@ test("a registered lifecycle report is not identified as an untracked business f
 test("scan audit events contain counts but no file paths or filenames", async () => {
   const context = await setup();
   try {
-    context.service.startScan(["main_export"]);
+    await context.service.startScan(["main_export"]);
     await context.service.waitForIdle();
     const events = [
       ...context.audit.queryEvents({ action: "file.lifecycle.scan.started" }).events,
@@ -273,7 +273,7 @@ test("a lifecycle scan never updates existing export_files rows", async () => {
   try {
     const record = context.fileService.repository.create({ sourceType: "mabang_manual_order", originalFilename: "missing.xlsx", storageFilename: "missing.xlsx", relativePath: "manual/missing.xlsx", fileSize: 1, fileHash: "a".repeat(64) });
     const before = context.db.db.prepare("SELECT * FROM export_files WHERE id=?").get(record.id);
-    context.service.startScan(["main_export"]);
+    await context.service.startScan(["main_export"]);
     await context.service.waitForIdle();
     const after = context.db.db.prepare("SELECT * FROM export_files WHERE id=?").get(record.id);
     assert.deepEqual(after, before);
