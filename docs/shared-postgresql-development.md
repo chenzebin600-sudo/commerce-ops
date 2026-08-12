@@ -78,6 +78,8 @@ npm run postgres:migrate -- --apply --adopt-existing
 
 收养模式仅在迁移账本非空时生效：它登记只用于新建空库的 `001_shared_baseline`，不执行该基线，不重建现有表，然后只执行后续增量迁移。空库会拒绝该模式；后续日常迁移仍使用普通 `--apply`。迁移密码只放在 Git 忽略的本地环境文件中，不写入命令行、日志或 Navicat 截图。
 
+首次 C/B 对账还需保留两个兼容事实：历史 Shopee 报告时间 `DD/MM/YYYY HH:mm` 按既有迁移规则作为 UTC 规范化；PostgreSQL `jsonb` 不支持的 NUL 字符以可逆字面标记 `\\u0000` 保存。平台商品、操作人和健康模块引用 ID 是不透明文本，不能按 UUID 猜测或丢弃。
+
 真实双实例测试必须使用隔离测试库：
 
 ```powershell

@@ -62,6 +62,7 @@ test("shared migration set contains the additive bridge for every missing C modu
   assert.deepEqual(migrations.map(({ version }) => version), [
     "001_shared_baseline",
     "033_shared_development_modules",
+    "034_shared_module_text_identifiers",
   ]);
   const additive = migrations[1].sql;
   for (const table of [
@@ -82,7 +83,21 @@ test("shared migration set contains the additive bridge for every missing C modu
     assert.match(additive, new RegExp(`CREATE TABLE "app"\\."${table}"`));
   }
   assert.equal((additive.match(/CREATE TABLE /g) || []).length, 13);
+  assert.match(additive, /"task_id" text REFERENCES "app"\."foundation_tasks" \("id"\)/);
+  assert.match(additive, /"dingtalk_config_id" text REFERENCES "app"\."dingtalk_robot_configs" \("id"\)/);
   assert.doesNotMatch(additive, /DROP\s|TRUNCATE\s|DELETE\s+FROM|UPDATE\s+"app"/i);
+  const identifierFix = migrations[2].sql;
+  for (const [table, column] of [
+    ["advertising_performance_facts", "product_id"],
+    ["advertising_target_policies", "product_id"],
+    ["foundation_operation_plan_events", "actor_id"],
+    ["shopee_health_issues", "reference_id"],
+    ["shopee_health_appeals", "assignee_user_id"],
+    ["shopee_health_appeal_events", "actor_user_id"],
+  ]) {
+    assert.match(identifierFix, new RegExp(`ALTER TABLE "app"\\."${table}" ALTER COLUMN "${column}" TYPE text`));
+  }
+  assert.doesNotMatch(identifierFix, /DROP\s|TRUNCATE\s|DELETE\s+FROM|UPDATE\s+"app"/i);
 });
 
 test("migration runner locks, verifies identity, and records each migration", async () => {
@@ -150,10 +165,17 @@ test("existing shared database adopts the bootstrap baseline before additive mig
   });
   assert.equal(provider.calls.some(({ kind, text }) => kind === "script" && text.includes("must_not_run")), false);
   assert.equal(provider.calls.some(({ kind, text }) => kind === "script" && text.includes("additive")), true);
+  const adoptionUpgrade = provider.calls.find(({ kind, text }) => kind === "script" && text.includes("ADD COLUMN IF NOT EXISTS checksum"));
+  assert.ok(adoptionUpgrade);
+  assert.match(adoptionUpgrade.text, /UPDATE "app"\."schema_migrations" SET checksum = repeat\('0', 64\)/);
   assert.deepEqual(provider.calls.filter(({ kind }) => kind === "execute").map(({ values }) => values), [
     ["001_shared_baseline", "a".repeat(64)],
     ["033_shared_development_modules", "b".repeat(64)],
   ]);
+  for (const call of provider.calls.filter(({ kind }) => kind === "execute")) {
+    assert.match(call.text, /version, checksum, applied_at/);
+    assert.match(call.text, /clock_timestamp\(\)/);
+  }
 });
 
 test("bootstrap adoption refuses an empty migration ledger", async () => {
@@ -166,6 +188,27 @@ test("bootstrap adoption refuses an empty migration ledger", async () => {
     expectedSchema: "app",
     adoptExistingDatabase: true,
   }), { code: "PG_MIGRATION_ADOPTION_EMPTY" });
+});
+
+test("an adopted baseline permits later normal migrations alongside legacy history", async () => {
+  const provider = new FakeMigrationProvider({ applied: [
+    { version: "001_legacy.sql", checksum: "0".repeat(64) },
+    { version: "001_shared_baseline", checksum: "a".repeat(64) },
+  ] });
+  const result = await runPostgresqlMigrations({
+    provider,
+    migrations: [
+      { version: "001_shared_baseline", checksum: "a".repeat(64), sql: "SELECT 1;" },
+      { version: "035_next", checksum: "b".repeat(64), sql: "SELECT 35;" },
+    ],
+    expectedDatabase: "commerce_ops",
+    expectedUser: "commerce_migrator",
+    expectedSchema: "app",
+  });
+  assert.deepEqual(result, {
+    applied: ["035_next"],
+    existing: ["001_legacy.sql", "001_shared_baseline"],
+  });
 });
 
 test("migration runner rejects the wrong target without exposing its identity", async () => {

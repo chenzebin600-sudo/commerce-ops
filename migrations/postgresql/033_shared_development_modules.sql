@@ -66,7 +66,7 @@ CREATE TABLE "app"."advertising_target_policies" (
 
 CREATE TABLE "app"."foundation_operation_plans" (
   "id" uuid PRIMARY KEY,
-  "task_id" uuid REFERENCES "app"."foundation_tasks" ("id") ON DELETE SET NULL,
+  "task_id" text REFERENCES "app"."foundation_tasks" ("id") ON DELETE SET NULL,
   "operation_type" text NOT NULL,
   "state" text NOT NULL CHECK (state IN ('PREVIEWED','APPROVED','IN_FLIGHT','SUCCEEDED','FAILED','UNKNOWN','EXPIRED','BLOCKED','CANCELLED')),
   "approval_mode" text NOT NULL CHECK (approval_mode IN ('human', 'system')),
@@ -212,7 +212,7 @@ CREATE TABLE "app"."shopee_health_settings" (
   "timezone" text NOT NULL DEFAULT 'Asia/Shanghai',
   "retry_count" integer NOT NULL DEFAULT 3 CHECK (retry_count BETWEEN 0 AND 5),
   "warning_ratio" double precision NOT NULL DEFAULT 0.10 CHECK (warning_ratio >= 0 AND warning_ratio <= 1),
-  "dingtalk_config_id" uuid REFERENCES "app"."dingtalk_robot_configs" ("id") ON DELETE SET NULL,
+  "dingtalk_config_id" text REFERENCES "app"."dingtalk_robot_configs" ("id") ON DELETE SET NULL,
   "site_notifications_enabled" boolean NOT NULL DEFAULT TRUE,
   "dingtalk_notifications_enabled" boolean NOT NULL DEFAULT FALSE,
   "enabled" boolean NOT NULL DEFAULT TRUE,

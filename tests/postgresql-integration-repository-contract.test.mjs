@@ -70,12 +70,13 @@ test("PostgreSQL advertising batch and facts commit in one provider transaction"
   const repository = new PostgresqlShopeeAdvertisingRepository({ provider });
   const batch = await repository.createBatch({
     id: "batch-1", shopId: "shop-1", shopName: "Shop", accountName: "Account", originalFilename: "ads.xlsx",
-    reportCreatedAt: "2026-08-12", periodFrom: "2026-08-05", periodTo: "2026-08-12", periodDays: 7,
+    reportCreatedAt: "04/08/2026 19:16", periodFrom: "2026-08-05", periodTo: "2026-08-12", periodDays: 7,
     rawSha256: "hash", summary: {}, importedBy: "developer", importedAt: "2026-08-12T00:00:00Z",
   }, [{ id: "fact-1", sequence: 1, adKey: "ad-1" }]);
   assert.equal(batch.id, "batch-1");
   assert.match(provider.calls[0].text, /INSERT INTO "app"\."advertising_source_batches"/);
   assert.match(provider.calls[1].text, /INSERT INTO "app"\."advertising_performance_facts"/);
+  assert.equal(provider.calls[0].values[7], "2026-08-04T19:16:00Z");
   assert.equal(provider.calls.some(({ text }) => text.includes("?")), false);
 });
 
