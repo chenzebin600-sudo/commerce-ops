@@ -186,3 +186,14 @@ test("PostgreSQL foundation lease acquisition locks and uses server time", async
   assert.match(provider.calls[1].text, /clock_timestamp\(\)/);
   assert.equal(provider.calls.some(({ text }) => text.includes("?")), false);
 });
+
+test("PostgreSQL foundation lease renewal and release use numbered parameters", async () => {
+  const provider = new RecordingPostgresqlProvider([{ rows: [], rowCount: 1 }, { rows: [], rowCount: 1 }]);
+  const repository = new FoundationRepository({ provider });
+  assert.ok(await repository.renewTaskLease("task-1", { leaseToken: "token", ttlMs: 30_000 }));
+  assert.equal(await repository.releaseTaskLease("task-1", "token"), true);
+  assert.match(provider.calls[0].text, /clock_timestamp\(\)/);
+  assert.match(provider.calls[0].text, /task_id=\$2 AND lease_token=\$3/);
+  assert.match(provider.calls[1].text, /task_id=\$1\s+AND lease_token=\$2/);
+  assert.equal(provider.calls.some(({ text }) => text.includes("?")), false);
+});
