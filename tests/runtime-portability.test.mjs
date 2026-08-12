@@ -23,7 +23,17 @@ test("portable defaults stay inside the project root", () => {
   assert.equal(config.appRoot, appRoot);
   assert.equal(config.storageRoot, path.join(appRoot, "storage"));
   assert.equal(config.databasePath, path.join(appRoot, "storage", "commerce-ops.sqlite"));
+  assert.equal(config.databaseProvider, "sqlite");
   assert.equal(config.chromeProfileRoot, path.join(appRoot, "storage", "chrome-user-data"));
+});
+
+test("runtime database provider accepts explicit PostgreSQL without silent fallback", () => {
+  assert.equal(resolveRuntimeConfig({ bootstrapRoot: fixtureRoot(), env: { DATABASE_PROVIDER: "postgres" } }).databaseProvider, "postgres");
+  assert.equal(resolveRuntimeConfig({ bootstrapRoot: fixtureRoot(), env: { DATABASE_PROVIDER: "postgresql" } }).databaseProvider, "postgres");
+  assert.throws(
+    () => resolveRuntimeConfig({ bootstrapRoot: fixtureRoot(), env: { DATABASE_PROVIDER: "postgress" } }),
+    /DATABASE_PROVIDER must be sqlite or postgres/,
+  );
 });
 
 test("runtime path environment overrides are resolved consistently", () => {
@@ -67,6 +77,7 @@ test("a missing override cannot create a second database beside an existing form
 test("runtime environment forwards normalized paths without secrets", () => {
   const values = runtimeEnvironment(resolveRuntimeConfig({ bootstrapRoot: fixtureRoot(), env: {} }));
   assert.ok(values.DATABASE_PATH.endsWith("commerce-ops.sqlite"));
+  assert.equal(values.DATABASE_PROVIDER, "sqlite");
   assert.equal("APP_ACCESS_TOKEN" in values, false);
   assert.equal("AD_SERVICE_INTERNAL_TOKEN" in values, false);
 });
