@@ -2514,7 +2514,7 @@ CREATE TABLE "app"."shopee_health_runs" (
 );
 
 CREATE TABLE "app"."shopee_health_settings" (
-  "id" uuid,
+  "id" text,
   "encrypted_token_key" text,
   "token_hint" text,
   "token_verified_at" timestamptz,
@@ -2524,8 +2524,8 @@ CREATE TABLE "app"."shopee_health_settings" (
   "retry_count" integer NOT NULL DEFAULT 3,
   "warning_ratio" double precision NOT NULL DEFAULT 0.10,
   "dingtalk_config_id" uuid,
-  "site_notifications_enabled" integer NOT NULL DEFAULT 1,
-  "dingtalk_notifications_enabled" integer NOT NULL DEFAULT 0,
+  "site_notifications_enabled" boolean NOT NULL DEFAULT TRUE,
+  "dingtalk_notifications_enabled" boolean NOT NULL DEFAULT FALSE,
   "enabled" boolean NOT NULL DEFAULT TRUE,
   "last_key_error" text,
   "updated_by" text,
