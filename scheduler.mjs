@@ -121,16 +121,16 @@ const shopeeHealthService = new ShopeeHealthService({
   robotRepository: db,
 });
 
-scheduler.start();
+await scheduler.start();
 shopeeHealthService.runScheduledIfDue();
 const shopeeHealthTimer = setInterval(() => shopeeHealthService.runScheduledIfDue(), 60_000);
 console.log(`Mabang scheduler started. Poll interval: ${scheduler.pollIntervalMs}ms`);
 console.log("Shopee health scheduler started. Daily timezone: Asia/Shanghai");
 
-function shutdown() {
+async function shutdown() {
   clearInterval(shopeeHealthTimer);
-  scheduler.stop();
-  dataAccess.close();
+  await scheduler.stop();
+  await dataAccess.close();
   process.exit(0);
 }
 

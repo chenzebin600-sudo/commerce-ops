@@ -322,7 +322,7 @@ test("a task linked to a disabled account can be restored but cannot be enabled"
   context.db.close();
 });
 
-test("deleted tasks are excluded from due scheduling and remain excluded after restart", () => {
+test("deleted tasks are excluded from due scheduling and remain excluded after restart", async () => {
   const context = createContext({ nextRunAt: "2026-07-16T00:00:00.000Z" });
   context.db.softDeleteTask(context.task.id);
   assert.equal(context.db.dueTasks(new Date("2026-07-16T01:00:00.000Z")).length, 0);
@@ -335,7 +335,7 @@ test("deleted tasks are excluded from due scheduling and remain excluded after r
     exportRoot: context.exportRoot,
     now: () => new Date("2026-07-16T01:00:00.000Z"),
   });
-  service.initialize();
+  await service.initialize();
   const task = reopened.getTask(context.task.id);
   assert.equal(task.deleted, true);
   assert.equal(task.nextRunAt, null);
