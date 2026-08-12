@@ -16,7 +16,7 @@ import {
 import { loadLocalEnv } from "./lib/env.mjs";
 import { createMabangWorkerRunner } from "./lib/mabang-worker-runner.mjs";
 import { createMabangDataPersistenceService } from "./lib/mabang-data/persistence-service.mjs";
-import { openCommerceDataAccess } from "./lib/data/data-access.mjs";
+import { openConfiguredCommerceDataAccess } from "./lib/data/data-access.mjs";
 import { createMabangSchedulerApi } from "./lib/mabang-scheduler/api.mjs";
 import { createAdServiceProxy, resolveAdServiceProxyConfig } from "./lib/ad-service-proxy.mjs";
 import {
@@ -345,7 +345,7 @@ async function readBody(req) {
 }
 
 const scheduledExportRoot = fileStorageConfig.exportRoot;
-const dataAccess = openCommerceDataAccess({ rootDir: runtimeConfig.appRoot, databasePath: runtimeConfig.databasePath });
+const dataAccess = await openConfiguredCommerceDataAccess({ runtimeConfig, env: process.env });
 const schedulerDatabase = dataAccess.repositories.scheduler;
 const foundationService = new FoundationService({ repository: dataAccess.repositories.foundation });
 const auditService = createOperationAuditService({ repository: dataAccess.repositories.audit, env: process.env });
@@ -537,7 +537,7 @@ const mabangImageService = new MabangSkuImageCollectorService({
   assetService: mabangImageAssetService,
   accountRepository: dataAccess.repositories.accounts,
   browserFactory: async ({ accountId, startPage = 1, maxSkus = mabangImageMaxSkus }) => {
-    const profile = dataAccess.repositories.accounts.get(accountId, { includeSecret: true });
+    const profile = await dataAccess.repositories.accounts.get(accountId, { includeSecret: true });
     if (!profile?.encryptedPassword) {
       const error = new Error("所选马帮账号没有可用的加密密码。");
       error.code = "MABANG_ACCOUNT_CREDENTIALS_MISSING";

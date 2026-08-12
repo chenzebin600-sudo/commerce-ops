@@ -78,16 +78,16 @@ test("Shopee CSV parser preserves period, start date, metrics, and stable ad ide
   assert.equal(parsed.facts[1].clicks, 18);
 });
 
-test("day and 7-day reports remain directional evidence when exact 14-day evidence is missing", () => {
+test("day and 7-day reports remain directional evidence when exact 14-day evidence is missing", async () => {
   const { access, service } = openService();
   try {
-    service.importCsv({ filename: "seven.csv", csvText: csv({ from: "29/07/2026", to: "04/08/2026", rows: [matureLowEfficiency] }) });
-    service.importCsv({ filename: "day.csv", csvText: csv({ from: "03/08/2026", to: "03/08/2026", rows: [{ ...matureLowEfficiency, clicks: 12 }] }) });
-    service.saveTargets({
+    await service.importCsv({ filename: "seven.csv", csvText: csv({ from: "29/07/2026", to: "04/08/2026", rows: [matureLowEfficiency] }) });
+    await service.importCsv({ filename: "day.csv", csvText: csv({ from: "03/08/2026", to: "03/08/2026", rows: [{ ...matureLowEfficiency, clicks: 12 }] }) });
+    await service.saveTargets({
       shopId: "1379379507", effectiveFrom: "2026-08-04", sourceType: "screenshot",
       targets: [{ adName: matureLowEfficiency.adName, productId: matureLowEfficiency.productId, targetRoas: 17.1 }],
     });
-    const dashboard = service.dashboard({ shopId: "1379379507" });
+    const dashboard = await service.dashboard({ shopId: "1379379507" });
     assert.equal(dashboard.evidenceReady, false);
     assert.equal(dashboard.coverage.seven, true);
     assert.equal(dashboard.coverage.fourteen, false);
@@ -100,20 +100,20 @@ test("day and 7-day reports remain directional evidence when exact 14-day eviden
   }
 });
 
-test("mature 14-day evidence diagnoses efficiency below target and compares the previous window", () => {
+test("mature 14-day evidence diagnoses efficiency below target and compares the previous window", async () => {
   const { access, service } = openService();
   try {
-    service.importCsv({ filename: "previous-14.csv", csvText: csv({
+    await service.importCsv({ filename: "previous-14.csv", csvText: csv({
       from: "07/07/2026", to: "20/07/2026", rows: [{ ...matureLowEfficiency, gmv: 1200000, expense: 100000 }],
     }) });
-    service.importCsv({ filename: "current-14.csv", csvText: csv({
+    await service.importCsv({ filename: "current-14.csv", csvText: csv({
       from: "21/07/2026", to: "03/08/2026", rows: [matureLowEfficiency],
     }) });
-    service.saveTargets({
+    await service.saveTargets({
       shopId: "1379379507", effectiveFrom: "2026-08-03",
       targets: [{ adName: matureLowEfficiency.adName, productId: matureLowEfficiency.productId, targetRoas: 17.1 }],
     });
-    const dashboard = service.dashboard({ shopId: "1379379507" });
+    const dashboard = await service.dashboard({ shopId: "1379379507" });
     assert.equal(dashboard.evidenceReady, true);
     assert.equal(dashboard.summary.matureCount, 1);
     assert.equal(dashboard.summary.p1Count, 1);
@@ -131,17 +131,17 @@ test("mature 14-day evidence diagnoses efficiency below target and compares the 
   }
 });
 
-test("fewer than 100 clicks stays in observation instead of becoming a performance verdict", () => {
+test("fewer than 100 clicks stays in observation instead of becoming a performance verdict", async () => {
   const { access, service } = openService();
   try {
-    service.importCsv({ filename: "current-14.csv", csvText: csv({
+    await service.importCsv({ filename: "current-14.csv", csvText: csv({
       from: "21/07/2026", to: "03/08/2026", rows: [{ ...matureLowEfficiency, clicks: 70, conversions: 1, gmv: 300000 }],
     }) });
-    service.saveTargets({
+    await service.saveTargets({
       shopId: "1379379507", effectiveFrom: "2026-08-03",
       targets: [{ adName: matureLowEfficiency.adName, productId: matureLowEfficiency.productId, targetRoas: 17.1 }],
     });
-    const dashboard = service.dashboard({ shopId: "1379379507" });
+    const dashboard = await service.dashboard({ shopId: "1379379507" });
     assert.equal(dashboard.summary.insufficientCount, 1);
     assert.equal(dashboard.rows[0].priority, "WAITING");
     assert.equal(dashboard.rows[0].ruleCode, "sample_insufficient");
@@ -150,26 +150,26 @@ test("fewer than 100 clicks stays in observation instead of becoming a performan
   }
 });
 
-test("an imported batch can be deleted precisely and re-imported without removing target ROAS", () => {
+test("an imported batch can be deleted precisely and re-imported without removing target ROAS", async () => {
   const { access, service } = openService();
   try {
     const source = csv({ from: "21/07/2026", to: "03/08/2026", rows: [matureLowEfficiency] });
-    const imported = service.importCsv({ filename: "wrong-14.csv", csvText: source });
-    service.saveTargets({
+    const imported = await service.importCsv({ filename: "wrong-14.csv", csvText: source });
+    await service.saveTargets({
       shopId: "1379379507", effectiveFrom: "2026-08-03",
       targets: [{ adName: matureLowEfficiency.adName, productId: matureLowEfficiency.productId, targetRoas: 17.1 }],
     });
 
-    const deleted = service.deleteBatch(imported.batch.id);
+    const deleted = await service.deleteBatch(imported.batch.id);
     assert.equal(deleted.batch.originalFilename, "wrong-14.csv");
     assert.equal(deleted.deletedFacts, 1);
-    assert.equal(service.dashboard({ shopId: "1379379507" }).empty, true);
-    assert.throws(() => service.deleteBatch(imported.batch.id), (error) => error.code === "ADS_BATCH_NOT_FOUND" && error.status === 404);
-    assert.throws(() => service.deleteBatch("not-a-batch"), (error) => error.code === "ADS_BATCH_ID_INVALID" && error.status === 400);
+    assert.equal((await service.dashboard({ shopId: "1379379507" })).empty, true);
+    await assert.rejects(() => service.deleteBatch(imported.batch.id), (error) => error.code === "ADS_BATCH_NOT_FOUND" && error.status === 404);
+    await assert.rejects(() => service.deleteBatch("not-a-batch"), (error) => error.code === "ADS_BATCH_ID_INVALID" && error.status === 400);
 
-    const reimported = service.importCsv({ filename: "corrected-14.csv", csvText: source });
+    const reimported = await service.importCsv({ filename: "corrected-14.csv", csvText: source });
     assert.equal(reimported.duplicate, false);
-    const dashboard = service.dashboard({ shopId: "1379379507" });
+    const dashboard = await service.dashboard({ shopId: "1379379507" });
     assert.equal(dashboard.targets.length, 1);
     assert.equal(dashboard.summary.targetCoverage, 100);
   } finally {

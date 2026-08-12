@@ -46,13 +46,13 @@ test("shop health stores encrypted settings, daily snapshots, issues and appeal 
     assert.equal(settings.tokenConfigured, true);
     assert.equal(settings.tokenShopCount, 2);
     assert.match(settings.tokenHint, /^repl/);
-    assert.equal(data.repositories.shopeeHealth.getSettings().encryptedTokenKey, undefined);
+    assert.equal((await data.repositories.shopeeHealth.getSettings()).encryptedTokenKey, undefined);
 
-    const started = service.startCollection("manual");
+    const started = await service.startCollection("manual");
     assert.equal(started.started, true);
     await service.activePromise;
 
-    const dashboard = service.dashboard();
+    const dashboard = await service.dashboard();
     assert.equal(dashboard.summary.healthy, 1);
     assert.equal(dashboard.summary.critical, 1);
     assert.equal(dashboard.summary.activeIssues, 4);
@@ -60,12 +60,12 @@ test("shop health stores encrypted settings, daily snapshots, issues and appeal 
     assert.ok(dashboard.notifications.length >= 4);
 
     const penalty = dashboard.issues.find((issue) => issue.issueType === "penalty");
-    const appeal = data.repositories.shopeeHealth.createAppeal({ issueId: penalty.id, assigneeUserId: "u1", assigneeName: "运营A" });
+    const appeal = await data.repositories.shopeeHealth.createAppeal({ issueId: penalty.id, assigneeUserId: "u1", assigneeName: "运营A" });
     assert.equal(appeal.status, "pending_review");
-    const submitted = data.repositories.shopeeHealth.updateAppeal(appeal.id, { status: "submitted", sellerCenterReference: "SC-1", eventNote: "材料已提交" }, { userId: "u1", name: "运营A" });
+    const submitted = await data.repositories.shopeeHealth.updateAppeal(appeal.id, { status: "submitted", sellerCenterReference: "SC-1", eventNote: "材料已提交" }, { userId: "u1", name: "运营A" });
     assert.equal(submitted.status, "submitted");
     assert.equal(submitted.sellerCenterReference, "SC-1");
-    assert.equal(data.repositories.shopeeHealth.listAppealEvents(appeal.id).length, 2);
+    assert.equal((await data.repositories.shopeeHealth.listAppealEvents(appeal.id)).length, 2);
   } finally {
     cleanup();
     if (previousKey === undefined) delete process.env.APP_ENCRYPTION_KEY;
@@ -81,13 +81,13 @@ test("shop health scheduler becomes due once after configured Beijing time", asy
     let current = new Date("2026-08-08T00:59:00.000Z");
     const service = new ShopeeHealthService({ repository: data.repositories.shopeeHealth, client: mockClient(), shops, now: () => current });
     await service.saveSettings({ tokenKey: "replaceable-key-123456", scheduleTime: "09:00", retryCount: 3, warningRatio: 0.1 });
-    assert.equal(service.dueForSchedule(current), false);
+    assert.equal(await service.dueForSchedule(current), false);
     current = new Date("2026-08-08T01:00:00.000Z");
-    assert.equal(service.dueForSchedule(current), true);
-    const result = service.runScheduledIfDue(current);
+    assert.equal(await service.dueForSchedule(current), true);
+    const result = await service.runScheduledIfDue(current);
     assert.equal(result.started, true);
     await service.activePromise;
-    assert.equal(service.dueForSchedule(current), false);
+    assert.equal(await service.dueForSchedule(current), false);
   } finally {
     cleanup();
     if (previousKey === undefined) delete process.env.APP_ENCRYPTION_KEY;
@@ -111,10 +111,10 @@ test("notifications are optional and DingTalk stays disabled without a robot", a
     assert.equal(settings.dingtalkNotificationsEnabled, false);
     assert.equal(settings.dingtalkConfigId, null);
 
-    service.startCollection("manual");
+    await service.startCollection("manual");
     await service.activePromise;
-    assert.equal(data.repositories.shopeeHealth.listNotifications(20).length, 0);
-    assert.equal(service.dashboard().summary.activeIssues, 4);
+    assert.equal((await data.repositories.shopeeHealth.listNotifications(20)).length, 0);
+    assert.equal((await service.dashboard()).summary.activeIssues, 4);
   } finally {
     cleanup();
     if (previousKey === undefined) delete process.env.APP_ENCRYPTION_KEY;

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { loadLocalEnv } from "./lib/env.mjs";
 import { createMabangWorkerRunner } from "./lib/mabang-worker-runner.mjs";
 import { createMabangDataPersistenceService } from "./lib/mabang-data/persistence-service.mjs";
-import { openCommerceDataAccess } from "./lib/data/data-access.mjs";
+import { openConfiguredCommerceDataAccess } from "./lib/data/data-access.mjs";
 import { createTaskExecutor } from "./lib/mabang-scheduler/executor.mjs";
 import { MabangSchedulerService } from "./lib/mabang-scheduler/service.mjs";
 import { GrowthRadarService } from "./lib/growth-radar/growth-radar-service.mjs";
@@ -42,7 +42,7 @@ if (cleanup.removed || cleanup.errors) {
   console.log(`Temporary file cleanup: ${cleanup.removed} removed, ${cleanup.errors} errors`);
 }
 const exportRoot = fileStorage.exportRoot;
-const dataAccess = openCommerceDataAccess({ rootDir: runtimeConfig.appRoot, databasePath: runtimeConfig.databasePath });
+const dataAccess = await openConfiguredCommerceDataAccess({ runtimeConfig, env: process.env });
 const db = dataAccess.repositories.scheduler;
 const audit = createOperationAuditService({ repository: dataAccess.repositories.audit, env: process.env });
 const exportFileService = createExportFileService({

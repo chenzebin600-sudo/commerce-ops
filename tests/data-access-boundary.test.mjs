@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
+import { openConfiguredCommerceDataAccess } from "../lib/data/data-access.mjs";
 
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "commerce-data-access-"));
@@ -21,6 +22,51 @@ async function fixture() {
     },
   };
 }
+
+class IdentityClient {
+  async query(query) {
+    const text = typeof query === "string" ? query : query.text;
+    if (text.includes("set_config")) return { rows: [{}], rowCount: 1 };
+    if (text.includes("current_database")) return { rows: [{ database: "commerce_ops", username: "commerce_app", schema: "app" }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  }
+  release() {}
+}
+class IdentityPool {
+  on() {}
+  async connect() { return new IdentityClient(); }
+  async end() {}
+}
+
+test("explicit PostgreSQL data access selects shared adapters without touching SQLite", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "commerce-data-access-postgres-"));
+  const databasePath = path.join(root, "must-not-exist.sqlite");
+  const dataAccess = await openCommerceDataAccess({
+    rootDir: path.resolve("."), databasePath, providerName: "postgres",
+    postgresqlConfig: {
+      host: "10.110.80.117", port: 5432, database: "commerce_ops", schema: "app", appUser: "commerce_app",
+      sslmode: "verify-full", channelBinding: "require", ssl: { ca: "PUBLIC", rejectUnauthorized: true },
+      poolMax: 2, poolIdleTimeoutMs: 1000, connectionTimeoutMs: 1000, statementTimeoutMs: 1000,
+    },
+    credentials: { password: "local-only" }, PoolClass: IdentityPool,
+  });
+  try {
+    assert.equal(dataAccess.provider.dialect, "postgresql");
+    assert.equal(dataAccess.repositories.scheduler.constructor.name, "PostgresqlSchedulerRepository");
+    assert.equal(dataAccess.repositories.fileLifecycle.constructor.name, "PostgresqlFileLifecycleRepository");
+    assert.equal(dataAccess.repositories.fileReview.constructor.name, "PostgresqlFileReviewRepository");
+    assert.equal(dataAccess.repositories.shopeeHealth.constructor.name, "PostgresqlShopeeHealthRepository");
+    assert.equal(dataAccess.repositories.shopeeAdvertising.constructor.name, "PostgresqlShopeeAdvertisingRepository");
+    await assert.rejects(() => fs.stat(databasePath), { code: "ENOENT" });
+  } finally { await dataAccess.close(); await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("configured PostgreSQL startup rejects a missing local password", () => {
+  assert.throws(() => openConfiguredCommerceDataAccess({
+    runtimeConfig: { databaseProvider: "postgres", appRoot: path.resolve("."), databasePath: "ignored.sqlite" },
+    env: {},
+  }), /POSTGRES_APP_PASSWORD is required/);
+});
 
 test("all repositories share the provider-owned SQLite connection", async () => {
   const context = await fixture();
