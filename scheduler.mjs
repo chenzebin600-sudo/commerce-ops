@@ -14,6 +14,7 @@ import {
 } from "./lib/security/file-policy.mjs";
 import { createOperationAuditService } from "./lib/security/audit-service.mjs";
 import { resolveRuntimeConfig, runtimeEnvironment } from "./lib/runtime-config.mjs";
+import { createExternalTaskPolicy } from "./lib/runtime/external-task-policy.mjs";
 import { createExportFileService } from "./lib/files/export-file-service.mjs";
 import { pythonRuntimeError, resolvePythonRuntime } from "./lib/python-runtime.mjs";
 import { AiGateway } from "./lib/ai/ai-gateway.mjs";
@@ -31,6 +32,7 @@ const rootDir = path.dirname(fileURLToPath(import.meta.url));
 loadLocalEnv(rootDir);
 const runtimeConfig = resolveRuntimeConfig({ bootstrapRoot: rootDir, env: process.env });
 const runtimeEnv = { ...process.env, ...runtimeEnvironment(runtimeConfig) };
+const externalTaskPolicy = createExternalTaskPolicy({ databaseProvider: runtimeConfig.databaseProvider, env: runtimeEnv });
 
 const fileStorage = await ensureFileStorageRoots(resolveFileStorageConfig(runtimeConfig.appRoot, runtimeEnv));
 const cleanup = await cleanupTemporaryFiles(fileStorage.tempRoot, {
@@ -112,7 +114,10 @@ const executor = createTaskExecutor({
     return buildSalesAssortmentDailyReport({ dashboard, analysis, generatedAt });
   },
 });
-const scheduler = new MabangSchedulerService({ db, executor, exportRoot, audit });
+const scheduler = new MabangSchedulerService({
+  db, executor, exportRoot, audit,
+  ownerId: externalTaskPolicy.status().instanceId || undefined,
+});
 const shopeeHealthService = new ShopeeHealthService({
   repository: dataAccess.repositories.shopeeHealth,
   client: new ShopeeHealthClient({
@@ -121,14 +126,22 @@ const shopeeHealthService = new ShopeeHealthService({
   robotRepository: db,
 });
 
-await scheduler.start();
-shopeeHealthService.runScheduledIfDue();
-const shopeeHealthTimer = setInterval(() => shopeeHealthService.runScheduledIfDue(), 60_000);
-console.log(`Mabang scheduler started. Poll interval: ${scheduler.pollIntervalMs}ms`);
-console.log("Shopee health scheduler started. Daily timezone: Asia/Shanghai");
+let shopeeHealthTimer = null;
+if (!externalTaskPolicy.status().enabled) {
+  console.log("External task runners disabled by configuration.");
+} else if (await scheduler.start({ requireInitialLease: true })) {
+  externalTaskPolicy.setState("active");
+  await shopeeHealthService.runScheduledIfDue();
+  shopeeHealthTimer = setInterval(() => shopeeHealthService.runScheduledIfDue(), 60_000);
+  console.log(`Mabang scheduler started. Poll interval: ${scheduler.pollIntervalMs}ms`);
+  console.log("Shopee health scheduler started. Daily timezone: Asia/Shanghai");
+} else {
+  externalTaskPolicy.setState("waiting_for_lease");
+  console.log("External task runners waiting for the shared scheduler lease.");
+}
 
 async function shutdown() {
-  clearInterval(shopeeHealthTimer);
+  if (shopeeHealthTimer) clearInterval(shopeeHealthTimer);
   await scheduler.stop();
   await dataAccess.close();
   process.exit(0);

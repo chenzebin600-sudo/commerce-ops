@@ -76,6 +76,7 @@ import { resolveMabangListingInternalToken } from "./lib/mabang-listing-token.mj
 import { createMabangWpsAssistantManager } from "./lib/mabang-wps-assistant-manager.mjs";
 import { resolveChromeRuntime } from "./lib/chrome-runtime.mjs";
 import { resolveRuntimeConfig, runtimeEnvironment } from "./lib/runtime-config.mjs";
+import { createExternalTaskPolicy } from "./lib/runtime/external-task-policy.mjs";
 import { resolveAdServiceInternalToken } from "./lib/ad-service-token.mjs";
 import { resolvePythonRuntime } from "./lib/python-runtime.mjs";
 import { ProductImportService } from "./lib/product-center/product-import-service.mjs";
@@ -143,6 +144,7 @@ const growthRadarParserPath = path.join(__dirname, "scripts", "growth-radar-pars
 loadLocalEnv(__dirname);
 const runtimeConfig = resolveRuntimeConfig({ bootstrapRoot: __dirname, env: process.env });
 const runtimeEnv = { ...process.env, ...runtimeEnvironment(runtimeConfig) };
+const externalTaskPolicy = createExternalTaskPolicy({ databaseProvider: runtimeConfig.databaseProvider, env: runtimeEnv });
 const fileStorageConfig = await ensureFileStorageRoots(resolveFileStorageConfig(runtimeConfig.appRoot, runtimeEnv));
 const startupTempCleanup = await cleanupTemporaryFiles(fileStorageConfig.tempRoot, {
   retentionHours: fileStorageConfig.tempFileRetentionHours,
@@ -486,12 +488,16 @@ const handleSalesAssortmentApi = createSalesAssortmentApi({
   aiService: salesAssortmentAiService,
   accessPolicy: growthRadarAccessPolicy,
 });
-const runMabangWorker = createMabangWorkerRunner({
+const executeMabangWorker = createMabangWorkerRunner({
   rootDir: runtimeConfig.appRoot,
   exportRoot: fileStorageConfig.tempRoot,
   runtimeConfig,
   env: runtimeEnv,
 });
+const runMabangWorker = (...args) => {
+  externalTaskPolicy.assertAllowed("mabang_worker");
+  return executeMabangWorker(...args);
+};
 const inventorySyncService = new InventorySyncService({
   accountRepository: dataAccess.repositories.accounts,
   operationPlans: foundationService.operationPlans,
@@ -500,7 +506,10 @@ const inventorySyncService = new InventorySyncService({
     baseUrl: mabangListingProxyConfig.baseUrl,
     internalToken: mabangListingInternalToken,
   }),
-  ensureListingService: () => mabangListingServiceManager.ensure(),
+  ensureListingService: () => {
+    if (runtimeConfig.mabangListingServiceMode === "managed") externalTaskPolicy.assertAllowed("mabang_listing_service");
+    return mabangListingServiceManager.ensure();
+  },
   snapshotStore: new InventorySnapshotStore({
     rootDir: path.join(fileStorageConfig.storageRoot, "inventory-sync", "snapshots"),
   }),
@@ -741,6 +750,7 @@ function buildSearchUrl({ site, country, keyword }) {
 let ownedChromeChild = null;
 
 async function openChromeWindow() {
+  externalTaskPolicy.assertAllowed("chrome_browser");
   if (!chromeRuntime.ok) throw new Error("Chrome is unavailable; check CHROME_EXECUTABLE");
   await fs.mkdir(runtimeConfig.chromeProfileRoot, { recursive: true });
   if (ownedChromeChild && ownedChromeChild.exitCode == null) return ownedChromeChild;
@@ -762,6 +772,7 @@ async function openChromeWindow() {
 }
 
 async function ensureAdAnalyzerServer() {
+  if (runtimeConfig.adServiceMode === "managed") externalTaskPolicy.assertAllowed("advertising_service");
   return adServiceManager.ensure();
 }
 
@@ -2505,6 +2516,7 @@ async function handleApi(req, res, url) {
     if (req.method !== "GET" && req.method !== "POST") {
       return json(res, 405, { success: false, message: "Method not allowed" });
     }
+    if (runtimeConfig.mabangListingServiceMode === "managed") externalTaskPolicy.assertAllowed("mabang_listing_service");
     const status = await mabangListingServiceManager.ensure();
     return json(res, status.ok ? 200 : 503, {
       success: status.ok,
@@ -2513,6 +2525,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/mabang-listing/")) {
+    if (runtimeConfig.mabangListingServiceMode === "managed") externalTaskPolicy.assertAllowed("mabang_listing_service");
     const status = await mabangListingServiceManager.ensure();
     if (!status.ok) {
       return json(res, 503, {
@@ -2541,6 +2554,7 @@ async function handleApi(req, res, url) {
         error: "WPS assistant can only be opened from this computer",
       });
     }
+    externalTaskPolicy.assertAllowed("mabang_wps_assistant");
     const result = mabangWpsAssistantManager.launch();
     return json(res, result.ok ? 200 : 503, result);
   }
