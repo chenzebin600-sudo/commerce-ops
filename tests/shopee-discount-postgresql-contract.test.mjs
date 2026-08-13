@@ -81,25 +81,61 @@ test("PostgreSQL events normalize driver Date values to ISO strings", async () =
   assert.equal(event.createdAt, "2026-08-13T01:00:01.000Z");
 });
 
-test("PostgreSQL settings reject nested credential-shaped metadata without issuing SQL", async () => {
+test("PostgreSQL settings require an allowlisted metadata object and bind safe metadata", async () => {
   const provider = new RecordingProvider();
   const repository = new PostgresqlShopeeDiscountRepository({ provider });
-  await assert.rejects(repository.saveSettings({
-    metadata: { warehouse: { access_token: "nested-plaintext-secret" } },
-  }, { actorId: "admin" }), { code: "SHOPEE_DISCOUNT_PLAINTEXT_SECRET_REJECTED" });
+  for (const metadata of ["display metadata", ["display metadata"]]) {
+    await assert.rejects(repository.saveSettings({ metadata }, { actorId: "admin" }), {
+      code: "SHOPEE_DISCOUNT_SETTINGS_METADATA_INVALID",
+    });
+  }
+  for (const key of ["credential", "credentials", "privateKey", "accessKey", "key", "unknownDisplayField"]) {
+    for (const metadata of [{ [key]: "plaintext-secret" }, { notes: { [key]: "nested-plaintext-secret" } }]) {
+      await assert.rejects(repository.saveSettings({ metadata }, { actorId: "admin" }), {
+        code: "SHOPEE_DISCOUNT_SETTINGS_METADATA_INVALID",
+      });
+    }
+  }
+  for (const metadata of [{ notes: "actual-secret" }, { warehouseKeyMask: "zndr_live_raw_warehouse_key" }]) {
+    await assert.rejects(repository.saveSettings({ metadata }, { actorId: "admin" }), {
+      code: "SHOPEE_DISCOUNT_SETTINGS_METADATA_INVALID",
+    });
+  }
   assert.equal(provider.calls.length, 0);
+
+  const metadata = {
+    warehouseKeyVerifiedAt: "2026-08-13T11:30:00.000Z",
+    warehouseKeyMask: "key-…9f2a",
+    catalogPermissionVerifiedAt: "2026-08-13T11:31:00.000Z",
+  };
+  provider.responses.push({ rows: [{
+    id: "default", enabled: true, timezone: "Asia/Shanghai", metadata_json: metadata,
+    created_at: new Date("2026-08-13T00:00:00.000Z"), updated_at: new Date("2026-08-13T00:00:00.000Z"),
+  }], rowCount: 1 });
+  const settings = await repository.saveSettings({ metadata }, { actorId: "admin" });
+  assert.deepEqual(settings.metadata, metadata);
+  assert.equal(provider.calls.length, 1);
+  assert.equal(provider.calls[0].values.includes(JSON.stringify(metadata)), true);
 });
 
 test("PostgreSQL settings redact historical credential-shaped metadata on output", async () => {
   const provider = new RecordingProvider([{ rows: [{
     id: "default", enabled: true, timezone: "Asia/Shanghai",
-    metadata_json: { integration: { access_token: "historical-plaintext-secret", label: "safe" } },
+    metadata_json: {
+      warehouseKeyVerifiedAt: "2026-08-13T11:30:00.000Z",
+      warehouseKeyMask: "zndr_historical_raw_warehouse_key",
+      notes: "historical free-form field",
+      credentials: "historical-plaintext-secret",
+      nested: { label: "unknown historical data" },
+    },
     created_at: new Date("2026-08-13T00:00:00.000Z"), updated_at: new Date("2026-08-13T00:00:00.000Z"),
   }], rowCount: 1 }]);
   const repository = new PostgresqlShopeeDiscountRepository({ provider });
   const settings = await repository.getSettings();
   assert.equal(JSON.stringify(settings).includes("historical-plaintext-secret"), false);
-  assert.equal(settings.metadata.integration.label, "safe");
+  assert.deepEqual(settings.metadata, {
+    warehouseKeyVerifiedAt: "2026-08-13T11:30:00.000Z",
+  });
 });
 
 test("PostgreSQL plan state changes reject lifecycle shortcuts before SQL", async () => {

@@ -324,28 +324,57 @@ test("settings persist encrypted warehouse references and never accept or return
     await assert.rejects(context.repository.saveSettings({ warehouseKey: "plaintext-secret" }, { actorId: "admin" }), {
       code: "SHOPEE_DISCOUNT_PLAINTEXT_SECRET_REJECTED",
     });
-    await assert.rejects(context.repository.saveSettings({
-      metadata: { integration: { api_key: "nested-plaintext-secret" } },
-    }, { actorId: "admin" }), { code: "SHOPEE_DISCOUNT_PLAINTEXT_SECRET_REJECTED" });
+    for (const metadata of ["display metadata", ["display metadata"]]) {
+      await assert.rejects(context.repository.saveSettings({ metadata }, { actorId: "admin" }), {
+        code: "SHOPEE_DISCOUNT_SETTINGS_METADATA_INVALID",
+      });
+    }
+    for (const key of ["credential", "credentials", "privateKey", "accessKey", "key", "unknownDisplayField"]) {
+      for (const metadata of [{ [key]: "plaintext-secret" }, { notes: { [key]: "nested-plaintext-secret" } }]) {
+        await assert.rejects(context.repository.saveSettings({ metadata }, { actorId: "admin" }), {
+          code: "SHOPEE_DISCOUNT_SETTINGS_METADATA_INVALID",
+        });
+      }
+    }
+    for (const metadata of [{ notes: "actual-secret" }, { warehouseKeyMask: "zndr_live_raw_warehouse_key" }]) {
+      await assert.rejects(context.repository.saveSettings({ metadata }, { actorId: "admin" }), {
+        code: "SHOPEE_DISCOUNT_SETTINGS_METADATA_INVALID",
+      });
+    }
+    const metadata = {
+      warehouseKeyVerifiedAt: "2026-08-13T11:30:00.000Z",
+      warehouseKeyMask: "key-…9f2a",
+      catalogPermissionVerifiedAt: "2026-08-13T11:31:00.000Z",
+    };
     const settings = await context.repository.saveSettings({
       encryptedWarehouseKeyCiphertext: "ciphertext-value",
       warehouseKeyReference: "vault://commerce/shopee-discount",
       warehouseKeyHint: "key-…9f2a",
       timezone: "Asia/Shanghai",
       enabled: true,
+      metadata,
     }, { actorId: "admin", occurredAt: "2026-08-13T12:00:00.000Z" });
     assert.equal(settings.encryptedWarehouseKeyCiphertext, "ciphertext-value");
     assert.equal(settings.warehouseKeyReference, "vault://commerce/shopee-discount");
     assert.equal(settings.warehouseKeyHint, "key-…9f2a");
+    assert.deepEqual(settings.metadata, metadata);
     assert.equal(Object.hasOwn(settings, "warehouseKey"), false);
     assert.equal(JSON.stringify(settings).includes("plaintext-secret"), false);
     assert.deepEqual(await context.repository.getSettings(), settings);
     context.db.prepare("UPDATE shopee_discount_settings SET metadata_json=? WHERE id='default'").run(
-      JSON.stringify({ integration: { access_token: "historical-plaintext-secret", label: "safe" } }),
+      JSON.stringify({
+        warehouseKeyVerifiedAt: "2026-08-13T11:30:00.000Z",
+        warehouseKeyMask: "zndr_historical_raw_warehouse_key",
+        notes: "historical free-form field",
+        credentials: "historical-plaintext-secret",
+        nested: { label: "unknown historical data" },
+      }),
     );
     const sanitized = await context.repository.getSettings();
     assert.equal(JSON.stringify(sanitized).includes("historical-plaintext-secret"), false);
-    assert.equal(sanitized.metadata.integration.label, "safe");
+    assert.deepEqual(sanitized.metadata, {
+      warehouseKeyVerifiedAt: "2026-08-13T11:30:00.000Z",
+    });
   } finally {
     await context.close();
   }
