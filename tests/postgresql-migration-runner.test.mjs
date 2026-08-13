@@ -61,10 +61,11 @@ test("shared migration set contains the additive bridge for every missing C modu
   const migrations = await loadPostgresqlMigrations(path.resolve("migrations", "postgresql"));
   assert.deepEqual(migrations.map(({ version }) => version), [
     "001_shared_baseline",
+    "027_shopee_discount",
     "033_shared_development_modules",
     "034_shared_module_text_identifiers",
   ]);
-  const additive = migrations[1].sql;
+  const additive = migrations[2].sql;
   for (const table of [
     "advertising_performance_facts",
     "advertising_source_batches",
@@ -86,7 +87,7 @@ test("shared migration set contains the additive bridge for every missing C modu
   assert.match(additive, /"task_id" text REFERENCES "app"\."foundation_tasks" \("id"\)/);
   assert.match(additive, /"dingtalk_config_id" text REFERENCES "app"\."dingtalk_robot_configs" \("id"\)/);
   assert.doesNotMatch(additive, /DROP\s|TRUNCATE\s|DELETE\s+FROM|UPDATE\s+"app"/i);
-  const identifierFix = migrations[2].sql;
+  const identifierFix = migrations[3].sql;
   for (const [table, column] of [
     ["advertising_performance_facts", "product_id"],
     ["advertising_target_policies", "product_id"],

@@ -57,6 +57,7 @@ test("explicit PostgreSQL data access selects shared adapters without touching S
     assert.equal(dataAccess.repositories.fileReview.constructor.name, "PostgresqlFileReviewRepository");
     assert.equal(dataAccess.repositories.shopeeHealth.constructor.name, "PostgresqlShopeeHealthRepository");
     assert.equal(dataAccess.repositories.shopeeAdvertising.constructor.name, "PostgresqlShopeeAdvertisingRepository");
+    assert.equal(dataAccess.repositories.shopeeDiscount.constructor.name, "PostgresqlShopeeDiscountRepository");
     await assert.rejects(() => fs.stat(databasePath), { code: "ENOENT" });
   } finally { await dataAccess.close(); await fs.rm(root, { recursive: true, force: true }); }
 });
