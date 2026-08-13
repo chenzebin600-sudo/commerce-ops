@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildApprovalRoot } from "../lib/shopee-discount/approval-hash.mjs";
+import { buildApprovalRoot, buildApprovalRootFromShardHashes } from "../lib/shopee-discount/approval-hash.mjs";
 
 function item(overrides = {}) {
   return {
@@ -16,6 +16,15 @@ function item(overrides = {}) {
     price_tier: "DAILY",
     rule_source: "COUNTRY_DEFAULT",
     warehouse_watermark: "warehouse-v1",
+    warehouse_approved_at: null,
+    activity_type: "CURRENT_CORRECTION",
+    target_discount_id: "900",
+    renewal_discount_name: null,
+    renewal_marker: null,
+    renewal_price_tier: null,
+    renewal_starts_at: null,
+    renewal_ends_at: null,
+    renewal_fingerprint: null,
     ...overrides,
   };
 }
@@ -37,6 +46,29 @@ test("approval hashing rejects duplicate immutable identity keys and missing imm
   assert.throws(() => buildApprovalRoot([missing]), /warehouse_watermark/i);
 });
 
+test("approval V2 binds current targets, warehouse null transitions, and complete renewal identity", () => {
+  const current = buildApprovalRoot([item()]);
+  for (const changed of [
+    item({ target_discount_id: "901" }),
+    item({ warehouse_approved_at: "2026-08-13T08:00:00.000Z" }),
+  ]) assert.notEqual(buildApprovalRoot([changed]).root, current.root);
+
+  const renewal = item({
+    activity_type: "NEXT_RENEWAL",
+    target_discount_id: null,
+    renewal_discount_name: "PM-TH-DAILY-2026-08-15-A1B2C3D4",
+    renewal_marker: "PM-TH-DAILY-2026-08-15-A1B2C3D4",
+    renewal_price_tier: "DAILY",
+    renewal_starts_at: "2026-08-15T00:00:00.000Z",
+    renewal_ends_at: "2026-09-14T00:00:00.000Z",
+    renewal_fingerprint: "f".repeat(64),
+  });
+  const renewalRoot = buildApprovalRoot([renewal]).root;
+  for (const field of ["renewal_discount_name", "renewal_marker", "renewal_price_tier", "renewal_starts_at", "renewal_ends_at", "renewal_fingerprint"]) {
+    assert.notEqual(buildApprovalRoot([{ ...renewal, [field]: `${renewal[field]}-changed` }]).root, renewalRoot, field);
+  }
+});
+
 test("approval merkle vectors duplicate an odd leaf and bind shard boundaries", () => {
   const alpha = item({ shop_id: "shop-b", item_id: "item-a", model_id: "model-a", sku: "A", warehouse_watermark: "v1" });
   const beta = item({ shop_id: "shop-a", item_id: "item-b", model_id: "model-b", sku: "B", warehouse_watermark: "v2" });
@@ -44,21 +76,29 @@ test("approval merkle vectors duplicate an odd leaf and bind shard boundaries", 
 
   const odd = buildApprovalRoot([alpha, beta, gamma], { shardSize: 3 });
   assert.deepEqual(odd, {
-    version: "SHOPEE_DISCOUNT_APPROVAL_V1",
-    root: "8bb86c28c8a960196565e59d678bef6b74d0368b08d1a1cb71742f6224ec4357",
-    shardHashes: ["41776a5f27a8dfc5d72a3f293ba145410851353e4ac77731a8a134cdc90065f6"],
+    version: "SHOPEE_DISCOUNT_APPROVAL_V2",
+    root: "3db9f860967316a6e71ccaea9f8cfbc9c40381f54ff6ee30977d29c9a5205bf2",
+    shardHashes: ["b63d016b2383cc2746b83ba2368e7996c0ee322fde3bf5fbcbb279d076a14874"],
     itemCount: 3,
   });
 
   const sharded = buildApprovalRoot([alpha, beta, gamma], { shardSize: 2 });
   assert.deepEqual(sharded, {
-    version: "SHOPEE_DISCOUNT_APPROVAL_V1",
-    root: "3ef3a83ad24b5db0171b0305fdff2663808399cc0295b95b1a8ed2cf9af4221b",
+    version: "SHOPEE_DISCOUNT_APPROVAL_V2",
+    root: "41fec20fdc3c7328a466c1775606aedc6bab46624d9641a886a992faeab0d314",
     shardHashes: [
-      "1064c012fa5a222099a7aca283af47ea87a52e237278731c975c72bf71b86ae4",
-      "ac430c607a31be6fdeca4da42cf9db76ea5f7864142e30aef0821532185bfd49",
+      "b7abf0b8a9993fce7ead3b57b9698253024554079033e1dd734e66bf62ebbfaa",
+      "a579f2fc1d1dadef3d9699423f0e2f60a4aaf3d67fddd54a5430e814ab8d5e29",
     ],
     itemCount: 3,
   });
   assert.notEqual(sharded.root, odd.root);
+});
+
+test("a streamed shard accumulator reproduces the canonical approval root", () => {
+  const built = buildApprovalRoot([
+    item({ shop_id: "shop-b", item_id: "item-2", model_id: "model-2" }),
+    item({ shop_id: "shop-a", item_id: "item-1", model_id: "model-1" }),
+  ], { shardSize: 1 });
+  assert.deepEqual(buildApprovalRootFromShardHashes(built.shardHashes, built.itemCount), built);
 });

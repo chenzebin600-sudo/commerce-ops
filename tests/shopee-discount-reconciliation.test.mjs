@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
 
 const NOW = "2026-08-14T00:00:00.000Z";
@@ -233,4 +234,71 @@ test("reconciliation rejects invalid transitions, requeue, replacement UUID, and
   } finally {
     await context.close();
   }
+});
+
+test("LINK_VERIFIED_OBJECT for create verifies the stored marker identity and atomically binds the activity", async () => {
+  const context = await fixture();
+  try {
+    const metadata = {
+      workflow: "NEXT_RENEWAL",
+      priceTier: "DAILY",
+      discountName: "PM-TH-DAILY-2026-08-15-A1B2C3D4",
+      marker: "PM-TH-DAILY-2026-08-15-A1B2C3D4",
+      fingerprint: "f".repeat(64),
+    };
+    context.access.provider.connection.prepare(`UPDATE shopee_discount_activities
+      SET activity_type='NEXT_RENEWAL',platform_activity_id=NULL,metadata_json=? WHERE plan_id='plan-reconcile'`).run(JSON.stringify(metadata));
+    const target = {
+      discountName: metadata.discountName,
+      startTime: String(Date.parse("2026-08-15T00:00:00.000Z") / 1_000),
+      endTime: String(Date.parse("2026-09-14T00:00:00.000Z") / 1_000),
+      fingerprint: metadata.fingerprint,
+    };
+    const intent = await context.repository.createDispatchIntent({
+      id: "intent-create-reconcile", jobId: "job-reconcile", planId: "plan-reconcile",
+      operationUuid: "22222222-2222-4222-8222-222222222222", targetType: "createDiscount",
+      targetKey: `1\u001f${metadata.fingerprint}`,
+      payloadHash: createHash("sha256").update(JSON.stringify(target)).digest("hex"), ownerId: "worker-1", epoch: 1,
+    });
+    await context.repository.markDispatchUnknown({ intentId: intent.id, ownerId: "worker-1", epoch: 1, evidence: { responseLost: true } });
+    const { reconcileIntent } = await import("../lib/shopee-discount/reconciliation.mjs");
+    const exact = {
+      verified: true, markerVerified: true, operationUuid: intent.operationUuid, payloadHash: intent.payloadHash,
+      platformObjectId: "901", shopId: "1", discountName: metadata.discountName, marker: metadata.marker,
+      fingerprint: metadata.fingerprint, startTime: target.startTime, endTime: target.endTime,
+    };
+    await assert.rejects(reconcileIntent(intent.id, "LINK_VERIFIED_OBJECT", {
+      repository: context.repository, actorId: "trusted-auditor", requestId: "reconcile-create-wrong",
+      async readbackIntent() { return { ...exact, fingerprint: "wrong" }; },
+    }), { code: "SHOPEE_DISCOUNT_RECONCILIATION_READBACK_MISMATCH" });
+    const result = await reconcileIntent(intent.id, "LINK_VERIFIED_OBJECT", {
+      repository: context.repository, actorId: "trusted-auditor", requestId: "reconcile-create",
+      async readbackIntent() { return exact; },
+    });
+    assert.equal(result.status, "LINK_VERIFIED_OBJECT");
+    const activity = context.access.provider.connection.prepare(`SELECT platform_activity_id FROM shopee_discount_activities
+      WHERE plan_id='plan-reconcile' AND shop_id='1'`).get();
+    assert.equal(activity.platform_activity_id, "901");
+  } finally { await context.close(); }
+});
+
+test("oversized reconciliation evidence keeps essential proof fields and a cryptographic digest", async () => {
+  const context = await fixture();
+  try {
+    const { reconcileIntent } = await import("../lib/shopee-discount/reconciliation.mjs");
+    await reconcileIntent(context.intent.id, "CONFIRMED_NOT_SENT", {
+      repository: context.repository, actorId: "trusted-auditor", requestId: "reconcile-large-proof",
+      async confirmNotSent(intent) {
+        return { deterministic: true, source: "RELAY", transmitted: false, operationUuid: intent.operationUuid, trace: "x".repeat(20_000) };
+      },
+    });
+    const evidence = JSON.parse(context.access.provider.connection.prepare(
+      "SELECT evidence_json FROM shopee_discount_dispatch_intents WHERE id=?",
+    ).get(context.intent.id).evidence_json);
+    assert.equal(evidence.requestId, "reconcile-large-proof");
+    assert.equal(evidence.operationUuid, OPERATION_UUID);
+    assert.equal(evidence.source, "RELAY");
+    assert.match(evidence.sha256, /^[a-f0-9]{64}$/);
+    assert.ok(JSON.stringify(evidence).length <= 4_096);
+  } finally { await context.close(); }
 });

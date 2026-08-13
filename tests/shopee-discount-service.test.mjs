@@ -192,6 +192,38 @@ test("renewal preview persists its immutable activity marker and warehouse appro
   } finally { await context.close(); }
 });
 
+test("renewal identity uses each shop override tier and approval binds the stored target fields", async () => {
+  const shopee = fakeShopee({
+    shops: [shop("1", "TH"), shop("2", "TH")],
+    itemsByShop: {
+      "1": [{ item_id: "10", item_status: "NORMAL" }],
+      "2": [{ item_id: "20", item_status: "NORMAL" }],
+    },
+    modelsByItem: {
+      "10": [model("100", "SKU-A", "10000", "9500")],
+      "20": [model("200", "SKU-B", "10000", "9500")],
+    },
+  });
+  const warehouse = { async scanPrices({ skus }) {
+    return warehouseSnapshot(skus.map((sku) => ({ sku, dailyMinor: "9000", eventMinor: "8800" })));
+  } };
+  const context = await fixture({ shopee, warehouse });
+  try {
+    context.access.repositories.shopeeDiscount.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+    const preview = await context.service.createPreview(previewInput({
+      shopIds: ["1", "2"],
+      workflow: "NEXT_RENEWAL",
+      renewal: { requestedStartAt: "2026-08-15T00:00:00.000Z", durationDays: 30 },
+      shopOverrides: [{ shopId: "2", priceTier: "EVENT" }],
+    }), { requestId: "renewal-tier-preview" });
+    const activities = await context.access.repositories.shopeeDiscount.listPlanActivities(preview.id);
+    assert.deepEqual(activities.map(({ shopId, metadata }) => [shopId, metadata.priceTier]), [["1", "DAILY"], ["2", "EVENT"]]);
+    assert.match(activities[1].metadata.discountName, /^PM-TH-EVENT-/);
+    const page = await context.service.listPreviewItems(preview.id, { pageSize: 10 }, {});
+    assert.deepEqual(page.items.map(({ shopId, payload }) => [shopId, payload.approvalTarget.renewalPriceTier]), [["1", "DAILY"], ["2", "EVENT"]]);
+  } finally { await context.close(); }
+});
+
 test("a normal renewal preview can be approved, queued, and executed without live Shopee", async () => {
   const shopee = fakeShopee({
     itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },

@@ -27,6 +27,14 @@ function approvalItem(overrides = {}) {
     rule_source: "COUNTRY_DEFAULT",
     warehouse_watermark: "2026-08-13T23:00:00.000Z",
     warehouse_approved_at: "2026-08-13T22:00:00.000Z",
+    activity_type: "CURRENT_CORRECTION",
+    target_discount_id: "900",
+    renewal_discount_name: null,
+    renewal_marker: null,
+    renewal_price_tier: null,
+    renewal_starts_at: null,
+    renewal_ends_at: null,
+    renewal_fingerprint: null,
     ...overrides,
   };
 }
@@ -48,9 +56,29 @@ async function fixture({ workflow = "CURRENT_CORRECTION", approvalItems = [appro
   const foundation = new FoundationService({ repository: access.repositories.foundation, now: () => clock.now() });
   const policy = { contractVersion: 1, writeGate: "strict" };
   const policyHash = foundationContentHash(policy);
-  const approvalHash = buildApprovalRoot(approvalItems, { shardSize: 2 });
+  const planId = `plan-${workflow.toLowerCase()}`;
+  const targetStartsAt = "2026-08-15T00:00:00.000Z";
+  const targetEndsAt = "2026-09-14T00:00:00.000Z";
+  const approvedItems = approvalItems.map((item) => {
+    if (workflow !== "NEXT_RENEWAL") return item;
+    const identity = buildRenewalActivityIdentity({
+      planId, country: "TH", shopId: item.shop_id, priceTier: item.price_tier, targetStartsAt, targetEndsAt,
+    });
+    return {
+      ...item,
+      activity_type: workflow,
+      target_discount_id: null,
+      renewal_discount_name: identity.discountName,
+      renewal_marker: identity.marker,
+      renewal_price_tier: identity.priceTier,
+      renewal_starts_at: targetStartsAt,
+      renewal_ends_at: targetEndsAt,
+      renewal_fingerprint: identity.fingerprint,
+    };
+  });
+  const approvalHash = buildApprovalRoot(approvedItems, { shardSize: 2 });
   const confirmationText = `confirm ${workflow}`;
-  const sourceSnapshot = { merkleRoot: approvalHash.root, shopIds: [...new Set(approvalItems.map((item) => item.shop_id))] };
+  const sourceSnapshot = { merkleRoot: approvalHash.root, shopIds: [...new Set(approvedItems.map((item) => item.shop_id))] };
   const foundationPlan = await foundation.operationPlans.create({
     id: `foundation-${workflow.toLowerCase()}`,
     operationType: "SHOPEE.DISCOUNT.PRICE_MATCH",
@@ -64,9 +92,6 @@ async function fixture({ workflow = "CURRENT_CORRECTION", approvalItems = [appro
     ttlMs: 60 * 60_000,
     createdBy: ACTOR,
   });
-  const planId = `plan-${workflow.toLowerCase()}`;
-  const targetStartsAt = "2026-08-15T00:00:00.000Z";
-  const targetEndsAt = "2026-09-14T00:00:00.000Z";
   const activities = sourceSnapshot.shopIds.map((shopId) => ({
     shopId,
     activityType: workflow,
@@ -90,7 +115,7 @@ async function fixture({ workflow = "CURRENT_CORRECTION", approvalItems = [appro
     expiresAt: "2026-08-14T01:00:00.000Z",
     summary: { merkleRoot: approvalHash.root },
   });
-  const persistedItems = approvalItems.map((item, sequence) => ({
+  const persistedItems = approvedItems.map((item, sequence) => ({
       id: `plan-item-${sequence}`,
       sequence,
       shopId: item.shop_id,
@@ -110,6 +135,16 @@ async function fixture({ workflow = "CURRENT_CORRECTION", approvalItems = [appro
         originalMinor: item.original_minor,
         warehouseWatermark: item.warehouse_watermark,
         warehouseApprovedAt: item.warehouse_approved_at,
+        approvalTarget: {
+          activityType: item.activity_type,
+          targetDiscountId: item.target_discount_id,
+          renewalDiscountName: item.renewal_discount_name,
+          renewalMarker: item.renewal_marker,
+          renewalPriceTier: item.renewal_price_tier,
+          renewalStartsAt: item.renewal_starts_at,
+          renewalEndsAt: item.renewal_ends_at,
+          renewalFingerprint: item.renewal_fingerprint,
+        },
         stock: 10,
         activity: workflow === "CURRENT_CORRECTION" ? { discountId: "900" } : null,
       },
@@ -125,7 +160,7 @@ async function fixture({ workflow = "CURRENT_CORRECTION", approvalItems = [appro
   domainPlan = await repository.sealPlan({
     planId: domainPlan.id,
     merkleRoot: approvalHash.root,
-    itemCount: approvalItems.length,
+    itemCount: approvedItems.length,
     shardCount: approvalHash.shardHashes.length,
     expectedVersion: domainPlan.stateVersion,
   });
@@ -196,6 +231,8 @@ async function fixture({ workflow = "CURRENT_CORRECTION", approvalItems = [appro
           platformObjectId: activity.platformActivityId || "901",
           markerVerified: item == null,
           membership: true,
+          itemId: item?.itemId ?? null,
+          modelId: item?.modelId ?? null,
           priceMinor: item?.targetPriceMinor ?? null,
         };
       },
@@ -312,6 +349,25 @@ test("a repeated run repairs completion after process loss without dispatching a
   }
 });
 
+test("resume repairs domain EXECUTING and Foundation APPROVED before any write", async () => {
+  const context = await fixture();
+  try {
+    context.workerContext.afterDomainExecuting = async () => {
+      throw Object.assign(new Error("injected begin gap"), { code: "INJECTED_FOUNDATION_BEGIN_GAP" });
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    await assert.rejects(runApprovedPlan(context.domainPlan.id, context.workerContext), { code: "INJECTED_FOUNDATION_BEGIN_GAP" });
+    assert.equal((await context.repository.getPlan(context.domainPlan.id)).state, "EXECUTING");
+    assert.equal((await context.foundation.operationPlans.get(context.foundationPlan.id)).state, "APPROVED");
+    assert.equal(context.calls.length, 0);
+    delete context.workerContext.afterDomainExecuting;
+    const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(summary.status, "SUCCEEDED");
+    assert.equal(context.calls.length, 1);
+    assert.equal((await context.foundation.operationPlans.get(context.foundationPlan.id)).state, "SUCCEEDED");
+  } finally { await context.close(); }
+});
+
 test("executor continuously renews its lease while a Shopee network response is deferred", async () => {
   const context = await fixture();
   try {
@@ -357,6 +413,35 @@ test("lease loss immediately before dispatch stops the transport after the durab
   } finally {
     await context.close();
   }
+});
+
+test("predispatch awaits an in-flight renewal that loses the epoch and sends nothing", async () => {
+  const context = await fixture();
+  try {
+    context.workerContext.leaseMs = 100;
+    let releaseRenewal;
+    let enteredRenewal;
+    const entered = new Promise((resolve) => { enteredRenewal = resolve; });
+    const deferred = new Promise((resolve) => { releaseRenewal = resolve; });
+    let renewals = 0;
+    const original = context.repository.renewJobLease.bind(context.repository);
+    context.repository.renewJobLease = async (input) => {
+      renewals += 1;
+      if (renewals === 1) {
+        enteredRenewal();
+        return deferred;
+      }
+      return original(input);
+    };
+    context.workerContext.afterIntentPersisted = async () => {
+      await entered;
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      releaseRenewal(false);
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    await assert.rejects(runApprovedPlan(context.domainPlan.id, context.workerContext), { code: "SHOPEE_DISCOUNT_LEASE_LOST" });
+    assert.equal(context.calls.length, 0);
+  } finally { await context.close(); }
 });
 
 test("a late response after fencing loss is coordination evidence and cannot advance canonical state", async () => {
@@ -436,11 +521,57 @@ for (const ambiguous of [
       assert.equal(summary.status, "BLOCKED");
       assert.equal(summary.counts.UNKNOWN, 1);
       assert.equal(context.access.provider.connection.prepare("SELECT status FROM shopee_discount_dispatch_intents WHERE job_id=?").get(context.job.id).status, "UNKNOWN");
+      assert.equal((await context.repository.getJob(context.job.id)).status, "RUNNING");
+      assert.equal((await context.foundation.operationPlans.get(context.foundationPlan.id)).state, "IN_FLIGHT");
     } finally {
       await context.close();
     }
   });
 }
+
+test("an UNKNOWN job later proves the same intent by readback without replaying POST", async () => {
+  const context = await fixture();
+  try {
+    context.workerContext.shopeeWrite.updateDiscountItems = async (input) => {
+      context.calls.push({ operation: "updateDiscountItems", input });
+      throw Object.assign(new Error("response lost"), { code: "SHOPEE_WRITE_UNKNOWN" });
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const blocked = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(blocked.counts.UNKNOWN, 1);
+    context.workerContext.readers.readbackIntent = async ({ item, activity }) => ({
+      activityId: activity.platformActivityId,
+      platformObjectId: activity.platformActivityId,
+      membership: true,
+      itemId: item.itemId,
+      modelId: item.modelId,
+      priceMinor: item.targetPriceMinor,
+    });
+    const recovered = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(recovered.status, "SUCCEEDED");
+    assert.equal(context.calls.length, 1);
+  } finally { await context.close(); }
+});
+
+test("AUTH_BLOCKED shop resumes after reauthorization and revalidates before first POST", async () => {
+  const context = await fixture();
+  try {
+    let authorized = false;
+    let warehouseReads = 0;
+    const originalWarehouse = context.workerContext.readers.getWarehouseState;
+    context.workerContext.readers.getShopAuthorization = async () => ({ authorized });
+    context.workerContext.readers.getWarehouseState = async (input) => { warehouseReads += 1; return originalWarehouse(input); };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const blocked = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(blocked.counts.AUTH_BLOCKED, 1);
+    assert.equal((await context.repository.getJob(context.job.id)).status, "RUNNING");
+    authorized = true;
+    const resumed = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(resumed.status, "SUCCEEDED");
+    assert.equal(warehouseReads, 1);
+    assert.equal(context.calls.length, 1);
+  } finally { await context.close(); }
+});
 
 test("post-write readback distinguishes membership conflict from a one-minor-unit UNKNOWN price", async () => {
   const conflict = await fixture();
@@ -470,6 +601,24 @@ test("post-write readback distinguishes membership conflict from a one-minor-uni
   }
 });
 
+for (const invalidReadback of [
+  { name: "missing platform object", value: { activityId: "900", platformObjectId: null, membership: true, itemId: "100", modelId: "1000", priceMinor: "119900" } },
+  { name: "wrong item", value: { activityId: "900", platformObjectId: "900", membership: true, itemId: "101", modelId: "1000", priceMinor: "119900" } },
+  { name: "wrong model", value: { activityId: "900", platformObjectId: "900", membership: true, itemId: "100", modelId: "1001", priceMinor: "119900" } },
+  { name: "missing model", value: { activityId: "900", platformObjectId: "900", membership: true, itemId: "100", modelId: null, priceMinor: "119900" } },
+]) {
+  test(`official readback with ${invalidReadback.name} stays UNKNOWN`, async () => {
+    const context = await fixture();
+    try {
+      context.workerContext.readers.readbackIntent = async () => invalidReadback.value;
+      const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+      const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+      assert.equal(summary.counts.UNKNOWN, 1);
+      assert.equal(summary.counts.SUCCEEDED, 0);
+    } finally { await context.close(); }
+  });
+}
+
 test("a definite platform rejection isolates one variant while later variants still succeed", async () => {
   const context = await fixture({
     approvalItems: [
@@ -491,10 +640,30 @@ test("a definite platform rejection isolates one variant while later variants st
     assert.equal(summary.status, "PARTIAL_SUCCESS");
     assert.equal(summary.counts.REJECTED, 1);
     assert.equal(summary.counts.SUCCEEDED, 1);
+    assert.equal(context.access.provider.connection.prepare(`SELECT status FROM shopee_discount_dispatch_intents
+      WHERE plan_item_id='plan-item-0'`).get().status, "CONFIRMED_NOT_SENT");
   } finally {
     await context.close();
   }
 });
+
+for (const readbackFailure of ["SHOPEE_BUSINESS_ERROR", "SHOPEE_AUTH_ERROR"]) {
+  test(`a successful POST followed by ${readbackFailure} readback remains UNKNOWN`, async () => {
+    const context = await fixture();
+    try {
+      context.workerContext.readers.readbackIntent = async () => {
+        throw Object.assign(new Error("readback failed after send"), { code: readbackFailure });
+      };
+      const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+      const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+      assert.equal(context.calls.length, 1);
+      assert.equal(summary.counts.UNKNOWN, 1);
+      assert.equal(summary.counts.REJECTED, 0);
+      assert.equal(summary.counts.AUTH_BLOCKED, 0);
+      assert.equal(context.access.provider.connection.prepare("SELECT status FROM shopee_discount_dispatch_intents WHERE job_id=?").get(context.job.id).status, "UNKNOWN");
+    } finally { await context.close(); }
+  });
+}
 
 test("shop authorization failure creates a high-priority issue and does not stop another shop", async () => {
   const context = await fixture({
@@ -513,7 +682,7 @@ test("shop authorization failure creates a high-priority issue and does not stop
     };
     const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
     const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
-    assert.equal(summary.status, "PARTIAL_SUCCESS");
+    assert.equal(summary.status, "BLOCKED");
     assert.equal(summary.counts.AUTH_BLOCKED, 2);
     assert.equal(summary.counts.SUCCEEDED, 1);
     assert.deepEqual(authorizationReads, ["1", "2"]);
@@ -551,7 +720,7 @@ test("a shop removed from the write whitelist is isolated while another shop con
     });
     const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
     const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
-    assert.equal(summary.status, "PARTIAL_SUCCESS");
+    assert.equal(summary.status, "BLOCKED");
     assert.equal(summary.counts.AUTH_BLOCKED, 1);
     assert.equal(summary.counts.SUCCEEDED, 1);
     assert.equal(context.calls.length, 1);
@@ -649,6 +818,99 @@ test("NEXT_RENEWAL rejects a marker that no longer matches the immutable plan id
   }
 });
 
+for (const renewalBlock of [
+  {
+    name: "shop removed from whitelist",
+    change(context) {
+      context.workerContext.writeSecurity = () => ({ enabled: true, mode: "trusted_single_role", constraints: { countries: ["TH"], shops: ["2"], maxBatchItems: 10 } });
+    },
+    status: "AUTH_BLOCKED",
+  },
+  {
+    name: "shop authorization revoked",
+    change(context) { context.workerContext.readers.getShopAuthorization = async () => ({ authorized: false }); },
+    status: "AUTH_BLOCKED",
+  },
+  {
+    name: "warehouse drift",
+    change(context) { context.workerContext.readers.getWarehouseState = async ({ item }) => ({ targetPriceMinor: "1", watermark: item.payload.warehouseWatermark, approvedAt: item.payload.warehouseApprovedAt }); },
+    status: "REQUIRES_REAPPROVAL",
+  },
+  {
+    name: "listing prerequisite failure",
+    change(context) { context.workerContext.readers.getListingState = async ({ item }) => ({ status: "DELISTED", sku: item.sku, originalPriceMinor: item.payload.originalMinor }); },
+    status: "REQUIRES_REAPPROVAL",
+  },
+  {
+    name: "overlap race",
+    change(context) { context.workerContext.readers.getDiscountState = async () => ({ conflict: true }); },
+    status: "CONFLICT",
+  },
+]) {
+  test(`NEXT_RENEWAL performs no create when ${renewalBlock.name}`, async () => {
+    const context = await fixture({ workflow: "NEXT_RENEWAL" });
+    try {
+      renewalBlock.change(context);
+      const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+      const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+      assert.equal(summary.counts[renewalBlock.status], 1);
+      assert.equal(context.calls.length, 0);
+    } finally { await context.close(); }
+  });
+}
+
+test("renewal preflight reader failure isolates its shop and permits another shop", async () => {
+  const context = await fixture({
+    workflow: "NEXT_RENEWAL",
+    approvalItems: [approvalItem(), approvalItem({ shop_id: "2", item_id: "200", model_id: "2000", sku: "SKU-2" })],
+  });
+  try {
+    context.repository.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+    const original = context.workerContext.readers.getWarehouseState;
+    context.workerContext.readers.getWarehouseState = async (input) => {
+      if (input.item.shopId === "1") throw Object.assign(new Error("warehouse unavailable"), { code: "WAREHOUSE_UNAVAILABLE" });
+      return original(input);
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(summary.counts.UNKNOWN, 1);
+    assert.equal(summary.counts.SUCCEEDED, 1);
+    assert.deepEqual(context.calls.map(({ input }) => input.shopId), ["2", "2"]);
+  } finally { await context.close(); }
+});
+
+test("current-correction reader failure is isolated to its shop", async () => {
+  const context = await fixture({ approvalItems: [approvalItem(), approvalItem({ shop_id: "2", item_id: "200", model_id: "2000", sku: "SKU-2" })] });
+  try {
+    context.repository.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+    const original = context.workerContext.readers.getWarehouseState;
+    context.workerContext.readers.getWarehouseState = async (input) => {
+      if (input.item.shopId === "1") throw Object.assign(new Error("warehouse unavailable"), { code: "WAREHOUSE_UNAVAILABLE" });
+      return original(input);
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(summary.status, "BLOCKED");
+    assert.equal(summary.counts.UNKNOWN, 1);
+    assert.equal(summary.counts.SUCCEEDED, 1);
+    assert.deepEqual(context.calls.map(({ input }) => input.shopId), ["2"]);
+  } finally { await context.close(); }
+});
+
+test("executor uses bounded pages and aggregate counts instead of materializing execution rows", async () => {
+  const context = await fixture();
+  try {
+    context.repository.listExecutionItems = async () => { throw new Error("unbounded execution item read"); };
+    context.repository.listDispatchIntents = async () => { throw new Error("unbounded intent read"); };
+    context.repository.listPlanActivities = async () => { throw new Error("unbounded activity read"); };
+    context.repository.getPlanShopIds = async () => { throw new Error("unbounded shop read"); };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(summary.status, "SUCCEEDED");
+    assert.equal(summary.counts.SUCCEEDED, 1);
+  } finally { await context.close(); }
+});
+
 test("ambiguous activity creation is at-most-once and repeated execution never creates a replacement", async () => {
   const context = await fixture({ workflow: "NEXT_RENEWAL" });
   try {
@@ -662,11 +924,12 @@ test("ambiguous activity creation is at-most-once and repeated execution never c
     assert.equal(first.status, "BLOCKED");
     assert.equal(first.counts.UNKNOWN, 1);
     const second = await runApprovedPlan(context.domainPlan.id, context.workerContext);
-    assert.deepEqual(second, first);
+    assert.equal(second.status, "SUCCEEDED");
+    assert.equal(second.counts.SUCCEEDED, 1);
     assert.equal(createAttempts, 1);
-    const intents = context.access.provider.connection.prepare("SELECT operation_uuid,status FROM shopee_discount_dispatch_intents WHERE job_id=?").all(context.job.id);
-    assert.equal(intents.length, 1);
-    assert.equal(intents[0].status, "UNKNOWN");
+    const intents = context.access.provider.connection.prepare("SELECT operation_uuid,target_type,status FROM shopee_discount_dispatch_intents WHERE job_id=?").all(context.job.id);
+    assert.equal(intents.length, 2);
+    assert.equal(intents.find((intent) => intent.target_type === "createDiscount")?.status, "SUCCEEDED");
   } finally {
     await context.close();
   }

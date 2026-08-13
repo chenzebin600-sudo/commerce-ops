@@ -28,3 +28,21 @@ No live Shopee or other live network endpoint was used. Executor and service int
 - The executor is deliberately not registered as an autonomous startup worker in this task. Its public composition seam is ready for a later scheduler integration, and performs no work unless called for an approved durable pending job.
 - SQLite remains pilot-only and enforces the repository's configured shop/variant limits. PostgreSQL carries the production-capacity execution schema and interface parity.
 - Reconciliation closes the original intent only. Any later replacement remains a separate product workflow requiring conflict readback, new preview/root and new approval; this task intentionally provides no shortcut.
+
+## Review round 1 hardening (2026-08-14)
+
+- Approval hashing is now `SHOPEE_DISCOUNT_APPROVAL_V2`. It binds the current Discount ID or complete renewal identity (name, marker, per-shop tier, window and fingerprint), plus exact nullable warehouse `approvedAt`. Stored shard payloads carry the same immutable target. The checked-in golden vectors changed intentionally; any V1 preview/approval must be previewed and approved again and will fail the executor re-hash. No database migration is needed because this is an approval-protocol version change, not a schema change.
+- Renewal creation performs full per-shop authorization, capability, warehouse, listing and overlap validation before marker lookup and again immediately before the create intent/write. Empty, removed, unauthorized or drifted shops cannot create an activity. The shop override tier is used by both approval and renewal identity.
+- Execution repairs the domain-EXECUTING/Foundation-APPROVED split by beginning and verifying Foundation execution before writes. Terminal repair handles the corresponding completion split.
+- Lease renewal is single-flight, timer rejection is handled, and every immediate pre-dispatch fence awaits the latest actual repository renewal. A deferred renewal that loses its epoch sends no write.
+- POST classification is separated from readback classification. Once a write may have been sent, any readback exception or incomplete identity is `UNKNOWN`; definite rejected/not-sent writes use the existing `CONFIRMED_NOT_SENT` intent state with a canonical `REJECTED` or `AUTH_BLOCKED` item and reason evidence. This avoids rewriting applied migration 027 or introducing migration-checksum drift.
+- Exact item readback now requires platform object, item, explicit model, membership and exact minor price. Reader failures are isolated by shop. `UNKNOWN` and `AUTH_BLOCKED` keep the durable job/domain/Foundation resumable; later runs only read back existing intents, and reauthorized items revalidate before dispatch.
+- Create LINK/recovery verifies marker, name, window and fingerprint, then binds the official platform object to the approved plan activity under fencing. Evidence keeps essential proof/request/operation fields and adds a SHA-256 digest when bounded compaction is required.
+- Approval verification streams one persisted shard at a time (hard cap 1,000). Execution items, activities and intents use keyset pages, page checkpoints and database status aggregates; legacy unbounded list methods are not used by the executor. Renewal preflight fails closed above 1,000 variants for one shop.
+
+### Review-round verification
+
+- Executor regression: 47 passed, 0 failed.
+- All `tests/shopee-discount*.test.mjs`: 175 passed, 0 failed.
+- `git diff --check`: clean (line-ending conversion warnings only).
+- No live network or Shopee endpoint was used.
