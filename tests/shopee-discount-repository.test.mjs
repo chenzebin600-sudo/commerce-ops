@@ -15,6 +15,7 @@ const TABLES = [
   "shopee_discount_approvals",
   "shopee_discount_jobs",
   "shopee_discount_dispatch_intents",
+  "shopee_discount_execution_items",
   "shopee_discount_events",
   "shopee_discount_due_jobs",
   "shopee_discount_notifications",

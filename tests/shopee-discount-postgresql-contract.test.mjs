@@ -7,11 +7,13 @@ import { PostgresqlShopeeDiscountRepository } from "../lib/shopee-discount/postg
 
 const PUBLIC_METHODS = [
   "getStorageMode", "getSettings", "saveSettings", "createPlan", "getPlan", "listPlans",
-  "appendPlanShard", "sealPlan", "approvePlan", "markPlanState", "createJob", "claimJob",
+  "appendPlanShard", "sealPlan", "approvePlan", "markPlanState", "createJob", "getJob", "claimJob",
   "renewJobLease", "checkpointJob", "createDispatchIntent", "completeDispatchIntent",
-  "markDispatchUnknown", "reconcileIntent", "appendEvent", "createDueJob", "claimDueJobs", "completeDueJob",
-  "bindFoundationPlan", "getPlanShopIds", "listPlanShards", "listPlanItems", "getPlanApproval",
-  "countPlanItemsByShop", "listExecutionJobs", "listRunsScoped", "listActivitiesScoped", "listIssuesScoped",
+  "markDispatchUnknown", "getDispatchIntent", "listDispatchIntents", "recordIntentOutcome", "reconcileIntent",
+  "appendEvent", "createDueJob", "claimDueJobs", "completeDueJob", "completeJob", "bindActivityPlatformId",
+  "bindFoundationPlan", "getPlanShopIds", "listPlanShards", "listPlanItems", "getPlanItem", "getPlanApproval",
+  "countPlanItemsByShop", "listExecutionJobs", "listPlanActivities", "prepareExecutionItems", "listExecutionItems",
+  "setExecutionItemStatus", "listRunsScoped", "listActivitiesScoped", "listIssuesScoped",
   "getStoredSystemActivity", "getLatestWarehouseBaseline", "saveWarehouseBaseline",
   "getApprovalSagaPhase", "recordApprovalSagaPhase",
 ];
@@ -252,6 +254,32 @@ test("PostgreSQL dispatch fencing uses repository now while storing caller occur
   assert.equal(provider.calls[1].values[10], "2026-08-12T23:00:00.000Z");
 });
 
+test("PostgreSQL dispatch intent atomically checkpoints its canonical execution item", async () => {
+  const provider = new RecordingProvider([
+    { rows: [{ id: "job-1" }], rowCount: 1 },
+    { rows: [{
+      id: "intent-1", job_id: "job-1", plan_id: "plan-1", plan_item_id: "item-1",
+      operation_uuid: "11111111-1111-4111-8111-111111111111", target_type: "discount_item",
+      target_key: "shop-1:item-1:model-1", payload_hash: "payload-1", epoch: 1, owner_id: "worker-1",
+      status: "DISPATCHED", dispatched_at: "2026-08-13T00:01:00.000Z", updated_at: "2026-08-13T00:01:00.000Z",
+    }], rowCount: 1 },
+    { rows: [], rowCount: 1 },
+  ]);
+  const repository = new PostgresqlShopeeDiscountRepository({
+    provider, now: () => new Date("2026-08-13T00:01:00.000Z"),
+  });
+  await repository.createDispatchIntent({
+    id: "intent-1", jobId: "job-1", planId: "plan-1", planItemId: "item-1",
+    operationUuid: "11111111-1111-4111-8111-111111111111", targetType: "discount_item",
+    targetKey: "shop-1:item-1:model-1", payloadHash: "payload-1", ownerId: "worker-1", epoch: 1,
+  });
+  assert.equal(provider.transactions, 1);
+  assert.match(provider.calls[0].text, /FOR UPDATE/i);
+  assert.match(provider.calls[2].text, /shopee_discount_execution_items/i);
+  assert.match(provider.calls[2].text, /status='PENDING'/i);
+  assert.deepEqual(provider.calls[2].values.slice(-3), ["job-1", "item-1", "intent-1"]);
+});
+
 test("PostgreSQL due-job claims use skip-locked ordering and conditional updates", async () => {
   const provider = new RecordingProvider([
     { rows: [{ id: "due-1", fencing_epoch: 0 }], rowCount: 1 },
@@ -278,6 +306,16 @@ test("PostgreSQL migration keeps money textual and adds partial operational inde
   assert.match(sql, /shopee_discount_due_jobs/i);
   assert.match(sql, /shopee_discount_dispatch_intents/i);
   assert.match(sql, /length\(btrim\("merkle_root"\)\)\s*>\s*0/i);
+});
+
+test("PostgreSQL execution migration stores canonical item outcomes and unique dispatch targets", async () => {
+  const sql = await fs.readFile(path.resolve("migrations/postgresql/036_shopee_discount_execution.sql"), "utf8");
+  assert.match(sql, /CREATE TABLE\s+"app"\."shopee_discount_execution_items"/i);
+  assert.match(sql, /PRIMARY KEY\s*\(\s*"job_id"\s*,\s*"plan_item_id"\s*\)/i);
+  assert.match(sql, /FOREIGN KEY\s*\(\s*"job_id"\s*\).*shopee_discount_jobs/i);
+  assert.match(sql, /FOREIGN KEY\s*\(\s*"plan_item_id"\s*\).*shopee_discount_plan_items/i);
+  assert.match(sql, /UNIQUE INDEX[\s\S]*"job_id"\s*,\s*"target_type"\s*,\s*"target_key"/i);
+  assert.match(sql, /REQUIRES_REAPPROVAL/);
 });
 
 test("PostgreSQL 027 has no forward foreign keys to relations first created by later migrations", async () => {

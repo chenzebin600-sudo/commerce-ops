@@ -101,6 +101,7 @@ async function fixture({ shopee = fakeShopee(), warehouse, security = readySecur
   });
   return {
     access,
+    foundation,
     service,
     shopee,
     async close() { access.close(); await fs.rm(root, { recursive: true, force: true }); },
@@ -166,6 +167,85 @@ test("preview includes zero stock, shares warehouse SKU prices, falls back per v
     assert.equal(items.find(({ modelId }) => modelId === "100").payload.stock, 0);
     assert.equal(result.merkleRoot.length, 64);
     assert.equal(result.summary.shardCount, 2);
+  } finally { await context.close(); }
+});
+
+test("renewal preview persists its immutable activity marker and warehouse approval time for execution", async () => {
+  const shopee = fakeShopee({
+    itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] },
+  });
+  const context = await fixture({ shopee });
+  try {
+    const preview = await context.service.createPreview(previewInput({
+      workflow: "NEXT_RENEWAL",
+      renewal: { requestedStartAt: "2026-08-15T00:00:00.000Z", durationDays: 30 },
+    }), { requestId: "renewal-preview" });
+    const [activity] = await context.access.repositories.shopeeDiscount.listPlanActivities(preview.id);
+    assert.equal(activity.activityType, "NEXT_RENEWAL");
+    assert.match(activity.metadata.discountName, /^PM-TH-DAILY-2026-08-15-[A-F0-9]{8}$/);
+    assert.match(activity.metadata.fingerprint, /^[a-f0-9]{64}$/);
+    assert.equal(activity.metadata.workflow, "NEXT_RENEWAL");
+    assert.equal(activity.metadata.priceTier, "DAILY");
+    const page = await context.service.listPreviewItems(preview.id, { pageSize: 10 }, {});
+    assert.equal(page.items[0].payload.warehouseApprovedAt, "2026-08-13T08:00:00.000Z");
+  } finally { await context.close(); }
+});
+
+test("a normal renewal preview can be approved, queued, and executed without live Shopee", async () => {
+  const shopee = fakeShopee({
+    itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] },
+  });
+  const context = await fixture({ shopee });
+  try {
+    const preview = await context.service.createPreview(previewInput({
+      workflow: "NEXT_RENEWAL",
+      renewal: { requestedStartAt: "2026-08-15T00:00:00.000Z", durationDays: 30 },
+    }), { requestId: "renewal-e2e-preview" });
+    await context.service.approvePreview({
+      planId: preview.id,
+      merkleRoot: preview.merkleRoot,
+      operatorName: "Alice",
+      confirmationText: preview.confirmationText,
+    }, { actorId: "session-user" });
+    await context.service.requestExecution({ planId: preview.id, merkleRoot: preview.merkleRoot }, { identity: "shared" });
+    const writes = [];
+    const workerContext = {
+      repository: context.access.repositories.shopeeDiscount,
+      foundation: context.foundation,
+      workerId: "worker-e2e",
+      requestId: "renewal-e2e-execute",
+      identity: "shared",
+      currentPolicyHash: preview.policyHash,
+      now: () => NOW,
+      leaseMs: 1_000,
+      writeSecurity: () => readySecurity(),
+      siteCapability: { priceScale: 2, maxAddItems: 10 },
+      shopeeWrite: {
+        async createDiscount(input) { writes.push({ operation: "createDiscount", input }); return { data: {} }; },
+        async addDiscountItems(input) { writes.push({ operation: "addDiscountItems", input }); return { data: {} }; },
+        async updateDiscountItems(input) { writes.push({ operation: "updateDiscountItems", input }); return { data: {} }; },
+      },
+      readers: {
+        async findActivityByMarker() { return null; },
+        async getShopAuthorization() { return { authorized: true }; },
+        async getWarehouseState({ item }) {
+          return { targetPriceMinor: item.targetPriceMinor, watermark: item.payload.warehouseWatermark, approvedAt: item.payload.warehouseApprovedAt };
+        },
+        async getListingState({ item }) { return { status: "ACTIVE", sku: item.sku, originalPriceMinor: item.payload.originalMinor }; },
+        async getDiscountState({ activity }) { return { conflict: false, activityId: activity.platformActivityId, membership: false }; },
+        async readbackIntent({ item, activity }) {
+          return item
+            ? { platformObjectId: "901", activityId: "901", membership: true, itemId: item.itemId, modelId: item.modelId, priceMinor: item.targetPriceMinor }
+            : { platformObjectId: "901", markerVerified: true, activityId: "901" };
+        },
+      },
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const summary = await runApprovedPlan(preview.id, workerContext);
+    assert.equal(summary.status, "SUCCEEDED");
+    assert.deepEqual(writes.map(({ operation }) => operation), ["createDiscount", "addDiscountItems"]);
   } finally { await context.close(); }
 });
 
