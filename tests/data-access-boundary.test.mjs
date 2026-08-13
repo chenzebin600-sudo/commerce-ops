@@ -170,6 +170,25 @@ test("SQLite provider rejects nested and synchronous foreign transactions determ
   } finally { shared.close(); await context.close(); }
 });
 
+test("detached async context created inside a SQLite transaction is not stale ownership after commit", async () => {
+  const context = await fixture();
+  try {
+    const provider = context.dataAccess.provider;
+    await provider.execute("CREATE TABLE e2_detached_transaction_test (value TEXT NOT NULL)");
+    let detached;
+    await provider.transaction(async (tx) => {
+      await tx.execute("INSERT INTO e2_detached_transaction_test(value) VALUES (?)", ["outer"]);
+      detached = () => provider.transaction(async (nested) => {
+        await nested.execute("INSERT INTO e2_detached_transaction_test(value) VALUES (?)", ["detached"]);
+      });
+      await assert.rejects(provider.transaction(async () => {}), { code: "SQLITE_TRANSACTION_REENTRANT" });
+    });
+    await detached();
+    assert.deepEqual((await provider.query("SELECT value FROM e2_detached_transaction_test ORDER BY rowid")).rows.map(({ value }) => value),
+      ["outer", "detached"]);
+  } finally { await context.close(); }
+});
+
 test("account repository facade preserves existing CRUD behavior", async () => {
   const context = await fixture();
   try {

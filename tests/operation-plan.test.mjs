@@ -185,6 +185,15 @@ test("Foundation repositories sharing SQLite cannot interleave approval, block, 
       planHash: approvalPlan.planHash, approvalText: "确认发货 1 单", actorType: "user", actorId: "operator-1",
     });
     await approvalOpen;
+    const foreignEvent = context.access.repositories.shopeeDiscount.appendEvent({ eventType: "FOREIGN_DURING_APPROVAL" });
+    await assert.rejects(foreignEvent, { code: "SQLITE_RAW_WRITE_BLOCKED" });
+    assert.throws(() => context.access.repositories.audit.create({
+      id: "foreign-audit", requestId: "foreign", occurredAt: "2026-08-04T06:00:00.000Z", module: "test",
+      action: "foreign", httpMethod: "POST", requestPath: "/test", status: "success", httpStatus: 200,
+      durationMs: 1, sourceIp: "127.0.0.1", actorType: "system", actorIdentifier: "test", taskId: null,
+      runId: null, fileId: null, errorStage: null, errorCode: null, errorSummary: null, metadataJson: "{}",
+      createdAt: "2026-08-04T06:00:00.000Z",
+    }), { code: "SQLITE_RAW_WRITE_BLOCKED" });
     const blocking = secondService.operationPlans.block(blockPlan.id, { reasonCode: "CONCURRENT_BLOCK" });
     const updating = secondRepository.updateOperationPlan(updatePlan.id, { lastErrorCode: "CONCURRENT_UPDATE" },
       { expectedVersion: updatePlan.stateVersion, now: new Date("2026-08-04T06:00:01.000Z") });
@@ -199,6 +208,7 @@ test("Foundation repositories sharing SQLite cannot interleave approval, block, 
     assert.equal(updated.lastErrorCode, "CONCURRENT_UPDATE");
     assert.equal((await context.service.operationPlans.events(approvalPlan.id)).filter(({ eventType }) => eventType === "APPROVED").length, 1);
     assert.equal((await secondService.operationPlans.events(blockPlan.id)).filter(({ eventType }) => eventType === "BLOCKED").length, 1);
+    assert.equal((await context.access.repositories.shopeeDiscount.listIssuesScoped({}, null)).some(({ eventType }) => eventType === "FOREIGN_DURING_APPROVAL"), false);
   } finally { await context.close(); }
 });
 

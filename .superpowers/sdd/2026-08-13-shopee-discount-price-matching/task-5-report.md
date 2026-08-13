@@ -106,3 +106,13 @@ Fresh round 3 verification: Foundation operation-plan/v1 suite 16 passed; requir
 - The Foundation-specific approval tail was removed; PostgreSQL continues using its existing connection transaction manager.
 
 Fresh round 4 verification: data-access/provider compatibility 13 passed; Foundation operation-plan/v1 17 passed; required Task 5/app-access 43 passed; all Shopee Discount tests 115 passed; 0 failed.
+
+## Review round 5 guarded raw SQLite access
+
+- `SqliteProvider.connection` now returns a connection-scoped guarded facade. Repositories that cache `DatabaseSync`-style statements remain compatible, but raw statement mutations and `exec` cannot bypass an active or queued foreign async transaction; they fail deterministically with `SQLITE_RAW_WRITE_BLOCKED`.
+- Prepared statements are guarded at invocation time, including statements cached before a transaction begins. Mutation-capable `run`, `get`, `all`, and `iterate` paths are covered. The transaction owner may use its supplied executor; unrelated cached repository writers cannot inherit its commit or rollback.
+- Raw reads remain synchronous by explicit compatibility policy and may observe the shared connection's current transaction. New or migrated write paths should use provider executors/transactions.
+- Existing Shopee Discount and audit raw-caching repositories are exercised during a paused Foundation approval. Both foreign writes are rejected and absent after the approval commits, while the Foundation state/event pair remains atomic.
+- Async-local reentrancy now requires the inherited token to equal the connection's currently active owner token. Live nesting still fails, but a detached callback created inside a completed transaction can start a new queued transaction without stale-context rejection.
+
+Fresh round 5 verification: data-access/audit/provider suite 34 passed; Foundation plus Shopee Discount repository suite 29 passed; required Task 5/app-access suite 43 passed; all Shopee Discount tests 115 passed; 0 failed.
