@@ -87,3 +87,12 @@ Results: service 17 passed; integration contracts 26 passed; complete Shopee Dis
 - Execution has a distinct plan-level authorization action for switch/mode/identity/approval checks, followed by per-shop country/whitelist/batch checks. A two-shop 5+5 plan therefore passes a cap of five while zero-target plans still fail before queueing.
 
 Fresh round 2 verification: required Task 5 and app-access suite 43 passed; Foundation operation-plan/v1 suite 15 passed; all Shopee Discount tests 115 passed; 0 failed.
+
+## Review round 3 atomic Foundation approval
+
+- Foundation approval now uses one provider-neutral repository transaction for the optimistic `PREVIEWED` → `APPROVED` update and its exact `APPROVED` event/evidence insert. An event conflict or write failure rolls the state update back in both SQLite and PostgreSQL provider paths.
+- SQLite approval transactions are serialized at the repository boundary so concurrent identical approvals cannot attempt nested transactions; the loser reloads and validates the committed exact approval event binding.
+- An injected approval-event failure regression proves the plan remains `PREVIEWED`, no approval event is retained, a retry succeeds, concurrent retry produces one event, and repeated approval reads that event binding.
+- Other Foundation state transitions retain their existing transition/event path.
+
+Fresh round 3 verification: Foundation operation-plan/v1 suite 16 passed; required Task 5/app-access suite 43 passed; all Shopee Discount tests 115 passed; 0 failed.

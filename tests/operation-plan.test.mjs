@@ -128,6 +128,36 @@ test("repeated approval verifies actor type, actor ID, exact text, plan hash and
   } finally { await context.close(); }
 });
 
+test("approval state and exact APPROVED event commit atomically and retry after event failure", async () => {
+  const context = await createContext();
+  try {
+    const plan = await context.service.operationPlans.create(preview());
+    const provider = context.access.provider;
+    const execute = provider.execute.bind(provider);
+    let failApprovalEvent = true;
+    provider.execute = async (sql, parameters) => {
+      if (failApprovalEvent && sql.includes("INSERT INTO foundation_operation_plan_events") && parameters[2] === "APPROVED") {
+        failApprovalEvent = false;
+        throw Object.assign(new Error("event store unavailable"), { code: "FOUNDATION_EVENT_WRITE_FAILED" });
+      }
+      return execute(sql, parameters);
+    };
+    const binding = { planHash: plan.planHash, approvalText: "确认发货 1 单", actorType: "user", actorId: "operator-1" };
+    await assert.rejects(context.service.operationPlans.approve(plan.id, binding), { code: "FOUNDATION_EVENT_WRITE_FAILED" });
+    assert.equal((await context.service.operationPlans.get(plan.id)).state, "PREVIEWED");
+    assert.equal((await context.service.operationPlans.events(plan.id)).some((event) => event.eventType === "APPROVED"), false);
+    const approved = await Promise.all([
+      context.service.operationPlans.approve(plan.id, binding),
+      context.service.operationPlans.approve(plan.id, binding),
+    ]);
+    assert.equal(approved.every(({ state }) => state === "APPROVED"), true);
+    const approvalEvents = (await context.service.operationPlans.events(plan.id)).filter((event) => event.eventType === "APPROVED");
+    assert.equal(approvalEvents.length, 1);
+    assert.equal(approvalEvents[0].evidence.approvalTextHash, plan.approvalTextHash);
+    assert.equal((await context.service.operationPlans.approve(plan.id, binding)).state, "APPROVED");
+  } finally { await context.close(); }
+});
+
 test("operation plans reject secrets before persistence", async () => {
   const context = await createContext();
   try {
