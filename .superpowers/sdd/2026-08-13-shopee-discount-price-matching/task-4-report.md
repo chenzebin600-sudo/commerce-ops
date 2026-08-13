@@ -52,3 +52,19 @@ The pre-report combined run passed 28 tests with 0 failures. The fresh final syn
 - The endpoint snapshot does not provide per-site price scale, minimum, maximum, or step. The write adapter requires those as validated injected site capabilities and will not infer them.
 - The repository's current default relay URL is plain HTTP, and the inspected local code/docs do not prove relay mTLS, complete request signing, short clock-window enforcement, nonce replay cache, or signed responses. `resolveShopeeWriteSecurity` therefore leaves writes disabled unless HTTPS/mTLS or the complete signed-request/replay capability is explicitly declared. Relay-side signing/replay enforcement still has to exist outside this adapter; a declaration alone is not an implementation.
 - No Shopee idempotency guarantee was found for these POST endpoints. The adapter performs zero automatic write retries; UNKNOWN must be reconciled by the later executor/reconciliation tasks.
+
+## Review round 1 fixes
+
+Addressed all seven findings from `task-4-review.md` with regression-first TDD:
+
+- Preserved normalized/deduplicated country and shop whitelists plus the batch cap in the resolved security object. Execute authorization now requires a matching `country`, canonical `shopId`, and positive safe `batchSize` within the configured cap; missing or mismatched context fails closed.
+- Write response classification now requires an integer HTTP status from 100–599. Missing/invalid status, 429, 5xx, technical platform codes, malformed successful protocols, and ambiguous auth text are UNKNOWN. HTTP 401/403 remain definite auth even with malformed bodies. Only the explicit documented Discount business-code allowlist becomes `SHOPEE_BUSINESS_ERROR`.
+- An mTLS claim is accepted only on an HTTPS URL. Unsigned plain HTTP still requires the complete signed-request binding and replay-cache declaration.
+- Trusted single-role listeners now require a present canonical loopback/private IPv4 host, `localhost`/`::1`, or an explicit trusted topology with a canonical hostname; exposure labels alone do not establish trust.
+- Added a shared response-boundary helper for conservative ASCII request IDs (maximum 128 characters), technical/rate error codes, status validation, and definite business codes. Caller IDs are validated before transport; unsafe response IDs fall back to the caller ID on read/write success and error paths.
+- Site capability `minPriceMinor`, `maxPriceMinor`, and `priceStepMinor` now must be canonical decimal strings before conversion to `BigInt`; JavaScript numbers and leading-zero forms are rejected.
+- Documented read transients (`error_limit`, network/server/inner/system-busy codes) are classified before generic business errors and use only the injected bounded retry policy for safe GET semantics.
+
+RED evidence: the new security tests failed on unenforced targets, HTTP+mTLS acceptance, label-only/missing/public listeners, duplicate constraint preservation, and non-canonical IPs. Adapter tests failed on documented transient reads, unsafe request IDs, missing-status write success, 429/5xx auth-text precedence, malformed 401/403 classification, technical write codes, ambiguous auth text, and numeric price capabilities. Each failure was observed before its corresponding production change.
+
+The signed-HTTP capability remains a deployment prerequisite, not proof of implementation. Live writes must remain disabled until the actual transport/relay is verified to sign and validate the bound fields, enforce the short clock window, and atomically reject nonce replay.

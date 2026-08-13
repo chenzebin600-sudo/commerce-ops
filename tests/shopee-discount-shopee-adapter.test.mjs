@@ -120,6 +120,24 @@ test("Shopee read adapter applies injected bounded retries only to safe transien
   assert.deepEqual(sleeps, [5, 10]);
 });
 
+test("Shopee read adapter retries documented platform transient codes before generic business classification", async () => {
+  for (const [platformCode, stableCode] of [["error_limit", "SHOPEE_RATE_LIMITED"], ["error_network", "SHOPEE_UNAVAILABLE"], ["error_server", "SHOPEE_UNAVAILABLE"], ["error_inner", "SHOPEE_UNAVAILABLE"], ["error_system_busy", "SHOPEE_UNAVAILABLE"]]) {
+    let calls = 0;
+    const adapter = new ShopeeReadAdapter({
+      retryPolicy: { maxAttempts: 2, delaysMs: [0] },
+      sleep: async () => undefined,
+      transport: async () => {
+        calls += 1;
+        if (calls === 1) return { status: 200, body: { ok: true, data: { error: platformCode, message: "technical", request_id: "platform-transient", response: {} } } };
+        return successfulPlatformPayload({ model: [], tier_variation: [] });
+      },
+    });
+    const result = await adapter.getModelList({ shopId: "1", itemId: "2", requestId: REQUEST_ID });
+    assert.equal(result.attempts, 2, `${platformCode} -> ${stableCode}`);
+    assert.equal(calls, 2);
+  }
+});
+
 test("Shopee read adapter does not retry an unclassified transport failure", async () => {
   let calls = 0;
   const adapter = new ShopeeReadAdapter({
@@ -173,6 +191,36 @@ test("Shopee read adapter classifies auth, business, and malformed contracts wit
       (error) => error.code === fixture.code && error.requestId === fixture.requestId,
     );
     assert.equal(calls, 1, fixture.code);
+  }
+});
+
+test("read and write adapters replace unsafe response request IDs with the validated caller ID", async () => {
+  const unsafeIds = ["credential=secret", "raw payload text", "line\nbreak", "ümlaut", "a".repeat(201)];
+  for (const unsafeId of unsafeIds) {
+    const read = new ShopeeReadAdapter({ transport: async () => successfulPlatformPayload({ model: [], tier_variation: [] }) });
+    const readPayload = successfulPlatformPayload({ model: [], tier_variation: [] });
+    readPayload.body.data.request_id = unsafeId;
+    read.transport = async () => readPayload;
+    assert.equal((await read.getModelList({ shopId: "1", itemId: "2", requestId: REQUEST_ID })).requestId, REQUEST_ID);
+
+    const write = new ShopeeWriteAdapter({
+      siteCapability: { priceScale: 2, minPriceMinor: "1", maxPriceMinor: "99999999", priceStepMinor: "1", maxAddItems: 50 },
+      nowEpochSeconds: () => 1_700_000_000,
+      transport: async () => ({ status: 200, body: { ok: true, data: { error: "", request_id: unsafeId, response: { discount_id: 2 } } } }),
+    });
+    assert.equal((await write.createDiscount({ operationUuid: OPERATION_UUID, shopId: "1", discountName: "PM-SG-DAILY-2023-11-15-A1B2", startTime: "1700003600", endTime: "1700608400", requestId: REQUEST_ID })).requestId, REQUEST_ID);
+  }
+});
+
+test("read and write adapters reject unsafe caller request IDs before transport", async () => {
+  const unsafeIds = ["credential=secret", "raw payload text", "line\nbreak", "ümlaut", "a".repeat(129)];
+  for (const unsafeId of unsafeIds) {
+    let calls = 0;
+    const read = new ShopeeReadAdapter({ transport: async () => { calls += 1; } });
+    await assert.rejects(read.getModelList({ shopId: "1", itemId: "2", requestId: unsafeId }), (error) => error.code === "SHOPEE_INPUT_INVALID");
+    const write = new ShopeeWriteAdapter({ siteCapability: { priceScale: 2, minPriceMinor: "1", maxPriceMinor: "9", priceStepMinor: "1", maxAddItems: 1 }, nowEpochSeconds: () => 1_700_000_000, transport: async () => { calls += 1; } });
+    await assert.rejects(write.createDiscount({ operationUuid: OPERATION_UUID, shopId: "1", discountName: "PM-SG-DAILY-2023-11-15-A1B2", startTime: "1700003600", endTime: "1700608400", requestId: unsafeId }), (error) => error.code === "SHOPEE_INPUT_INVALID");
+    assert.equal(calls, 0);
   }
 });
 
@@ -285,6 +333,51 @@ test("Shopee write adapter never retries ambiguous POST outcomes and returns onl
     );
     assert.equal(calls, 1);
   }
+});
+
+test("Shopee write adapter requires valid HTTP status and gives ambiguous status precedence over auth text", async () => {
+  const fixtures = [
+    { body: { ok: true, data: { error: "", request_id: "missing-status", response: { discount_id: 2 } } } },
+    { status: 503, body: { error: "auth service unavailable", request_id: "auth-service-down" } },
+    { status: 429, body: { error: "unauthorized while rate limited", request_id: "rate-auth" } },
+    { status: 200, body: { ok: true, data: { error: "auth service unavailable", request_id: "ambiguous-auth-text", response: {} } } },
+  ];
+  for (const response of fixtures) {
+    const adapter = new ShopeeWriteAdapter({
+      siteCapability: { priceScale: 2, minPriceMinor: "1", maxPriceMinor: "99999999", priceStepMinor: "1", maxAddItems: 50 },
+      nowEpochSeconds: () => 1_700_000_000,
+      transport: async () => response,
+    });
+    await assert.rejects(
+      adapter.createDiscount({ operationUuid: OPERATION_UUID, shopId: "1", discountName: "PM-SG-DAILY-2023-11-15-A1B2", startTime: "1700003600", endTime: "1700608400", requestId: REQUEST_ID }),
+      (error) => error.code === "SHOPEE_WRITE_UNKNOWN",
+    );
+  }
+});
+
+test("Shopee write adapter treats malformed 401/403 as definite auth and technical platform codes as UNKNOWN", async () => {
+  for (const status of [401, 403]) {
+    const adapter = new ShopeeWriteAdapter({ siteCapability: { priceScale: 2, minPriceMinor: "1", maxPriceMinor: "9", priceStepMinor: "1", maxAddItems: 1 }, nowEpochSeconds: () => 1_700_000_000, transport: async () => ({ status, body: "not-json" }) });
+    await assert.rejects(adapter.createDiscount({ operationUuid: OPERATION_UUID, shopId: "1", discountName: "PM-SG-DAILY-2023-11-15-A1B2", startTime: "1700003600", endTime: "1700608400", requestId: REQUEST_ID }), (error) => error.code === "SHOPEE_AUTH_ERROR");
+  }
+  for (const code of ["error_network", "error_data", "error_server", "error_inner", "error_system_busy", "system_busy"]) {
+    const adapter = new ShopeeWriteAdapter({ siteCapability: { priceScale: 2, minPriceMinor: "1", maxPriceMinor: "9", priceStepMinor: "1", maxAddItems: 1 }, nowEpochSeconds: () => 1_700_000_000, transport: async () => ({ status: 200, body: { ok: true, data: { error: code, message: "technical", request_id: "technical-write", response: {} } } }) });
+    await assert.rejects(adapter.createDiscount({ operationUuid: OPERATION_UUID, shopId: "1", discountName: "PM-SG-DAILY-2023-11-15-A1B2", startTime: "1700003600", endTime: "1700608400", requestId: REQUEST_ID }), (error) => error.code === "SHOPEE_WRITE_UNKNOWN");
+  }
+});
+
+test("Shopee write adapter accepts only allowlisted documented definite business error codes", async () => {
+  const adapter = new ShopeeWriteAdapter({ siteCapability: { priceScale: 2, minPriceMinor: "1", maxPriceMinor: "9", priceStepMinor: "1", maxAddItems: 1 }, nowEpochSeconds: () => 1_700_000_000, transport: async () => ({ status: 200, body: { ok: true, data: { error: "discount.error_time", message: "time invalid", request_id: "business-write", response: {} } } }) });
+  await assert.rejects(adapter.createDiscount({ operationUuid: OPERATION_UUID, shopId: "1", discountName: "PM-SG-DAILY-2023-11-15-A1B2", startTime: "1700003600", endTime: "1700608400", requestId: REQUEST_ID }), (error) => error.code === "SHOPEE_BUSINESS_ERROR");
+});
+
+test("Shopee write adapter requires canonical decimal strings for minor-unit capabilities", () => {
+  for (const siteCapability of [
+    { priceScale: 2, minPriceMinor: 1, maxPriceMinor: "9", priceStepMinor: "1", maxAddItems: 1 },
+    { priceScale: 2, minPriceMinor: "1", maxPriceMinor: 9, priceStepMinor: "1", maxAddItems: 1 },
+    { priceScale: 2, minPriceMinor: "1", maxPriceMinor: "9", priceStepMinor: 1, maxAddItems: 1 },
+    { priceScale: 2, minPriceMinor: "01", maxPriceMinor: "9", priceStepMinor: "1", maxAddItems: 1 },
+  ]) assert.throws(() => new ShopeeWriteAdapter({ siteCapability, transport: async () => undefined }), TypeError);
 });
 
 test("Shopee write adapter distinguishes definite auth and business rejection without leaking payloads", async () => {
