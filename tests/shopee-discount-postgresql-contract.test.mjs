@@ -13,6 +13,7 @@ const PUBLIC_METHODS = [
   "bindFoundationPlan", "getPlanShopIds", "listPlanShards", "listPlanItems", "getPlanApproval",
   "countPlanItemsByShop", "listExecutionJobs", "listRunsScoped", "listActivitiesScoped", "listIssuesScoped",
   "getStoredSystemActivity", "getLatestWarehouseBaseline", "saveWarehouseBaseline",
+  "getApprovalSagaPhase", "recordApprovalSagaPhase",
 ];
 
 class RecordingProvider {

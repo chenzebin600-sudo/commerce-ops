@@ -473,6 +473,28 @@ test("production preview bounds model concurrency and pins one warehouse waterma
   } finally { await context.close(); }
 });
 
+test("warehouse watermark is pinned across different price tiers", async () => {
+  const shopee = fakeShopee({
+    itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }, { item_id: "11", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "DAILY-SKU", "10000", "9500")], "11": [model("101", "EVENT-SKU", "10000", "9500")] },
+  });
+  const calls = [];
+  const warehouse = { async scanPrices(input) {
+    calls.push(input);
+    const event = input.skus.includes("EVENT-SKU");
+    return warehouseSnapshot(input.skus.map((sku) => ({ sku, dailyMinor: "9000", eventMinor: "8800" })),
+      event ? "2026-08-13T09:01:00.000Z" : "2026-08-13T09:00:00.000Z");
+  } };
+  const context = await fixture({ shopee, warehouse });
+  try {
+    await assert.rejects(context.service.createPreview(previewInput({
+      linkOverrides: [{ shopId: "1", itemId: "11", priceTier: "EVENT" }],
+    }), {}), { code: "WAREHOUSE_WATERMARK_CHANGED" });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].watermark, "2026-08-13T09:00:00.000Z");
+  } finally { await context.close(); }
+});
+
 test("trusted shop scope protects preview/read models and manual scans validate duplicates, health and country", async () => {
   const shopee = fakeShopee({ shops: [shop("1", "TH"), shop("2", "TH", { healthy: false }), shop("3", "SG")] });
   const context = await fixture({ shopee });
@@ -531,6 +553,21 @@ test("preview saga deterministically blocks both stores after shard failure and 
   } finally { await eventFailure.close(); }
 });
 
+test("a blocked preview remains auditable but does not dead-end a replacement request", async () => {
+  const shopee = fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] } });
+  const context = await fixture({ shopee });
+  try {
+    const append = context.access.repositories.shopeeDiscount.appendPlanShard.bind(context.access.repositories.shopeeDiscount);
+    context.access.repositories.shopeeDiscount.appendPlanShard = async () => { throw Object.assign(new Error("disk"), { code: "SHARD_WRITE_FAILED" }); };
+    await assert.rejects(context.service.createPreview(previewInput(), { requestId: "blocked-first" }), { code: "SHARD_WRITE_FAILED" });
+    context.access.repositories.shopeeDiscount.appendPlanShard = append;
+    const replacement = await context.service.createPreview(previewInput(), { requestId: "replacement" });
+    const plans = await context.access.repositories.shopeeDiscount.listPlans({ limit: 10 });
+    assert.equal(replacement.state, "PREVIEWED");
+    assert.equal(plans.some((plan) => plan.state === "BLOCKED"), true);
+  } finally { await context.close(); }
+});
+
 test("approval saga is concurrency-idempotent and blocks both stores when Foundation approval fails", async () => {
   const shopee = fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] } });
   const concurrent = await fixture({ shopee });
@@ -550,4 +587,60 @@ test("approval saga is concurrency-idempotent and blocks both stores when Founda
     assert.equal((await failed.access.repositories.shopeeDiscount.getPlan(preview.id)).state, "BLOCKED");
     assert.equal((await failed.service.foundation.operationPlans.get(preview.foundationPlanId)).state, "BLOCKED");
   } finally { await failed.close(); }
+
+  const compensation = await fixture({ shopee });
+  try {
+    const preview = await compensation.service.createPreview(previewInput(), { requestId: "approval-compensation-failure" });
+    compensation.service.foundation.operationPlans.approve = async () => { throw Object.assign(new Error("foundation"), { code: "FOUNDATION_APPROVAL_FAILED" }); };
+    compensation.service.foundation.operationPlans.block = async () => { throw Object.assign(new Error("foundation block"), { code: "FOUNDATION_BLOCK_FAILED" }); };
+    await assert.rejects(compensation.service.approvePreview({ planId: preview.id, merkleRoot: preview.merkleRoot,
+      operatorName: "Alice", confirmationText: preview.confirmationText }, { actorId: "user" }), { code: "FOUNDATION_APPROVAL_FAILED" });
+    assert.equal((await compensation.access.repositories.shopeeDiscount.getPlan(preview.id)).state, "BLOCKED");
+    assert.equal((await compensation.access.repositories.shopeeDiscount.getApprovalSagaPhase(preview.id)).phase, "COMPENSATION_FAILED");
+    await assert.rejects(compensation.service.requestExecution({ planId: preview.id, merkleRoot: preview.merkleRoot }, {}),
+      { code: "SHOPEE_DISCOUNT_EXECUTION_NOT_APPROVED" });
+  } finally { await compensation.close(); }
+});
+
+test("approval reconciles process loss and execution requires the exact Foundation approval binding", async () => {
+  const shopee = fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] } });
+  const context = await fixture({ shopee });
+  try {
+    const preview = await context.service.createPreview(previewInput(), { requestId: "approval-process-loss" });
+    await context.access.repositories.shopeeDiscount.approvePlan({
+      planId: preview.id, merkleRoot: preview.merkleRoot, policyHash: preview.policyHash,
+      approval: { id: "process-loss-approval", actorId: "user", actorName: "Alice", mode: "human",
+        evidence: { confirmationText: preview.confirmationText, privilegedBinding: null, approvalIdentity: null } },
+      expectedVersion: preview.stateVersion,
+    });
+    await assert.rejects(context.service.requestExecution({ planId: preview.id, merkleRoot: preview.merkleRoot }, {}),
+      { code: "SHOPEE_DISCOUNT_FOUNDATION_APPROVAL_REQUIRED" });
+    const approved = await context.service.approvePreview({ planId: preview.id, merkleRoot: preview.merkleRoot,
+      operatorName: "Alice", confirmationText: preview.confirmationText }, { actorId: "user" });
+    assert.equal(approved.state, "APPROVED");
+    assert.equal((await context.service.foundation.operationPlans.get(preview.foundationPlanId)).state, "APPROVED");
+    assert.equal((await context.access.repositories.shopeeDiscount.getApprovalSagaPhase(preview.id)).phase, "BOTH_APPROVED");
+  } finally { await context.close(); }
+});
+
+test("multi-shop execution applies identity once and batch caps per shop", async () => {
+  const itemsByShop = { "1": [], "2": [] };
+  const modelsByItem = {};
+  for (const shopId of ["1", "2"]) for (let index = 0; index < 5; index += 1) {
+    const itemId = `${shopId}${index}`;
+    itemsByShop[shopId].push({ item_id: itemId, item_status: "NORMAL" });
+    modelsByItem[itemId] = [model(`${shopId}${index}0`, `SKU-${shopId}-${index}`, "10000", "9500")];
+  }
+  const context = await fixture({
+    shopee: fakeShopee({ shops: [shop("1", "TH"), shop("2", "TH")], itemsByShop, modelsByItem }),
+    security: readySecurity({ constraints: { countries: ["TH"], shops: ["1", "2"], maxBatchItems: 5 } }),
+  });
+  context.access.repositories.shopeeDiscount.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+  try {
+    const preview = await context.service.createPreview(previewInput({ shopIds: ["1", "2"] }), { requestId: "two-shops" });
+    await context.service.approvePreview({ planId: preview.id, merkleRoot: preview.merkleRoot,
+      operatorName: "Alice", confirmationText: preview.confirmationText }, { actorId: "user" });
+    const job = await context.service.requestExecution({ planId: preview.id, merkleRoot: preview.merkleRoot }, {});
+    assert.equal(job.status, "PENDING");
+  } finally { await context.close(); }
 });

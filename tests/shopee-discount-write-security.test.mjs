@@ -61,6 +61,18 @@ test("execute authorization enforces normalized country, shop, and batch constra
   assert.doesNotThrow(() => assertShopeeWriteAuthorized(security, { action: "execute", identity: "shared_app_token", country: "MY", shopId: "2", batchSize: 10 }));
 });
 
+test("plan execution authorization checks the switch and identity without consuming a shop batch cap", () => {
+  const trusted = resolveShopeeWriteSecurity({ env: trustedEnv({ SHOPEE_WRITE_MAX_BATCH_ITEMS: "5" }),
+    listener: { host: "127.0.0.1", exposure: "private" }, relay: { url: "https://relay.example" } });
+  assert.doesNotThrow(() => assertShopeeWriteAuthorized(trusted, { action: "execute_plan", identity: "shared_app_token" }));
+  const separate = resolveShopeeWriteSecurity({ env: separateEnv({ SHOPEE_WRITE_MAX_BATCH_ITEMS: "5" }),
+    listener: { host: "internal.example", trustedTopology: true, behindTrustedProxy: true, exposure: "proxy_only" },
+    relay: { url: "https://relay.example", executeIdentity: { independent: true, trusted: true } },
+  });
+  assert.throws(() => assertShopeeWriteAuthorized(separate, { action: "execute_plan", identity: "shared_app_token",
+    approvalIdentity: "privileged_execute_identity" }), { code: "SHOPEE_WRITE_PRIVILEGED_IDENTITY_REQUIRED" });
+});
+
 test("separate_execute_identity requires trusted independent identity and privileged approval plus execution", () => {
   const security = resolveShopeeWriteSecurity({
     env: separateEnv(),

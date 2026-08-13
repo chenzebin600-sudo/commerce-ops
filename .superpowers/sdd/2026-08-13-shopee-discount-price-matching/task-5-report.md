@@ -75,3 +75,15 @@ node --test tests/shopee-discount-*.test.mjs tests/app-access.test.mjs
 ```
 
 Results: service 17 passed; integration contracts 26 passed; complete Shopee Discount plus app-access suite 127 passed; 0 failed in every run.
+
+## Review round 2 lifecycle reconciliation
+
+- Approval now persists explicit `DOMAIN_APPROVED`, `BOTH_APPROVED`, and `COMPENSATION_FAILED` saga phases. A retry after process loss between domain and Foundation approval completes the Foundation binding; execution requires the durable `BOTH_APPROVED` phase plus matching domain/Foundation state, hashes and actor.
+- Failed compensation is auditable and cannot execute because the domain plan is durably blocked. Concurrent identical approvals continue to converge on one exact binding.
+- `BLOCKED` plans no longer reserve the active target window, so a new request can replace a failed preview while the old plan remains queryable for audit.
+- One warehouse watermark is pinned across every tier and chunk in a preview, not merely within a tier.
+- Foundation supplied-ID idempotency validates task/type, all content hashes, approval mode/text, creator, summary, plan hash and bounded TTL semantics before returning an existing plan.
+- Repeated Foundation approval validates actor type and ID, exact text hash, plan hash and approval mode against its persisted approval event. The unused `block(IN_FLIGHT)` claim was removed.
+- Execution has a distinct plan-level authorization action for switch/mode/identity/approval checks, followed by per-shop country/whitelist/batch checks. A two-shop 5+5 plan therefore passes a cap of five while zero-target plans still fail before queueing.
+
+Fresh round 2 verification: required Task 5 and app-access suite 43 passed; Foundation operation-plan/v1 suite 15 passed; all Shopee Discount tests 115 passed; 0 failed.

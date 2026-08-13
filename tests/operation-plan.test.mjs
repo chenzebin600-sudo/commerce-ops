@@ -94,6 +94,40 @@ test("operation plans bind exact content, approval text and immutable hashes", a
   }
 });
 
+test("supplied operation-plan IDs are idempotent only for the complete immutable binding", async () => {
+  const context = await createContext();
+  try {
+    const input = preview({ id: "stable-preview-id", ttlMs: 60_000 });
+    const created = await context.service.operationPlans.create(input);
+    context.advance(5_000);
+    assert.equal((await context.service.operationPlans.create(input)).id, created.id);
+    for (const changed of [
+      { scope: { shopId: "shop-2", orderIds: ["order-1"] } },
+      { approvalText: "确认发货 2 单" },
+      { approvalMode: "system", approvalText: null },
+      { ttlMs: 120_000 },
+      { createdBy: "operator-2" },
+    ]) {
+      await assert.rejects(context.service.operationPlans.create({ ...input, ...changed }),
+        { code: "FOUNDATION_OPERATION_PLAN_IDEMPOTENCY_CONFLICT" });
+    }
+  } finally { await context.close(); }
+});
+
+test("repeated approval verifies actor type, actor ID, exact text, plan hash and mode", async () => {
+  const context = await createContext();
+  try {
+    const plan = await context.service.operationPlans.create(preview());
+    const binding = { planHash: plan.planHash, approvalText: "确认发货 1 单", actorType: "user", actorId: "operator-1" };
+    await context.service.operationPlans.approve(plan.id, binding);
+    assert.equal((await context.service.operationPlans.approve(plan.id, binding)).state, "APPROVED");
+    for (const changed of [
+      { actorType: "system" }, { actorId: "operator-2" }, { approvalText: "确认发货 2 单" }, { planHash: "changed" },
+    ]) await assert.rejects(context.service.operationPlans.approve(plan.id, { ...binding, ...changed }),
+      { code: "FOUNDATION_OPERATION_APPROVAL_CHANGED" });
+  } finally { await context.close(); }
+});
+
 test("operation plans reject secrets before persistence", async () => {
   const context = await createContext();
   try {
