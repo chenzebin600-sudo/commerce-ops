@@ -30,11 +30,7 @@ function page({ rows = [sourceRow()], cursor = null, hasMore = false, watermark 
 }
 
 function jsonResponse(body, { status = 200 } = {}) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    text: async () => JSON.stringify(body),
-  };
+  return new Response(JSON.stringify(body), { status });
 }
 
 function fetchSequence(responses, calls = []) {
@@ -132,7 +128,7 @@ test("client returns an unavailable block for request, timeout, non-2xx, and inv
     new Error("connection reset"),
     new DOMException("aborted", "AbortError"),
     jsonResponse({ error: "denied" }, { status: 401 }),
-    { ok: true, status: 200, text: async () => "not json" },
+    new Response("not json"),
   ];
   for (const response of cases) {
     const result = await client([response]).scanPrices({ country: "SG", skus: ["00Ab-C_+"], requestId: "req-secret" });
@@ -141,6 +137,55 @@ test("client returns an unavailable block for request, timeout, non-2xx, and inv
     assert.equal(JSON.stringify(result).includes("super-secret-api-key"), false);
     assert.equal(result.rows.some((row) => row.warehouseResult === "VALIDATED_MISSING"), false);
   }
+});
+
+test("client rejects oversized bodies before full consumption or JSON parsing", async () => {
+  let reads = 0;
+  let cancelled = false;
+  const chunks = [new TextEncoder().encode('{"rows":['), new Uint8Array(24).fill(32), new TextEncoder().encode("this third chunk must never be read")];
+  const streamedResponse = {
+    ok: true,
+    status: 200,
+    headers: new Headers(),
+    body: {
+      getReader() {
+        return {
+          async read() {
+            const value = chunks[reads];
+            reads += 1;
+            return value ? { done: false, value } : { done: true };
+          },
+          async cancel() {
+            cancelled = true;
+          },
+          releaseLock() {},
+        };
+      },
+    },
+  };
+  const streamed = await client([streamedResponse], [], { maxBodyBytes: 16 })
+    .scanPrices({ country: "SG", skus: ["00Ab-C_+"], requestId: "req-stream-limit" });
+  assert.equal(streamed.code, "WAREHOUSE_UNAVAILABLE");
+  assert.equal(reads, 2);
+  assert.equal(cancelled, true);
+
+  let contentLengthBodyRead = false;
+  const declaredOversized = {
+    ok: true,
+    status: 200,
+    headers: new Headers({ "content-length": "17" }),
+    body: {
+      async cancel() {},
+      getReader() {
+        contentLengthBodyRead = true;
+        throw new Error("body must not be read");
+      },
+    },
+  };
+  const declared = await client([declaredOversized], [], { maxBodyBytes: 16 })
+    .scanPrices({ country: "SG", skus: ["00Ab-C_+"], requestId: "req-content-length" });
+  assert.equal(declared.code, "WAREHOUSE_UNAVAILABLE");
+  assert.equal(contentLengthBodyRead, false);
 });
 
 test("client distinguishes invalid response schema from an empty successful scan", async () => {
@@ -256,6 +301,38 @@ test("empty and sharply missing scans compare to the last successful baseline wi
     evidence: { scope: { country: "SG", category: "FURNITURE", skus: ["A", "B", "C"] } },
   }), baseline, { tier: "DAILY" }, { now: NOW });
   assert.equal(defaultTolerance.code, "WAREHOUSE_EMPTY_ANOMALY");
+});
+
+test("baseline anomaly comparison includes only rows in the complete current scan scope", () => {
+  const baseline = { rows: [
+    normalizedRow({ sku: "A" }),
+    normalizedRow({ sku: "A", category: "LIGHTING" }),
+    normalizedRow({ sku: "A", country: "MY" }),
+    normalizedRow({ sku: "A", platform: "LAZADA" }),
+    normalizedRow({ sku: "OUTSIDE-CHUNK" }),
+  ] };
+  const result = validateWarehouseSnapshot(snapshot([normalizedRow({ sku: "A" })], {
+    evidence: { scope: { country: "SG", category: "FURNITURE", skus: ["A"] } },
+  }), baseline, policy(), { now: NOW });
+  assert.equal(result.status, "READY");
+  assert.equal(result.evidence.baselineRowCount, 1);
+  assert.equal(result.evidence.missingCount, 0);
+});
+
+test("independent validator rejects malformed approval timestamps while allowing null", () => {
+  for (const timestampField of ["dailyApprovedAt", "eventApprovedAt", "megaApprovedAt"]) {
+    for (const invalid of ["not-a-time", 123, "2026-07-10 00:00:00Z"]) {
+      const rejected = validateWarehouseSnapshot(snapshot([
+        normalizedRow({ [timestampField]: invalid }),
+      ]), null, policy(), { now: NOW });
+      assert.equal(rejected.code, "WAREHOUSE_SCHEMA_INVALID");
+    }
+  }
+  const validNull = validateWarehouseSnapshot(snapshot([
+    normalizedRow({ dailyMinor: null, dailyApprovedAt: null, eventApprovedAt: null, megaApprovedAt: null }),
+  ]), null, policy(), { now: NOW });
+  assert.equal(validNull.status, "READY");
+  assert.equal(validNull.rows[0].warehouseResult, "VALIDATED_MISSING");
 });
 
 test("a missing or zero selected tier becomes validated missing only after every warehouse gate passes", () => {
