@@ -418,12 +418,15 @@ const shopeeDiscountService = new ShopeeDiscountService({
   warehouse: shopeeDiscountWarehouse,
   writeSecurity: shopeeDiscountSecurity,
   approvalTtlMs: Number(runtimeEnv.SHOPEE_DISCOUNT_APPROVAL_TTL_MS || 10 * 60_000),
-  siteCapability: {
-    currency: runtimeEnv.SHOPEE_DISCOUNT_CURRENCY || "THB",
-    scale: Number(runtimeEnv.SHOPEE_DISCOUNT_PRICE_SCALE || 2),
-    minMinor: runtimeEnv.SHOPEE_DISCOUNT_MIN_PRICE_MINOR || "1",
-    maxMinor: runtimeEnv.SHOPEE_DISCOUNT_MAX_PRICE_MINOR || "999999999",
-    stepMinor: runtimeEnv.SHOPEE_DISCOUNT_PRICE_STEP_MINOR || "1",
+  siteCapabilities: {
+    [String(runtimeEnv.SHOPEE_DISCOUNT_COUNTRY || "TH").toUpperCase()]: {
+      currency: runtimeEnv.SHOPEE_DISCOUNT_CURRENCY
+        || (String(runtimeEnv.SHOPEE_DISCOUNT_COUNTRY || "TH").toUpperCase() === "TH" ? "THB" : ""),
+      scale: Number(runtimeEnv.SHOPEE_DISCOUNT_PRICE_SCALE || 2),
+      minMinor: runtimeEnv.SHOPEE_DISCOUNT_MIN_PRICE_MINOR || "1",
+      maxMinor: runtimeEnv.SHOPEE_DISCOUNT_MAX_PRICE_MINOR || "999999999",
+      stepMinor: runtimeEnv.SHOPEE_DISCOUNT_PRICE_STEP_MINOR || "1",
+    },
   },
 });
 const handleShopeeDiscountApi = createShopeeDiscountApi({ service: shopeeDiscountService });

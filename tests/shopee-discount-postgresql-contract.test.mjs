@@ -10,6 +10,9 @@ const PUBLIC_METHODS = [
   "appendPlanShard", "sealPlan", "approvePlan", "markPlanState", "createJob", "claimJob",
   "renewJobLease", "checkpointJob", "createDispatchIntent", "completeDispatchIntent",
   "markDispatchUnknown", "reconcileIntent", "appendEvent", "createDueJob", "claimDueJobs", "completeDueJob",
+  "bindFoundationPlan", "getPlanShopIds", "listPlanShards", "listPlanItems", "getPlanApproval",
+  "countPlanItemsByShop", "listExecutionJobs", "listRunsScoped", "listActivitiesScoped", "listIssuesScoped",
+  "getStoredSystemActivity", "getLatestWarehouseBaseline", "saveWarehouseBaseline",
 ];
 
 class RecordingProvider {

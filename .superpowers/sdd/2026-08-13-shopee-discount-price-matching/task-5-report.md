@@ -51,3 +51,27 @@ Result: 101 passed, 0 failed.
 - Real writes remain disabled unless Task 4's complete deployment security contract passes. In separate-identity mode, trusted middleware still must supply the privileged server context; client headers and bodies are intentionally ignored.
 - Scale behavior is provider-neutral, but Task 5's real-repository behavioral suite is SQLite as required. PostgreSQL adapter/provider contracts remain covered by the complete Shopee Discount suite without contacting a live database.
 - The pre-existing unrelated `server.mjs` startup-policy edit and all other dirty workspace files were preserved outside this task's staged patch.
+
+## Review round 1 hardening
+
+Addressed all eight findings from `task-5-review.md` with public service/repository regressions:
+
+- Warehouse fallback now requires an explicit validated requested-SKU row. Successful scoped baselines are persisted and supplied to later validation; omitted requested SKUs fail with `WAREHOUSE_SKU_COVERAGE_INCOMPLETE`.
+- Execution authorization runs at plan scope before item-count handling. Empty approved plans fail with `SHOPEE_DISCOUNT_NO_EXECUTABLE_ITEMS` and cannot create a job.
+- Preview and approval use deterministic saga identities across the domain and Foundation stores. Preview shards resume by identity, post-create failures compensate both plans to `BLOCKED`, Foundation-create audit failures are recovered through the deterministic ID, concurrent identical approval is idempotent, and preview issue-event failure is best-effort after sealing.
+- Current system activities resolve only through persisted platform activity identity and stored tier metadata; activity names grant no ownership. External activity tier selection remains explicit. The 24-hour rule uses actual membership activation evidence and persists `NEXT_PLAN_REQUIRED` evidence.
+- Plan/items/runs/activities/issues and manual scans enforce trusted shop scope. Scans additionally validate duplicate IDs, health and country before durable deduped enqueueing.
+- Pricing capabilities are selected by exact country. Unsupported countries are rejected, and the server's THB default is available only for the TH site.
+- Production ingestion has finite item/Discount page and row caps, bounded model concurrency, batched base reads, bounded warehouse SKU chunks, and one pinned watermark across chunks. Pagination that still reports more at the configured cap fails closed. Discount details retain only identity, timing and membership rows needed by assembly.
+- Listings and models require an explicit recognized active status; missing/unknown statuses are excluded and counted as issues.
+- Raw read-model SQL was moved behind matching SQLite/PostgreSQL repository methods, and API/service request-field schemas now share one immutable definition.
+
+Fresh review verification:
+
+```powershell
+node --test tests/shopee-discount-service.test.mjs
+node --test tests/shopee-discount-postgresql-contract.test.mjs tests/foundation-v1.test.mjs tests/shopee-discount-api.test.mjs
+node --test tests/shopee-discount-*.test.mjs tests/app-access.test.mjs
+```
+
+Results: service 17 passed; integration contracts 26 passed; complete Shopee Discount plus app-access suite 127 passed; 0 failed in every run.
