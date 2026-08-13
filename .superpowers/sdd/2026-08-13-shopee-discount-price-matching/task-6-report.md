@@ -90,3 +90,16 @@ No live Shopee or other live network endpoint was used. Executor and service int
 - All `tests/shopee-discount*.test.mjs`: 186 passed, 0 failed.
 - `git diff --check` on scoped files: clean (line-ending conversion warnings only).
 - No live network or Shopee endpoint was used.
+
+## Review round 5 hardening (2026-08-14)
+
+- All execution authorization reporting now passes through `reportShopAuthIssueOnce`, keyed by durable job, shop and run request. It emits at most one `HIGH` execution issue per affected shop/run with only the shop and bounded request identifier as evidence.
+- Pre-send authorization failures, including renewal marker lookup and item/read prerequisite failures, remain resumable `AUTH_BLOCKED` outcomes and stop only that shop. Later shops continue.
+- An authorization failure after a write may have been sent never claims non-delivery: create/item post-write readback and restart recovery retain `UNKNOWN` intent/item state while still raising the high-priority issue. Definite pre-send POST rejection retains its existing `REJECTED` intent plus `AUTH_BLOCKED` item semantics.
+- Activity creation and item dispatch/recovery share the same reporting and state rules. Regression coverage includes marker lookup, post-create readback, post-item readback with same-shop deduplication, and activity/item restart recovery.
+
+### Round 5 verification
+
+- Executor suite: 56 passed, 0 failed.
+- All `tests/shopee-discount*.test.mjs`: 191 passed, 0 failed.
+- No live network or Shopee endpoint was used.

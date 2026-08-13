@@ -698,6 +698,32 @@ for (const readbackFailure of ["SHOPEE_BUSINESS_ERROR", "SHOPEE_AUTH_ERROR"]) {
   });
 }
 
+test("post-write item auth readbacks stay UNKNOWN and emit one safe issue per shop run", async () => {
+  const context = await fixture({ approvalItems: [
+    approvalItem(),
+    approvalItem({ item_id: "101", model_id: "1001", sku: "SKU-2" }),
+  ] });
+  try {
+    context.workerContext.readers.readbackIntent = async () => {
+      throw Object.assign(new Error("reauthorization required"), { code: "SHOPEE_AUTH_ERROR" });
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(summary.counts.UNKNOWN, 2);
+    assert.equal(summary.counts.AUTH_BLOCKED, 0);
+    assert.equal(context.calls.length, 2);
+    const intents = context.access.provider.connection.prepare("SELECT status FROM shopee_discount_dispatch_intents WHERE job_id=?").all(context.job.id);
+    assert.deepEqual(intents.map(({ status }) => status), ["UNKNOWN", "UNKNOWN"]);
+    const issues = context.access.provider.connection.prepare(`SELECT reason_code,evidence_json FROM shopee_discount_events
+      WHERE plan_id=? AND event_type='EXECUTION_ISSUE'`).all(context.domainPlan.id);
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].reason_code, "SHOPEE_AUTH_ERROR");
+    assert.deepEqual(JSON.parse(issues[0].evidence_json), {
+      priority: "HIGH", shopId: "1", requestId: "request-1",
+    });
+  } finally { await context.close(); }
+});
+
 test("shop authorization failure creates a high-priority issue and does not stop another shop", async () => {
   const context = await fixture({
     approvalItems: [
@@ -834,6 +860,50 @@ test("NEXT_RENEWAL creates one activity intent, verifies its marker, then adds i
   } finally {
     await context.close();
   }
+});
+
+test("renewal marker lookup auth blocks only that shop and reports it once", async () => {
+  const context = await fixture({ workflow: "NEXT_RENEWAL", approvalItems: [
+    approvalItem(),
+    approvalItem({ shop_id: "2", item_id: "200", model_id: "2000", sku: "SKU-2" }),
+  ] });
+  try {
+    context.repository.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+    context.workerContext.readers.findActivityByMarker = async ({ activity }) => {
+      if (activity.shopId === "1") throw Object.assign(new Error("authorization expired"), { code: "SHOPEE_AUTH_ERROR" });
+      return null;
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(summary.counts.AUTH_BLOCKED, 1);
+    assert.equal(summary.counts.SUCCEEDED, 1);
+    assert.deepEqual(context.calls.map(({ input }) => input.shopId), ["2", "2"]);
+    const issues = context.access.provider.connection.prepare(`SELECT evidence_json FROM shopee_discount_events
+      WHERE plan_id=? AND event_type='EXECUTION_ISSUE'`).all(context.domainPlan.id);
+    assert.equal(issues.length, 1);
+    assert.equal(JSON.parse(issues[0].evidence_json).priority, "HIGH");
+  } finally { await context.close(); }
+});
+
+test("post-create auth readback stays UNKNOWN and reports the affected renewal shop", async () => {
+  const context = await fixture({ workflow: "NEXT_RENEWAL" });
+  try {
+    context.workerContext.readers.readbackIntent = async () => {
+      throw Object.assign(new Error("authorization expired after POST"), { code: "SHOPEE_AUTH_ERROR" });
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(summary.counts.UNKNOWN, 1);
+    assert.equal(summary.counts.AUTH_BLOCKED, 0);
+    assert.deepEqual(context.calls.map(({ operation }) => operation), ["createDiscount"]);
+    const intent = context.access.provider.connection.prepare("SELECT status FROM shopee_discount_dispatch_intents WHERE job_id=?").get(context.job.id);
+    assert.equal(intent.status, "UNKNOWN");
+    const issues = context.access.provider.connection.prepare(`SELECT reason_code,evidence_json FROM shopee_discount_events
+      WHERE plan_id=? AND event_type='EXECUTION_ISSUE'`).all(context.domainPlan.id);
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].reason_code, "SHOPEE_AUTH_ERROR");
+    assert.equal(JSON.parse(issues[0].evidence_json).priority, "HIGH");
+  } finally { await context.close(); }
 });
 
 test("NEXT_RENEWAL rejects a marker that no longer matches the immutable plan identity", async () => {
@@ -1067,3 +1137,35 @@ test("restart readback of a DISPATCHED activity-create intent never dispatches a
     await context.close();
   }
 });
+
+for (const workflow of ["CURRENT_CORRECTION", "NEXT_RENEWAL"]) {
+  test(`${workflow} recovery auth readback remains UNKNOWN and emits one safe issue`, async () => {
+    const context = await fixture({ workflow });
+    try {
+      context.workerContext.afterIntentPersisted = () => {
+        throw Object.assign(new Error("crash before transport"), { code: "SIMULATED_CRASH" });
+      };
+      const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+      await assert.rejects(runApprovedPlan(context.domainPlan.id, context.workerContext), { code: "SIMULATED_CRASH" });
+      context.clock.advance(2_000);
+      context.workerContext.workerId = "worker-2";
+      context.workerContext.afterIntentPersisted = null;
+      context.workerContext.readers.readbackIntent = async () => {
+        throw Object.assign(new Error("authorization expired during recovery"), { code: "SHOPEE_AUTH_ERROR" });
+      };
+      const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+      assert.equal(summary.counts.UNKNOWN, 1);
+      assert.equal(summary.counts.AUTH_BLOCKED, 0);
+      assert.equal(context.calls.length, 0);
+      const intent = context.access.provider.connection.prepare("SELECT status FROM shopee_discount_dispatch_intents WHERE job_id=?").get(context.job.id);
+      assert.equal(intent.status, "UNKNOWN");
+      const issues = context.access.provider.connection.prepare(`SELECT reason_code,evidence_json FROM shopee_discount_events
+        WHERE plan_id=? AND event_type='EXECUTION_ISSUE'`).all(context.domainPlan.id);
+      assert.equal(issues.length, 1);
+      assert.equal(issues[0].reason_code, "SHOPEE_AUTH_ERROR");
+      assert.deepEqual(JSON.parse(issues[0].evidence_json), {
+        priority: "HIGH", shopId: "1", requestId: "request-1",
+      });
+    } finally { await context.close(); }
+  });
+}
