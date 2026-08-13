@@ -55,6 +55,11 @@ test("price tier resolves link then shop then country and rejects invalid select
   assert.throws(() => resolvePriceTier({ countryTier: "WEEKLY" }));
 });
 
+test("price tier rejects invalid values even when a higher-priority tier is selected", () => {
+  assert.throws(() => resolvePriceTier({ countryTier: "WEEKLY", shopTier: "EVENT" }));
+  assert.throws(() => resolvePriceTier({ countryTier: "DAILY", shopTier: "WEEKLY", linkTier: "MEGA" }));
+});
+
 test("literal warehouse target is ready and compares current discount in exact minor units", () => {
   assert.deepEqual(decision(), {
     status: "READY",
@@ -108,6 +113,14 @@ test("invalid fallback results skip only the affected variant with stable codes"
     warehouseResult: "VALIDATED_MISSING",
     site: site({ stepMinor: "0" }),
   }).code, "FALLBACK_STEP_INVALID");
+});
+
+test("a non-positive validated-missing fallback is out of range before baseline comparison", () => {
+  assert.equal(decision({
+    originalMinor: "0",
+    warehouseTargetMinor: "0",
+    warehouseResult: "VALIDATED_MISSING",
+  }).code, "FALLBACK_OUT_OF_RANGE");
 });
 
 test("a warehouse target at or above the Shopee original is isolated with a rebuild reminder", () => {
