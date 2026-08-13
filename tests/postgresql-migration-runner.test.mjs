@@ -43,6 +43,26 @@ class FakeMigrationProvider {
   }
 }
 
+function assertOrderedTableDependencies({ migrations, initiallyAvailable = [] }) {
+  const available = new Set(initiallyAvailable);
+  const unresolved = [];
+  for (const migration of migrations) {
+    const statements = migration.sql.split(/;\s*(?:\r?\n|$)/);
+    for (const statement of statements) {
+      const created = statement.match(/CREATE TABLE\s+"app"\."([a-z0-9_]+)"/i)?.[1];
+      const references = [...statement.matchAll(/REFERENCES\s+"app"\."([a-z0-9_]+)"/gi)].map((match) => match[1]);
+      for (const relation of references) {
+        if (!available.has(relation) && relation !== created) {
+          unresolved.push({ migration: migration.version, created, relation });
+        }
+      }
+      if (created) available.add(created);
+    }
+  }
+  assert.deepEqual(unresolved, []);
+  return available;
+}
+
 test("migration loader returns ordered SQL with literal SHA-256 checksums", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "postgresql-migrations-"));
   try {
@@ -64,6 +84,7 @@ test("shared migration set contains the additive bridge for every missing C modu
     "027_shopee_discount",
     "033_shared_development_modules",
     "034_shared_module_text_identifiers",
+    "035_shopee_discount_foundation_links",
   ]);
   const additive = migrations[2].sql;
   for (const table of [
@@ -99,6 +120,10 @@ test("shared migration set contains the additive bridge for every missing C modu
     assert.match(identifierFix, new RegExp(`ALTER TABLE "app"\\."${table}" ALTER COLUMN "${column}" TYPE text`));
   }
   assert.doesNotMatch(identifierFix, /DROP\s|TRUNCATE\s|DELETE\s+FROM|UPDATE\s+"app"/i);
+  const discountLinks = migrations[4].sql;
+  assert.match(discountLinks, /shopee_discount_plans_foundation_plan_fk/);
+  assert.match(discountLinks, /REFERENCES "app"\."foundation_operation_plans" \("id"\)/);
+  assert.match(discountLinks, /NOT VALID/);
 });
 
 test("migration runner locks, verifies identity, and records each migration", async () => {
@@ -127,6 +152,18 @@ test("migration runner locks, verifies identity, and records each migration", as
     ["001_first", "a".repeat(64)],
     ["002_second", "b".repeat(64)],
   ]);
+});
+
+test("legacy adoption plan has no unresolved forward relation dependencies", async () => {
+  const migrations = await loadPostgresqlMigrations(path.resolve("migrations", "postgresql"));
+  const adoptionPlan = migrations.filter(({ version }) => version !== "001_shared_baseline");
+  const available = assertOrderedTableDependencies({
+    migrations: adoptionPlan,
+    initiallyAvailable: ["foundation_integration_accounts", "foundation_account_capabilities", "foundation_tasks", "dingtalk_robot_configs"],
+  });
+  assert.equal(available.has("shopee_discount_plans"), true);
+  assert.equal(available.has("foundation_operation_plans"), true);
+  assert.match(adoptionPlan.at(-1).sql, /shopee_discount_plans_foundation_plan_fk/);
 });
 
 test("migration runner rejects checksum drift before executing SQL", async () => {

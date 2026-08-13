@@ -43,7 +43,7 @@ CREATE TABLE "app"."shopee_discount_settings" (
 
 CREATE TABLE "app"."shopee_discount_plans" (
   "id" text PRIMARY KEY,
-  "foundation_plan_id" uuid REFERENCES "app"."foundation_operation_plans" ("id") ON DELETE RESTRICT,
+  "foundation_plan_id" uuid,
   "country" text NOT NULL,
   "state" text NOT NULL DEFAULT 'PREVIEWING' CHECK (
     "state" IN ('PREVIEWING','PREVIEWED','APPROVED','EXECUTING','PARTIAL_SUCCESS','SUCCEEDED','FAILED','BLOCKED','EXPIRED','CANCELLED')
@@ -66,7 +66,11 @@ CREATE TABLE "app"."shopee_discount_plans" (
   "created_at" timestamptz NOT NULL,
   "updated_at" timestamptz NOT NULL,
   CHECK ("target_ends_at" > "target_starts_at"),
-  CHECK ("expires_at" IS NULL OR "expires_at" > "created_at")
+  CHECK ("expires_at" IS NULL OR "expires_at" > "created_at"),
+  CHECK (
+    "state" NOT IN ('PREVIEWED','APPROVED','EXECUTING','PARTIAL_SUCCESS','SUCCEEDED')
+    OR ("merkle_root" IS NOT NULL AND length(btrim("merkle_root")) > 0)
+  )
 );
 
 CREATE INDEX "idx_shopee_discount_plans_country_state_created"

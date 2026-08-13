@@ -69,6 +69,39 @@ test("PostgreSQL row dates are normalized to ISO strings", async () => {
   assert.equal(plan.createdAt, "2026-08-13T00:00:00.000Z");
 });
 
+test("PostgreSQL events normalize driver Date values to ISO strings", async () => {
+  const provider = new RecordingProvider([{ rows: [{
+    id: "event-1",
+    occurred_at: new Date("2026-08-13T01:00:00.000Z"),
+    created_at: new Date("2026-08-13T01:00:01.000Z"),
+  }], rowCount: 1 }]);
+  const repository = new PostgresqlShopeeDiscountRepository({ provider });
+  const event = await repository.appendEvent({ id: "event-1", eventType: "TEST" });
+  assert.equal(event.occurredAt, "2026-08-13T01:00:00.000Z");
+  assert.equal(event.createdAt, "2026-08-13T01:00:01.000Z");
+});
+
+test("PostgreSQL settings reject nested credential-shaped metadata without issuing SQL", async () => {
+  const provider = new RecordingProvider();
+  const repository = new PostgresqlShopeeDiscountRepository({ provider });
+  await assert.rejects(repository.saveSettings({
+    metadata: { warehouse: { access_token: "nested-plaintext-secret" } },
+  }, { actorId: "admin" }), { code: "SHOPEE_DISCOUNT_PLAINTEXT_SECRET_REJECTED" });
+  assert.equal(provider.calls.length, 0);
+});
+
+test("PostgreSQL settings redact historical credential-shaped metadata on output", async () => {
+  const provider = new RecordingProvider([{ rows: [{
+    id: "default", enabled: true, timezone: "Asia/Shanghai",
+    metadata_json: { integration: { access_token: "historical-plaintext-secret", label: "safe" } },
+    created_at: new Date("2026-08-13T00:00:00.000Z"), updated_at: new Date("2026-08-13T00:00:00.000Z"),
+  }], rowCount: 1 }]);
+  const repository = new PostgresqlShopeeDiscountRepository({ provider });
+  const settings = await repository.getSettings();
+  assert.equal(JSON.stringify(settings).includes("historical-plaintext-secret"), false);
+  assert.equal(settings.metadata.integration.label, "safe");
+});
+
 test("PostgreSQL plan state changes reject lifecycle shortcuts before SQL", async () => {
   const provider = new RecordingProvider();
   const repository = new PostgresqlShopeeDiscountRepository({ provider });
@@ -123,6 +156,16 @@ test("PostgreSQL shard append uses one transaction and one parameterized item ba
   assert.equal(inserts[0].values.includes("129900"), true);
 });
 
+test("PostgreSQL sealing rejects an empty Merkle root before opening a transaction", async () => {
+  const provider = new RecordingProvider();
+  const repository = new PostgresqlShopeeDiscountRepository({ provider });
+  await assert.rejects(repository.sealPlan({
+    planId: "plan-1", merkleRoot: "   ", itemCount: 1, shardCount: 1, expectedVersion: 1,
+  }), /merkleRoot is required/);
+  assert.equal(provider.transactions, 0);
+  assert.equal(provider.calls.length, 0);
+});
+
 test("PostgreSQL claim and fenced writes lock rows and include owner plus epoch predicates", async () => {
   const provider = new RecordingProvider([
     { rows: [{ id: "job-1", status: "PENDING", owner_id: null, fencing_epoch: 0, lease_until: null }], rowCount: 1 },
@@ -143,6 +186,30 @@ test("PostgreSQL claim and fenced writes lock rows and include owner plus epoch 
     assert.match(call.text, /(?:fencing_epoch|epoch)\s*=\s*\$/i);
     assert.equal(call.text.includes("worker-1"), false);
   }
+});
+
+test("PostgreSQL dispatch fencing uses repository now while storing caller occurrence time and validates UUID", async () => {
+  const provider = new RecordingProvider([
+    { rows: [{ id: "job-1" }], rowCount: 1 },
+    { rows: [{
+      id: "intent-1", job_id: "job-1", plan_id: "plan-1", operation_uuid: "11111111-1111-4111-8111-111111111111",
+      target_type: "discount", target_key: "target-1", payload_hash: "payload-1", epoch: 1, owner_id: "worker-1",
+      status: "DISPATCHED", dispatched_at: "2026-08-12T23:00:00.000Z", updated_at: "2026-08-13T00:01:00.000Z",
+    }], rowCount: 1 },
+  ]);
+  const repository = new PostgresqlShopeeDiscountRepository({ provider, now: () => new Date("2026-08-13T00:01:00.000Z") });
+  await assert.rejects(repository.createDispatchIntent({
+    jobId: "job-1", planId: "plan-1", operationUuid: "operation-1", targetType: "discount", targetKey: "target-1",
+    payloadHash: "payload-1", ownerId: "worker-1", epoch: 1,
+  }), { code: "SHOPEE_DISCOUNT_OPERATION_UUID_INVALID" });
+  assert.equal(provider.calls.length, 0);
+  await repository.createDispatchIntent({
+    id: "intent-1", jobId: "job-1", planId: "plan-1", operationUuid: "11111111-1111-4111-8111-111111111111",
+    targetType: "discount", targetKey: "target-1", payloadHash: "payload-1", ownerId: "worker-1", epoch: 1,
+    dispatchedAt: "2026-08-12T23:00:00.000Z",
+  });
+  assert.equal(provider.calls[0].values[4], "2026-08-13T00:01:00.000Z");
+  assert.equal(provider.calls[1].values[10], "2026-08-12T23:00:00.000Z");
 });
 
 test("PostgreSQL due-job claims use skip-locked ordering and conditional updates", async () => {
@@ -170,4 +237,18 @@ test("PostgreSQL migration keeps money textual and adds partial operational inde
   assert.match(sql, /WHERE\s+"?status"?\s+IN\s*\(/i);
   assert.match(sql, /shopee_discount_due_jobs/i);
   assert.match(sql, /shopee_discount_dispatch_intents/i);
+  assert.match(sql, /length\(btrim\("merkle_root"\)\)\s*>\s*0/i);
+});
+
+test("PostgreSQL 027 has no forward foreign keys to relations first created by later migrations", async () => {
+  const migrationsDir = path.resolve("migrations", "postgresql");
+  const discount = await fs.readFile(path.join(migrationsDir, "027_shopee_discount.sql"), "utf8");
+  const later = [
+    await fs.readFile(path.join(migrationsDir, "033_shared_development_modules.sql"), "utf8"),
+    await fs.readFile(path.join(migrationsDir, "034_shared_module_text_identifiers.sql"), "utf8"),
+  ].join("\n");
+  const laterTables = new Set([...later.matchAll(/CREATE TABLE\s+"app"\."([a-z0-9_]+)"/gi)].map((match) => match[1]));
+  const forwardReferences = [...discount.matchAll(/REFERENCES\s+"app"\."([a-z0-9_]+)"/gi)]
+    .map((match) => match[1]).filter((table) => laterTables.has(table));
+  assert.deepEqual(forwardReferences, []);
 });

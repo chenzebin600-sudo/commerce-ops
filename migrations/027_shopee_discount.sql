@@ -72,7 +72,11 @@ CREATE TABLE shopee_discount_plans (
   updated_at TEXT NOT NULL,
   FOREIGN KEY (foundation_plan_id) REFERENCES foundation_operation_plans(id) ON DELETE RESTRICT,
   CHECK (target_ends_at > target_starts_at),
-  CHECK (expires_at IS NULL OR expires_at > created_at)
+  CHECK (expires_at IS NULL OR expires_at > created_at),
+  CHECK (
+    state NOT IN ('PREVIEWED','APPROVED','EXECUTING','PARTIAL_SUCCESS','SUCCEEDED')
+    OR (merkle_root IS NOT NULL AND length(trim(merkle_root)) > 0)
+  )
 );
 
 CREATE INDEX idx_shopee_discount_plans_country_state_created
@@ -239,7 +243,14 @@ CREATE TABLE shopee_discount_dispatch_intents (
   updated_at TEXT NOT NULL,
   FOREIGN KEY (job_id) REFERENCES shopee_discount_jobs(id) ON DELETE RESTRICT,
   FOREIGN KEY (plan_id) REFERENCES shopee_discount_plans(id) ON DELETE RESTRICT,
-  FOREIGN KEY (plan_item_id) REFERENCES shopee_discount_plan_items(id) ON DELETE RESTRICT
+  FOREIGN KEY (plan_item_id) REFERENCES shopee_discount_plan_items(id) ON DELETE RESTRICT,
+  CHECK (
+    length(operation_uuid) = 36
+    AND substr(operation_uuid, 9, 1) = '-'
+    AND substr(operation_uuid, 14, 1) = '-'
+    AND substr(operation_uuid, 19, 1) = '-'
+    AND substr(operation_uuid, 24, 1) = '-'
+  )
 );
 
 CREATE INDEX idx_shopee_discount_intents_operation_status_age

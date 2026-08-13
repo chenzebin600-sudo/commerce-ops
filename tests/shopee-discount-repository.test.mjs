@@ -78,6 +78,8 @@ function item(sequence = 0, overrides = {}) {
   };
 }
 
+const OPERATION_UUID = "11111111-1111-4111-8111-111111111111";
+
 async function appendAndSeal(repository, planId = "plan-1", merkleRoot = "root-1") {
   await repository.appendPlanShard({
     planId,
@@ -143,6 +145,17 @@ test("plan shards are transactional, contiguous, and immutable after sealing", a
       { code: "SHOPEE_DISCOUNT_PLAN_IMMUTABLE" },
     );
     assert.throws(() => context.db.prepare("UPDATE shopee_discount_plan_items SET target_price_minor='1' WHERE id='plan-item-0'").run(), /immutable/i);
+  } finally {
+    await context.close();
+  }
+});
+
+test("database plan-state invariant rejects an empty sealed Merkle root", async () => {
+  const context = await fixture();
+  try {
+    await context.repository.createPlan(plan());
+    assert.throws(() => context.db.prepare(`UPDATE shopee_discount_plans
+      SET state='PREVIEWED',merkle_root='' WHERE id=?`).run("plan-1"), /CHECK constraint failed/);
   } finally {
     await context.close();
   }
@@ -258,7 +271,7 @@ test("dispatch intent is durable before completion and has one-way UNKNOWN recon
     await context.repository.createJob({ id: "job-1", planId: "plan-1", jobType: "EXECUTE", createdBy: "scheduler" });
     const claim = await context.repository.claimJob({ jobId: "job-1", ownerId: "worker-a", leaseMs: 30_000 });
     const intent = await context.repository.createDispatchIntent({
-      id: "intent-1", jobId: "job-1", planId: "plan-1", operationUuid: "operation-1",
+      id: "intent-1", jobId: "job-1", planId: "plan-1", operationUuid: OPERATION_UUID,
       targetType: "discount", targetKey: "shop-1\u001fitem-0\u001fmodel-0", payloadHash: "payload-0",
       ownerId: "worker-a", epoch: claim.epoch,
     });
@@ -284,12 +297,36 @@ test("dispatch intent is durable before completion and has one-way UNKNOWN recon
   }
 });
 
+test("dispatch intent rejects invalid UUIDs and backdated occurrence times cannot bypass an expired lease", async () => {
+  const context = await fixture();
+  try {
+    await context.repository.createPlan(plan());
+    await context.repository.createJob({ id: "job-1", planId: "plan-1", jobType: "EXECUTE", createdBy: "scheduler" });
+    const claim = await context.repository.claimJob({ jobId: "job-1", ownerId: "worker-a", leaseMs: 30_000 });
+    await assert.rejects(context.repository.createDispatchIntent({
+      id: "intent-invalid", jobId: "job-1", planId: "plan-1", operationUuid: "operation-1",
+      targetType: "discount", targetKey: "target-1", payloadHash: "payload-1", ownerId: "worker-a", epoch: claim.epoch,
+    }), { code: "SHOPEE_DISCOUNT_OPERATION_UUID_INVALID" });
+    context.db.prepare("UPDATE shopee_discount_jobs SET lease_until=? WHERE id=?").run("2000-01-01T00:00:00.000Z", "job-1");
+    await assert.rejects(context.repository.createDispatchIntent({
+      id: "intent-backdated", jobId: "job-1", planId: "plan-1", operationUuid: "22222222-2222-4222-8222-222222222222",
+      targetType: "discount", targetKey: "target-1", payloadHash: "payload-1", ownerId: "worker-a", epoch: claim.epoch,
+      dispatchedAt: "1999-01-01T00:00:00.000Z",
+    }), { code: "SHOPEE_DISCOUNT_STALE_EPOCH" });
+  } finally {
+    await context.close();
+  }
+});
+
 test("settings persist encrypted warehouse references and never accept or return plaintext credentials", async () => {
   const context = await fixture();
   try {
     await assert.rejects(context.repository.saveSettings({ warehouseKey: "plaintext-secret" }, { actorId: "admin" }), {
       code: "SHOPEE_DISCOUNT_PLAINTEXT_SECRET_REJECTED",
     });
+    await assert.rejects(context.repository.saveSettings({
+      metadata: { integration: { api_key: "nested-plaintext-secret" } },
+    }, { actorId: "admin" }), { code: "SHOPEE_DISCOUNT_PLAINTEXT_SECRET_REJECTED" });
     const settings = await context.repository.saveSettings({
       encryptedWarehouseKeyCiphertext: "ciphertext-value",
       warehouseKeyReference: "vault://commerce/shopee-discount",
@@ -303,6 +340,12 @@ test("settings persist encrypted warehouse references and never accept or return
     assert.equal(Object.hasOwn(settings, "warehouseKey"), false);
     assert.equal(JSON.stringify(settings).includes("plaintext-secret"), false);
     assert.deepEqual(await context.repository.getSettings(), settings);
+    context.db.prepare("UPDATE shopee_discount_settings SET metadata_json=? WHERE id='default'").run(
+      JSON.stringify({ integration: { access_token: "historical-plaintext-secret", label: "safe" } }),
+    );
+    const sanitized = await context.repository.getSettings();
+    assert.equal(JSON.stringify(sanitized).includes("historical-plaintext-secret"), false);
+    assert.equal(sanitized.metadata.integration.label, "safe");
   } finally {
     await context.close();
   }
