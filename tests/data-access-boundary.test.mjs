@@ -113,6 +113,42 @@ test("transaction manager rolls failed work back", async () => {
   }
 });
 
+test("transaction manager exposes only the run capability", async () => {
+  const context = await fixture();
+  try {
+    const { transactionManager } = context.dataAccess;
+    assert.equal(typeof transactionManager.run, "function");
+    assert.equal(transactionManager.begin, undefined);
+    assert.equal(transactionManager.commit, undefined);
+    assert.equal(transactionManager.rollback, undefined);
+  } finally {
+    await context.close();
+  }
+});
+
+test("SQLite provider hides the native connection behind a minimal compatibility facade", async () => {
+  const context = await fixture();
+  try {
+    const { provider } = context.dataAccess;
+    assert.equal(provider._connection, undefined);
+    assert.deepEqual(Object.getOwnPropertySymbols(provider), []);
+    assert.equal(typeof provider.connection.prepare, "function");
+    assert.equal(typeof provider.connection.exec, "function");
+    assert.deepEqual(Object.keys(provider.connection).sort(), ["exec", "prepare"]);
+    for (const capability of ["applyChangeset", "createSession", "close", "function", "loadExtension"]) {
+      assert.equal(provider.connection[capability], undefined, capability);
+    }
+    const statement = provider.connection.prepare("SELECT 1 AS value");
+    assert.equal(statement.get().value, 1);
+    assert.deepEqual(Object.keys(statement).sort(), ["all", "get", "iterate", "run"]);
+    for (const capability of ["columns", "setAllowBareNamedParameters", "setReadBigInts", "setReturnArrays"]) {
+      assert.equal(statement[capability], undefined, capability);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 test("SQLite provider serializes async transactions across provider instances sharing one connection", async () => {
   const context = await fixture();
   const shared = new SqliteProvider({ connection: context.dataAccess.provider.connection });
@@ -146,6 +182,180 @@ test("SQLite provider serializes async transactions across provider instances sh
   } finally { shared.close(); await context.close(); }
 });
 
+test("a provider cannot inherit another provider's active async transaction authority", async () => {
+  const context = await fixture();
+  const shared = new SqliteProvider({ connection: context.dataAccess.provider.connection });
+  try {
+    const provider = context.dataAccess.provider;
+    await provider.execute("CREATE TABLE e2_async_capability_test (value TEXT NOT NULL)");
+    await provider.transaction(async (tx) => {
+      await tx.execute("INSERT INTO e2_async_capability_test(value) VALUES (?)", ["owner-before"]);
+      assert.throws(
+        () => shared.connection.prepare("INSERT INTO e2_async_capability_test(value) VALUES (?)").run("foreign-raw"),
+        { code: "SQLITE_RAW_WRITE_BLOCKED" },
+      );
+      await assert.rejects(
+        shared.execute("INSERT INTO e2_async_capability_test(value) VALUES (?)", ["foreign-executor"]),
+        { code: "SQLITE_RAW_WRITE_BLOCKED" },
+      );
+      assert.throws(() => shared.transactionManager.run(() => {}), { code: "SQLITE_TRANSACTION_BUSY" });
+      assert.throws(() => tx.connection.exec("COMMIT"));
+      assert.throws(() => tx.connection.prepare("ROLLBACK"));
+      await tx.execute("INSERT INTO e2_async_capability_test(value) VALUES (?)", ["owner-after"]);
+    });
+    assert.deepEqual(
+      (await provider.query("SELECT value FROM e2_async_capability_test ORDER BY rowid")).rows.map(({ value }) => value),
+      ["owner-before", "owner-after"],
+    );
+  } finally {
+    shared.close();
+    await context.close();
+  }
+});
+
+test("cached SQLite writes and mutating PRAGMAs cannot enter queued or active async transactions", async () => {
+  const context = await fixture();
+  let release;
+  let active;
+  try {
+    const { provider } = context.dataAccess;
+    await provider.execute("CREATE TABLE e2_guarded_mutation_test (value TEXT NOT NULL)");
+    const insert = provider.connection.prepare("INSERT INTO e2_guarded_mutation_test(value) VALUES (?)");
+    const exec = provider.connection.exec;
+    const pragmaGet = provider.connection.prepare("PRAGMA user_version = 7");
+    const pragmaAll = provider.connection.prepare("PRAGMA user_version = 8");
+    const pragmaIterate = provider.connection.prepare("PRAGMA user_version = 9");
+    const pragmaRun = provider.connection.prepare("PRAGMA user_version = 10");
+    const pragmaAction = provider.connection.prepare("PRAGMA optimize");
+    const blockedMutations = [
+      () => insert.run("foreign"),
+      () => exec("INSERT INTO e2_guarded_mutation_test(value) VALUES ('foreign')"),
+      () => pragmaGet.get(),
+      () => pragmaAll.all(),
+      () => [...pragmaIterate.iterate()],
+      () => pragmaRun.run(),
+      () => pragmaAction.get(),
+      () => exec("PRAGMA user_version = 11"),
+    ];
+    const assertBlocked = () => {
+      for (const mutate of blockedMutations) {
+        assert.throws(mutate, { code: "SQLITE_RAW_WRITE_BLOCKED" });
+      }
+    };
+
+    const hold = new Promise((resolve) => { release = resolve; });
+    let entered;
+    const opened = new Promise((resolve) => { entered = resolve; });
+    active = provider.transaction(async () => {
+      entered();
+      await hold;
+    });
+    assertBlocked();
+    await opened;
+    assertBlocked();
+    release();
+    await active;
+    assert.equal((await provider.query("SELECT COUNT(*) count FROM e2_guarded_mutation_test")).rows[0].count, 0);
+    assert.equal((await provider.query("PRAGMA user_version")).rows[0].user_version, 0);
+  } finally {
+    release?.();
+    await active?.catch(() => {});
+    await context.close();
+  }
+});
+
+test("synchronous transaction run rejects queued async ownership and works again when idle", async () => {
+  const context = await fixture();
+  try {
+    const { provider, transactionManager } = context.dataAccess;
+    await provider.execute("CREATE TABLE e2_sync_queue_test (value TEXT NOT NULL)");
+    const queued = provider.transaction(async (tx) => {
+      await tx.execute("INSERT INTO e2_sync_queue_test(value) VALUES (?)", ["async"]);
+    });
+    assert.throws(() => transactionManager.run(() => {}), { code: "SQLITE_TRANSACTION_BUSY" });
+    await queued;
+    transactionManager.run(() => {
+      provider.connection.prepare("INSERT INTO e2_sync_queue_test(value) VALUES (?)").run("sync");
+    });
+    assert.deepEqual(
+      (await provider.query("SELECT value FROM e2_sync_queue_test ORDER BY rowid")).rows.map(({ value }) => value),
+      ["async", "sync"],
+    );
+  } finally {
+    await context.close();
+  }
+});
+
+test("a provider cannot finish or mutate another provider's synchronous transaction", async () => {
+  const context = await fixture();
+  const shared = new SqliteProvider({ connection: context.dataAccess.provider.connection });
+  try {
+    const { provider, transactionManager } = context.dataAccess;
+    await provider.execute("CREATE TABLE e2_sync_capability_test (value TEXT NOT NULL)");
+    transactionManager.run(() => {
+      provider.connection.prepare("INSERT INTO e2_sync_capability_test(value) VALUES (?)").run("owner-before");
+      assert.throws(
+        () => shared.connection.prepare("INSERT INTO e2_sync_capability_test(value) VALUES (?)").run("foreign"),
+        { code: "SQLITE_RAW_WRITE_BLOCKED" },
+      );
+      for (const sql of ["COMMIT", "ROLLBACK", "SAVEPOINT escaped"]) {
+        assert.throws(() => provider.connection.exec(sql));
+        assert.throws(() => shared.connection.exec(sql));
+      }
+      provider.connection.prepare("INSERT INTO e2_sync_capability_test(value) VALUES (?)").run("owner-after");
+    });
+    assert.deepEqual(
+      (await provider.query("SELECT value FROM e2_sync_capability_test ORDER BY rowid")).rows.map(({ value }) => value),
+      ["owner-before", "owner-after"],
+    );
+  } finally {
+    shared.close();
+    await context.close();
+  }
+});
+
+test("cached public statements cannot finish a later managed transaction", async () => {
+  const context = await fixture();
+  try {
+    const { provider } = context.dataAccess;
+    for (const sql of [
+      "COMMIT",
+      "ROLLBACK",
+      "SAVEPOINT escaped",
+      "RELEASE escaped",
+      "/* cached */ COMMIT",
+      "-- cached\nROLLBACK",
+      "/* cached */ SAVEPOINT escaped",
+      "-- cached\nRELEASE escaped",
+    ]) {
+      assert.throws(
+        () => provider.connection.prepare(sql),
+        { code: "SQLITE_RAW_WRITE_BLOCKED" },
+      );
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+test("async provider mutations started during synchronous run never escape its rollback", async () => {
+  const context = await fixture();
+  try {
+    const { provider, transactionManager } = context.dataAccess;
+    await provider.execute("CREATE TABLE e2_sync_async_escape_test (value TEXT NOT NULL)");
+    let mutation;
+    assert.throws(() => transactionManager.run(() => {
+      provider.connection.prepare("INSERT INTO e2_sync_async_escape_test(value) VALUES (?)").run("sync");
+      mutation = provider.execute("INSERT INTO e2_sync_async_escape_test(value) VALUES (?)", ["async"]);
+      return mutation;
+    }), /does not accept async callbacks/);
+    await assert.rejects(mutation, { code: "SQLITE_TRANSACTION_BUSY" });
+    assert.equal((await provider.query("SELECT COUNT(*) count FROM e2_sync_async_escape_test")).rows[0].count, 0);
+  } finally {
+    await context.close();
+  }
+});
+
 test("SQLite provider rejects nested and synchronous foreign transactions deterministically without foreign commit", async () => {
   const context = await fixture();
   const shared = new SqliteProvider({ connection: context.dataAccess.provider.connection });
@@ -162,11 +372,25 @@ test("SQLite provider rejects nested and synchronous foreign transactions determ
     const hold = new Promise((resolve) => { release = resolve; });
     let entered;
     const opened = new Promise((resolve) => { entered = resolve; });
-    const active = provider.transaction(async () => { entered(); await hold; });
+    const active = provider.transaction(async (tx) => {
+      await tx.execute("INSERT INTO e2_nested_transaction_test(value) VALUES (?)", ["owned"]);
+      entered();
+      await hold;
+    });
     await opened;
+    assert.equal(shared.transactionManager.begin, undefined);
+    assert.equal(shared.transactionManager.commit, undefined);
+    assert.equal(shared.transactionManager.rollback, undefined);
     assert.throws(() => shared.transactionManager.run(() => {}), { code: "SQLITE_TRANSACTION_BUSY" });
+    for (const sql of [
+      "BEGIN IMMEDIATE",
+      "COMMIT",
+      "ROLLBACK",
+      "INSERT INTO e2_nested_transaction_test(value) VALUES ('foreign')",
+    ]) assert.throws(() => shared.connection.exec(sql), { code: "SQLITE_RAW_WRITE_BLOCKED" });
     release();
     await active;
+    assert.deepEqual((await provider.query("SELECT value FROM e2_nested_transaction_test")).rows.map(({ value }) => value), ["owned"]);
   } finally { shared.close(); await context.close(); }
 });
 

@@ -185,6 +185,11 @@ test("Foundation repositories sharing SQLite cannot interleave approval, block, 
       planHash: approvalPlan.planHash, approvalText: "确认发货 1 单", actorType: "user", actorId: "operator-1",
     });
     await approvalOpen;
+    const transactionManager = context.access.provider.transactionManager;
+    assert.equal(transactionManager.begin, undefined);
+    assert.equal(transactionManager.commit, undefined);
+    assert.equal(transactionManager.rollback, undefined);
+    assert.throws(() => transactionManager.run(() => {}), { code: "SQLITE_TRANSACTION_BUSY" });
     const foreignEvent = context.access.repositories.shopeeDiscount.appendEvent({ eventType: "FOREIGN_DURING_APPROVAL" });
     await assert.rejects(foreignEvent, { code: "SQLITE_RAW_WRITE_BLOCKED" });
     assert.throws(() => context.access.repositories.audit.create({
