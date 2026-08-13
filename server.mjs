@@ -120,6 +120,11 @@ import { createShopeeConsoleProxy } from "./lib/shopee-console-proxy.mjs";
 import { ShopeeHealthClient } from "./lib/shopee-health/client.mjs";
 import { ShopeeHealthService } from "./lib/shopee-health/service.mjs";
 import { createShopeeHealthApi } from "./lib/shopee-health/api.mjs";
+import { ShopeeReadAdapter } from "./lib/shopee-discount/shopee-read-adapter.mjs";
+import { WarehouseControlPriceClient } from "./lib/shopee-discount/warehouse-client.mjs";
+import { resolveShopeeWriteSecurity } from "./lib/shopee-discount/write-security.mjs";
+import { ShopeeDiscountService } from "./lib/shopee-discount/service.mjs";
+import { createShopeeDiscountApi } from "./lib/shopee-discount/api.mjs";
 import { ShopeeAdvertisingService } from "./lib/advertising/shopee-advertising-service.mjs";
 import { createShopeeAdvertisingApi } from "./lib/advertising/shopee-advertising-api.mjs";
 
@@ -352,17 +357,76 @@ const auditService = createOperationAuditService({ repository: dataAccess.reposi
 const trustedAuditProxies = parseTrustedProxies(process.env.TRUST_PROXY);
 const auditRetentionDays = Number(process.env.AUDIT_RETENTION_DAYS || 180);
 const handleAuditApi = createAuditApi({ audit: auditService, retentionDays: auditRetentionDays });
+const shopeeHealthClient = new ShopeeHealthClient({
+  baseUrl: process.env.SHOPEE_RELAY_BASE_URL || "http://10.110.80.95:8788",
+});
 const shopeeHealthService = new ShopeeHealthService({
   repository: dataAccess.repositories.shopeeHealth,
-  client: new ShopeeHealthClient({
-    baseUrl: process.env.SHOPEE_RELAY_BASE_URL || "http://10.110.80.95:8788",
-  }),
+  client: shopeeHealthClient,
   robotRepository: schedulerDatabase,
 });
 const handleShopeeHealthApi = createShopeeHealthApi({
   service: shopeeHealthService,
   repository: dataAccess.repositories.shopeeHealth,
 });
+const shopeeDiscountReadAdapter = new ShopeeReadAdapter({
+  transport: async (request) => {
+    const settings = await dataAccess.repositories.shopeeHealth.getSettings({ includeSecret: true });
+    if (!settings?.encryptedTokenKey) return { status: 503, body: { error: "SHOPEE_TOKEN_NOT_CONFIGURED" } };
+    const tokenKey = decryptSecret(settings.encryptedTokenKey);
+    try {
+      const body = await shopeeHealthClient.request(request.relayPath, tokenKey, {
+        method: request.relayMethod,
+        ...(request.body ? { headers: { "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(request.body) } : {}),
+      });
+      return { status: 200, body };
+    } catch (error) {
+      return { status: Number(error?.status) || 503, body: { error: String(error?.code || "SHOPEE_RELAY_FAILED") } };
+    }
+  },
+  retryPolicy: { maxAttempts: 3, delaysMs: [5_000, 15_000] },
+});
+const shopeeDiscountWarehouse = /^https:\/\//.test(String(runtimeEnv.SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL || ""))
+  ? new WarehouseControlPriceClient({
+      fetchImpl: globalThis.fetch,
+      baseUrl: runtimeEnv.SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL,
+      getKey: async () => {
+        const settings = await dataAccess.repositories.shopeeDiscount.getSettings();
+        return settings?.encryptedWarehouseKeyCiphertext ? decryptSecret(settings.encryptedWarehouseKeyCiphertext) : null;
+      },
+    })
+  : { async scanPrices() { return { status: "BLOCKED", code: "WAREHOUSE_UNAVAILABLE", rows: [], warnings: [], evidence: {} }; } };
+const shopeeDiscountSecurity = () => resolveShopeeWriteSecurity({
+  env: runtimeEnv,
+  listener: {
+    host,
+    behindTrustedProxy: Boolean(process.env.TRUST_PROXY),
+    exposure: process.env.TRUST_PROXY ? "proxy_only" : "direct",
+  },
+  relay: {
+    url: process.env.SHOPEE_RELAY_BASE_URL || "http://10.110.80.95:8788",
+    executeIdentity: {
+      independent: runtimeEnv.SHOPEE_EXECUTE_IDENTITY_INDEPENDENT === "true",
+      trusted: runtimeEnv.SHOPEE_EXECUTE_IDENTITY_TRUSTED === "true",
+    },
+  },
+});
+const shopeeDiscountService = new ShopeeDiscountService({
+  repository: dataAccess.repositories.shopeeDiscount,
+  foundation: foundationService,
+  shopee: shopeeDiscountReadAdapter,
+  warehouse: shopeeDiscountWarehouse,
+  writeSecurity: shopeeDiscountSecurity,
+  approvalTtlMs: Number(runtimeEnv.SHOPEE_DISCOUNT_APPROVAL_TTL_MS || 10 * 60_000),
+  siteCapability: {
+    currency: runtimeEnv.SHOPEE_DISCOUNT_CURRENCY || "THB",
+    scale: Number(runtimeEnv.SHOPEE_DISCOUNT_PRICE_SCALE || 2),
+    minMinor: runtimeEnv.SHOPEE_DISCOUNT_MIN_PRICE_MINOR || "1",
+    maxMinor: runtimeEnv.SHOPEE_DISCOUNT_MAX_PRICE_MINOR || "999999999",
+    stepMinor: runtimeEnv.SHOPEE_DISCOUNT_PRICE_STEP_MINOR || "1",
+  },
+});
+const handleShopeeDiscountApi = createShopeeDiscountApi({ service: shopeeDiscountService });
 const exportFileService = createExportFileService({
   repository: dataAccess.repositories.exportFiles,
   exportRoot: scheduledExportRoot,
@@ -2471,6 +2535,9 @@ async function handleApi(req, res, url) {
 
   const inventorySyncHandled = await handleInventorySyncApi(req, res, url);
   if (inventorySyncHandled) return true;
+
+  const shopeeDiscountHandled = await handleShopeeDiscountApi(req, res, url);
+  if (shopeeDiscountHandled) return true;
 
   const shopeeConsoleHandled = await handleShopeeConsoleApi(req, res, url);
   if (shopeeConsoleHandled) return true;
