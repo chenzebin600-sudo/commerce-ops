@@ -170,6 +170,14 @@ test("trusted listener requires a canonical loopback/private host or explicit tr
     { host: "public.example.com", exposure: "private" },
     { host: "127.0.0.1:3101", exposure: "private" },
     { host: "127.000.0.1", exposure: "private" },
+    { host: ".", trustedTopology: true },
+    { host: "-", trustedTopology: true },
+    { host: ".internal", trustedTopology: true },
+    { host: "internal.", trustedTopology: true },
+    { host: "-ops.internal", trustedTopology: true },
+    { host: "ops-.internal", trustedTopology: true },
+    { host: "ops..internal", trustedTopology: true },
+    { host: `${"a".repeat(64)}.internal`, trustedTopology: true },
   ]) {
     const security = resolveShopeeWriteSecurity({ env: trustedEnv(), listener, relay: { url: "https://relay.internal.example" } });
     assert.equal(security.enabled, false);

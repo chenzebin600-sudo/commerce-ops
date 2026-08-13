@@ -138,6 +138,43 @@ test("Shopee read adapter retries documented platform transient codes before gen
   }
 });
 
+test("read technical codes take precedence over auth-like message text and remain retryable", async () => {
+  for (const platformCode of ["error_server", "error_network"]) {
+    let calls = 0;
+    const adapter = new ShopeeReadAdapter({
+      retryPolicy: { maxAttempts: 2, delaysMs: [0] },
+      sleep: async () => undefined,
+      transport: async () => {
+        calls += 1;
+        if (calls === 1) return { status: 200, body: { ok: true, data: { error: platformCode, message: "auth token service failed", request_id: "read-precedence", response: {} } } };
+        return successfulPlatformPayload({ model: [], tier_variation: [] });
+      },
+    });
+    assert.equal((await adapter.getModelList({ shopId: "1", itemId: "2", requestId: REQUEST_ID })).attempts, 2);
+  }
+});
+
+test("read valid HTTP auth status takes precedence even when the body is malformed", async () => {
+  for (const status of [401, 403]) {
+    const adapter = new ShopeeReadAdapter({ transport: async () => ({ status, body: "not-json" }) });
+    await assert.rejects(adapter.getModelList({ shopId: "1", itemId: "2", requestId: REQUEST_ID }), (error) => error.code === "SHOPEE_AUTH_ERROR");
+  }
+});
+
+test("known read business code takes precedence over auth and rate message heuristics", async () => {
+  let calls = 0;
+  const adapter = new ShopeeReadAdapter({
+    retryPolicy: { maxAttempts: 2, delaysMs: [0] },
+    sleep: async () => undefined,
+    transport: async () => {
+      calls += 1;
+      return { status: 200, body: { ok: true, data: { error: "discount.error_time", message: "auth token rate limit wording", request_id: "known-business", response: {} } } };
+    },
+  });
+  await assert.rejects(adapter.getModelList({ shopId: "1", itemId: "2", requestId: REQUEST_ID }), (error) => error.code === "SHOPEE_BUSINESS_ERROR");
+  assert.equal(calls, 1);
+});
+
 test("Shopee read adapter does not retry an unclassified transport failure", async () => {
   let calls = 0;
   const adapter = new ShopeeReadAdapter({
@@ -367,8 +404,27 @@ test("Shopee write adapter treats malformed 401/403 as definite auth and technic
 });
 
 test("Shopee write adapter accepts only allowlisted documented definite business error codes", async () => {
-  const adapter = new ShopeeWriteAdapter({ siteCapability: { priceScale: 2, minPriceMinor: "1", maxPriceMinor: "9", priceStepMinor: "1", maxAddItems: 1 }, nowEpochSeconds: () => 1_700_000_000, transport: async () => ({ status: 200, body: { ok: true, data: { error: "discount.error_time", message: "time invalid", request_id: "business-write", response: {} } } }) });
-  await assert.rejects(adapter.createDiscount({ operationUuid: OPERATION_UUID, shopId: "1", discountName: "PM-SG-DAILY-2023-11-15-A1B2", startTime: "1700003600", endTime: "1700608400", requestId: REQUEST_ID }), (error) => error.code === "SHOPEE_BUSINESS_ERROR");
+  const fixtures = [
+    { code: "discount.discount_period_too_long", invoke: (adapter) => adapter.createDiscount({ operationUuid: OPERATION_UUID, shopId: "1", discountName: "PM-SG-DAILY-2023-11-15-A1B2", startTime: "1700003600", endTime: "1700608400", requestId: REQUEST_ID }) },
+    { code: "discount.item_id_not_exist", invoke: (adapter) => adapter.addDiscountItems({ operationUuid: OPERATION_UUID, shopId: "1", discountId: "2", items: [{ itemId: "3", itemPromotionPriceMinor: "1", purchaseLimit: 0 }], requestId: REQUEST_ID }) },
+    { code: "discount.item_not_in_promotion", invoke: (adapter) => adapter.updateDiscountItems({ operationUuid: OPERATION_UUID, shopId: "1", discountId: "2", items: [{ itemId: "3", itemPromotionPriceMinor: "1" }], requestId: REQUEST_ID }) },
+  ];
+  for (const fixture of fixtures) {
+    const adapter = new ShopeeWriteAdapter({ siteCapability: { priceScale: 2, minPriceMinor: "1", maxPriceMinor: "9", priceStepMinor: "1", maxAddItems: 1 }, nowEpochSeconds: () => 1_700_000_000, transport: async () => ({ status: 200, body: { ok: true, data: { error: fixture.code, message: "definite rejection", request_id: "business-write", response: {} } } }) });
+    await assert.rejects(fixture.invoke(adapter), (error) => error.code === "SHOPEE_BUSINESS_ERROR");
+  }
+});
+
+test("generic error_param remains UNKNOWN for each write endpoint because the snapshot overloads it", async () => {
+  const invocations = [
+    (adapter) => adapter.createDiscount({ operationUuid: OPERATION_UUID, shopId: "1", discountName: "PM-SG-DAILY-2023-11-15-A1B2", startTime: "1700003600", endTime: "1700608400", requestId: REQUEST_ID }),
+    (adapter) => adapter.addDiscountItems({ operationUuid: OPERATION_UUID, shopId: "1", discountId: "2", items: [{ itemId: "3", itemPromotionPriceMinor: "1", purchaseLimit: 0 }], requestId: REQUEST_ID }),
+    (adapter) => adapter.updateDiscountItems({ operationUuid: OPERATION_UUID, shopId: "1", discountId: "2", items: [{ itemId: "3", itemPromotionPriceMinor: "1" }], requestId: REQUEST_ID }),
+  ];
+  for (const invoke of invocations) {
+    const adapter = new ShopeeWriteAdapter({ siteCapability: { priceScale: 2, minPriceMinor: "1", maxPriceMinor: "9", priceStepMinor: "1", maxAddItems: 1 }, nowEpochSeconds: () => 1_700_000_000, transport: async () => ({ status: 200, body: { ok: true, data: { error: "error_param", message: "overloaded", request_id: "ambiguous-param", response: {} } } }) });
+    await assert.rejects(invoke(adapter), (error) => error.code === "SHOPEE_WRITE_UNKNOWN");
+  }
 });
 
 test("Shopee write adapter requires canonical decimal strings for minor-unit capabilities", () => {
@@ -383,7 +439,7 @@ test("Shopee write adapter requires canonical decimal strings for minor-unit cap
 test("Shopee write adapter distinguishes definite auth and business rejection without leaking payloads", async () => {
   const cases = [
     { response: { status: 401, body: { error: "unauthorized", message: "credential secret", request_id: "auth-write" } }, code: "SHOPEE_AUTH_ERROR" },
-    { response: { status: 200, body: { ok: true, data: { error: "discount.error_time", message: "payload secret", request_id: "business-write", response: {} } } }, code: "SHOPEE_BUSINESS_ERROR" },
+    { response: { status: 200, body: { ok: true, data: { error: "discount.discount_period_too_long", message: "payload secret", request_id: "business-write", response: {} } } }, code: "SHOPEE_BUSINESS_ERROR" },
     { thrown: Object.assign(new Error("transport credential secret"), { code: "SHOPEE_AUTH_ERROR", requestId: "thrown-auth" }), code: "SHOPEE_AUTH_ERROR" },
     { thrown: Object.assign(new Error("transport payload secret"), { code: "SHOPEE_BUSINESS_ERROR", requestId: "thrown-business" }), code: "SHOPEE_BUSINESS_ERROR" },
   ];
