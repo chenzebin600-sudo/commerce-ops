@@ -201,7 +201,7 @@ test("ABANDONED records bounded redacted operator acceptance without claiming pl
     assert.equal(intent.readback_json, null);
     assert.equal(intent.evidence_json.includes("must-not-persist"), false);
     assert.ok(intent.evidence_json.length <= 4_096);
-    assert.equal(db.prepare("SELECT status FROM shopee_discount_execution_items WHERE job_id='job-reconcile'").get().status, "UNKNOWN");
+    assert.equal(db.prepare("SELECT status FROM shopee_discount_execution_items WHERE job_id='job-reconcile'").get().status, "SKIPPED");
   } finally {
     await context.close();
   }
@@ -261,6 +261,7 @@ test("LINK_VERIFIED_OBJECT for create verifies the stored marker identity and at
       payloadHash: createHash("sha256").update(JSON.stringify(target)).digest("hex"), ownerId: "worker-1", epoch: 1,
     });
     await context.repository.markDispatchUnknown({ intentId: intent.id, ownerId: "worker-1", epoch: 1, evidence: { responseLost: true } });
+    context.access.provider.connection.prepare("UPDATE shopee_discount_execution_items SET status='UNKNOWN' WHERE job_id='job-reconcile'").run();
     const { reconcileIntent } = await import("../lib/shopee-discount/reconciliation.mjs");
     const exact = {
       verified: true, markerVerified: true, operationUuid: intent.operationUuid, payloadHash: intent.payloadHash,
@@ -279,6 +280,7 @@ test("LINK_VERIFIED_OBJECT for create verifies the stored marker identity and at
     const activity = context.access.provider.connection.prepare(`SELECT platform_activity_id FROM shopee_discount_activities
       WHERE plan_id='plan-reconcile' AND shop_id='1'`).get();
     assert.equal(activity.platform_activity_id, "901");
+    assert.equal(context.access.provider.connection.prepare("SELECT status FROM shopee_discount_execution_items WHERE job_id='job-reconcile'").get().status, "PENDING");
   } finally { await context.close(); }
 });
 

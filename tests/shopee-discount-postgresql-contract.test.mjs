@@ -11,7 +11,7 @@ const PUBLIC_METHODS = [
   "renewJobLease", "checkpointJob", "createDispatchIntent", "completeDispatchIntent",
   "markDispatchUnknown", "getDispatchIntent", "listDispatchIntents", "recordIntentOutcome", "reconcileIntent",
   "appendEvent", "createDueJob", "claimDueJobs", "completeDueJob", "completeJob", "bindActivityPlatformId",
-  "bindFoundationPlan", "getPlanShopIds", "listPlanShards", "listPlanItems", "getPlanItem", "getPlanApproval",
+  "bindFoundationPlan", "getPlanShopIds", "listPlanShards", "listPlanShardsPage", "listPlanItems", "getPlanItem", "getPlanApproval",
   "countPlanItemsByShop", "countPlanShops", "listExecutionJobs", "listPlanActivities", "listPlanActivitiesPage", "getPlanActivity", "prepareExecutionItems", "listExecutionItems",
   "listExecutionItemsPage", "listDispatchIntentsPage", "countExecutionItemsByStatus",
   "setExecutionItemStatus", "listRunsScoped", "listActivitiesScoped", "listIssuesScoped",
@@ -234,6 +234,7 @@ test("PostgreSQL claim and fenced writes lock rows and include owner plus epoch 
 test("PostgreSQL dispatch fencing uses repository now while storing caller occurrence time and validates UUID", async () => {
   const provider = new RecordingProvider([
     { rows: [{ id: "job-1" }], rowCount: 1 },
+    { rows: [{ attempt_no: 1 }], rowCount: 1 },
     { rows: [{
       id: "intent-1", job_id: "job-1", plan_id: "plan-1", operation_uuid: "11111111-1111-4111-8111-111111111111",
       target_type: "discount", target_key: "target-1", payload_hash: "payload-1", epoch: 1, owner_id: "worker-1",
@@ -252,12 +253,13 @@ test("PostgreSQL dispatch fencing uses repository now while storing caller occur
     dispatchedAt: "2026-08-12T23:00:00.000Z",
   });
   assert.equal(provider.calls[0].values[4], "2026-08-13T00:01:00.000Z");
-  assert.equal(provider.calls[1].values[10], "2026-08-12T23:00:00.000Z");
+  assert.equal(provider.calls[2].values[11], "2026-08-12T23:00:00.000Z");
 });
 
 test("PostgreSQL dispatch intent atomically checkpoints its canonical execution item", async () => {
   const provider = new RecordingProvider([
     { rows: [{ id: "job-1" }], rowCount: 1 },
+    { rows: [{ attempt_no: 1 }], rowCount: 1 },
     { rows: [{
       id: "intent-1", job_id: "job-1", plan_id: "plan-1", plan_item_id: "item-1",
       operation_uuid: "11111111-1111-4111-8111-111111111111", target_type: "discount_item",
@@ -276,9 +278,9 @@ test("PostgreSQL dispatch intent atomically checkpoints its canonical execution 
   });
   assert.equal(provider.transactions, 1);
   assert.match(provider.calls[0].text, /FOR UPDATE/i);
-  assert.match(provider.calls[2].text, /shopee_discount_execution_items/i);
-  assert.match(provider.calls[2].text, /status='PENDING'/i);
-  assert.deepEqual(provider.calls[2].values.slice(-3), ["job-1", "item-1", "intent-1"]);
+  assert.match(provider.calls[3].text, /shopee_discount_execution_items/i);
+  assert.match(provider.calls[3].text, /status='PENDING'/i);
+  assert.deepEqual(provider.calls[3].values.slice(-3), ["job-1", "item-1", "intent-1"]);
 });
 
 test("PostgreSQL due-job claims use skip-locked ordering and conditional updates", async () => {
@@ -317,6 +319,15 @@ test("PostgreSQL execution migration stores canonical item outcomes and unique d
   assert.match(sql, /FOREIGN KEY\s*\(\s*"plan_item_id"\s*\).*shopee_discount_plan_items/i);
   assert.match(sql, /UNIQUE INDEX[\s\S]*"job_id"\s*,\s*"target_type"\s*,\s*"target_key"/i);
   assert.match(sql, /REQUIRES_REAPPROVAL/);
+});
+
+test("PostgreSQL forward intent migration preserves attempts and honest rejection", async () => {
+  const sql = await fs.readFile(path.resolve("migrations/postgresql/037_shopee_discount_intent_attempts.sql"), "utf8");
+  assert.match(sql, /ADD COLUMN "attempt_no"/);
+  assert.match(sql, /'REJECTED'/);
+  assert.match(sql, /uq_shopee_discount_intents_job_target_attempt/);
+  assert.match(sql, /uq_shopee_discount_intents_active_target[\s\S]*WHERE "status" IN \('DISPATCHED','UNKNOWN'\)/);
+  assert.doesNotMatch(sql, /UPDATE[\s\S]*operation_uuid/i);
 });
 
 test("PostgreSQL 027 has no forward foreign keys to relations first created by later migrations", async () => {

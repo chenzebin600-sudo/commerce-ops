@@ -225,11 +225,20 @@ async function fixture({ workflow = "CURRENT_CORRECTION", approvalItems = [appro
       async getDiscountState({ activity }) {
         return { conflict: false, activityId: activity.platformActivityId || "901", membership: workflow === "CURRENT_CORRECTION" };
       },
-      async readbackIntent({ item, activity }) {
+      async readbackIntent({ intent, item, activity }) {
         return {
+          verified: true,
+          operationUuid: intent.operationUuid,
+          payloadHash: intent.payloadHash,
           activityId: activity.platformActivityId || "901",
           platformObjectId: activity.platformActivityId || "901",
           markerVerified: item == null,
+          shopId: activity.shopId,
+          discountName: activity.metadata.discountName,
+          marker: activity.metadata.marker,
+          fingerprint: activity.metadata.fingerprint,
+          startTime: String(new Date(activity.startsAt).getTime() / 1000),
+          endTime: String(new Date(activity.endsAt).getTime() / 1000),
           membership: true,
           itemId: item?.itemId ?? null,
           modelId: item?.modelId ?? null,
@@ -573,6 +582,28 @@ test("AUTH_BLOCKED shop resumes after reauthorization and revalidates before fir
   } finally { await context.close(); }
 });
 
+test("definite POST auth rejection preserves its attempt and reauthorization creates a new UUID", async () => {
+  const context = await fixture();
+  try {
+    let attempts = 0;
+    context.workerContext.shopeeWrite.updateDiscountItems = async (input) => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error("reauthorize"), { code: "SHOPEE_AUTH_ERROR" });
+      context.calls.push({ operation: "updateDiscountItems", input });
+      return { data: {} };
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const blocked = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(blocked.counts.AUTH_BLOCKED, 1);
+    const resumed = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(resumed.status, "SUCCEEDED");
+    const intents = context.access.provider.connection.prepare(`SELECT operation_uuid,status,attempt_no FROM shopee_discount_dispatch_intents
+      WHERE job_id=? ORDER BY attempt_no`).all(context.job.id);
+    assert.deepEqual(intents.map(({ status, attempt_no }) => [status, attempt_no]), [["REJECTED", 1], ["SUCCEEDED", 2]]);
+    assert.notEqual(intents[0].operation_uuid, intents[1].operation_uuid);
+  } finally { await context.close(); }
+});
+
 test("post-write readback distinguishes membership conflict from a one-minor-unit UNKNOWN price", async () => {
   const conflict = await fixture();
   try {
@@ -641,7 +672,7 @@ test("a definite platform rejection isolates one variant while later variants st
     assert.equal(summary.counts.REJECTED, 1);
     assert.equal(summary.counts.SUCCEEDED, 1);
     assert.equal(context.access.provider.connection.prepare(`SELECT status FROM shopee_discount_dispatch_intents
-      WHERE plan_item_id='plan-item-0'`).get().status, "CONFIRMED_NOT_SENT");
+      WHERE plan_item_id='plan-item-0'`).get().status, "REJECTED");
   } finally {
     await context.close();
   }

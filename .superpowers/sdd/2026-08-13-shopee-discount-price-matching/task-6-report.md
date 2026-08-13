@@ -46,3 +46,20 @@ No live Shopee or other live network endpoint was used. Executor and service int
 - All `tests/shopee-discount*.test.mjs`: 175 passed, 0 failed.
 - `git diff --check`: clean (line-ending conversion warnings only).
 - No live network or Shopee endpoint was used.
+
+## Review round 2 hardening (2026-08-14)
+
+- Forward-only migrations `029_shopee_discount_intent_attempts.sql` and PostgreSQL `037_shopee_discount_intent_attempts.sql` add the honest terminal `REJECTED` intent state, immutable attempt numbering, unique per-attempt identity and partial uniqueness for active `DISPATCHED`/`UNKNOWN` targets. Applied migrations 027/028/036 remain unchanged.
+- A definite business or auth POST rejection now closes the original intent as `REJECTED`. Business rejection is terminal for the item. Auth rejection remains resumable: after reauthorization and full revalidation a later run creates a new intent, operation UUID and attempt number while preserving the rejected attempt.
+- Current-correction recovery and manual LINK use the approval-bound target Discount even when the plan activity has not yet been populated, and manual item LINK additionally requires the official platform object to equal that target.
+- One shared exact-renewal-proof helper now binds shop, name, marker, window and fingerprint, plus operation UUID/payload hash for dispatched creates. Lookup, automatic recovery, post-create verification and manual LINK use the same proof contract.
+- Manual create LINK atomically binds the plan activity and returns eligible `UNKNOWN` shop items to `PENDING`; execution then continues without another create. ABANDONED changes stranded items to the explicit manual-closed `SKIPPED` state instead of leaving the job permanently unresolved.
+- Renewal preflight scans bounded 100-item pages. A per-item warehouse/listing/overlap drift closes only that item and allows unchanged items and later shops to continue; reader failure remains isolated to its bounded shop batch. The prior 1,000-item shop-wide throw was removed.
+- Approval shards, activities, intents and execution items use paged reads. Durable job cursors include a phase and item sequence; resumable recovery resets the cursor when an earlier item is reopened, preventing a checkpoint from skipping unresolved work.
+- Current-correction preview binds every ready item to a non-null fixed Discount target and persists that target as the per-shop plan activity. New eligible variants require an unambiguous activity selection; multiple candidates are blocked.
+
+### Round 2 verification
+
+- All `tests/shopee-discount*.test.mjs`: 179 passed, 0 failed.
+- Includes SQLite and PostgreSQL migration/adapter contracts, honest rejected attempt/re-auth retry, manual create continuation, exact renewal proof and bounded paging coverage.
+- No live network or Shopee endpoint was used.

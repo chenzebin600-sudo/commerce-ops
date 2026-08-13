@@ -116,6 +116,7 @@ function previewInput(overrides = {}) {
     defaultTier: "DAILY",
     shopOverrides: [],
     linkOverrides: [],
+    activitySelection: overrides.workflow === "NEXT_RENEWAL" ? [] : [{ shopId: "1", discountId: "900", priceTier: "DAILY" }],
     category: "HOME",
     ...overrides,
   };
@@ -267,10 +268,13 @@ test("a normal renewal preview can be approved, queued, and executed without liv
         },
         async getListingState({ item }) { return { status: "ACTIVE", sku: item.sku, originalPriceMinor: item.payload.originalMinor }; },
         async getDiscountState({ activity }) { return { conflict: false, activityId: activity.platformActivityId, membership: false }; },
-        async readbackIntent({ item, activity }) {
+        async readbackIntent({ intent, item, activity }) {
           return item
             ? { platformObjectId: "901", activityId: "901", membership: true, itemId: item.itemId, modelId: item.modelId, priceMinor: item.targetPriceMinor }
-            : { platformObjectId: "901", markerVerified: true, activityId: "901" };
+            : { verified: true, platformObjectId: "901", markerVerified: true, activityId: "901", operationUuid: intent.operationUuid,
+              payloadHash: intent.payloadHash, shopId: activity.shopId, discountName: activity.metadata.discountName,
+              marker: activity.metadata.marker, fingerprint: activity.metadata.fingerprint,
+              startTime: String(new Date(activity.startsAt).getTime() / 1000), endTime: String(new Date(activity.endsAt).getTime() / 1000) };
         },
       },
     };
@@ -333,10 +337,11 @@ test("activity overlap and external tier selection isolate affected variants wit
   });
   const noSelection = await fixture({ shopee });
   try {
-    const result = await noSelection.service.createPreview(previewInput(), {});
+    const result = await noSelection.service.createPreview(previewInput({ activitySelection: [] }), {});
     assert.equal(result.summary.codes.EXTERNAL_ACTIVITY_TIER_REQUIRED, 1);
+    assert.equal(result.summary.codes.CURRENT_ACTIVITY_TARGET_REQUIRED, 2);
     assert.equal(result.summary.codes.NEXT_PLAN_REQUIRED, undefined);
-    assert.equal(result.summary.counts.ready, 2);
+    assert.equal(result.summary.counts.ready, 0);
   } finally { await noSelection.close(); }
 
   const selected = await fixture({ shopee });
@@ -366,8 +371,9 @@ test("different Discount overlap blocks only affected variants and records origi
       { shopId: "1", discountId: "900", priceTier: "DAILY" },
       { shopId: "1", discountId: "901", priceTier: "DAILY" },
     ] }), {});
-    assert.equal(result.summary.counts.ready, 1);
+    assert.equal(result.summary.counts.ready, 0);
     assert.equal(result.summary.codes.DISCOUNT_OVERLAP, 1);
+    assert.equal(result.summary.codes.CURRENT_ACTIVITY_AMBIGUOUS, 1);
     const issues = await context.service.listIssues({ planId: result.id, code: "DISCOUNT_OVERLAP" });
     assert.equal(issues.length, 1);
     assert.deepEqual(issues[0].evidence.samples[0].activities.map(({ discountId }) => discountId), ["900", "901"]);
@@ -479,7 +485,7 @@ test("activity names never establish system ownership and next-plan rule needs m
   });
   const context = await fixture({ shopee });
   try {
-    const external = await context.service.createPreview(previewInput(), {});
+    const external = await context.service.createPreview(previewInput({ activitySelection: [] }), {});
     assert.equal(external.summary.codes.EXTERNAL_ACTIVITY_TIER_REQUIRED, 1);
     assert.equal(external.summary.codes.CURRENT_ACTIVITY_ENDING_SOON, undefined);
   } finally { await context.close(); }

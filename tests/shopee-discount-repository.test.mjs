@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
 import { FOUNDATION_CAPABILITIES } from "../lib/foundation/foundation-contracts.mjs";
 
@@ -20,6 +21,47 @@ const TABLES = [
   "shopee_discount_due_jobs",
   "shopee_discount_notifications",
 ];
+
+test("forward migration adds honest rejected intents and repeatable target attempts", async () => {
+  const context = await fixture();
+  try {
+    const columns = context.db.prepare("PRAGMA table_info(shopee_discount_dispatch_intents)").all();
+    assert.ok(columns.some((column) => column.name === "attempt_no" && column.dflt_value === "1"));
+    const schema = context.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='shopee_discount_dispatch_intents'").get().sql;
+    assert.match(schema, /'REJECTED'/);
+    const indexes = context.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='index' AND tbl_name='shopee_discount_dispatch_intents'").all();
+    assert.ok(indexes.some(({ name, sql }) => name === "uq_shopee_discount_intents_job_target_attempt" && /attempt_no/.test(sql)));
+    assert.ok(indexes.some(({ name, sql }) => name === "uq_shopee_discount_intents_active_target" && /WHERE status IN \('DISPATCHED','UNKNOWN'\)/.test(sql)));
+  } finally { await context.close(); }
+});
+
+test("forward intent migration preserves referenced historical rows", async () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`PRAGMA foreign_keys=ON;
+      CREATE TABLE shopee_discount_jobs(id TEXT PRIMARY KEY);
+      CREATE TABLE shopee_discount_plans(id TEXT PRIMARY KEY);
+      CREATE TABLE shopee_discount_plan_items(id TEXT PRIMARY KEY);
+      CREATE TABLE shopee_discount_dispatch_intents(id TEXT PRIMARY KEY,job_id TEXT NOT NULL,plan_id TEXT NOT NULL,plan_item_id TEXT,
+        operation_uuid TEXT NOT NULL UNIQUE,target_type TEXT NOT NULL,target_key TEXT NOT NULL,payload_hash TEXT NOT NULL,epoch INTEGER NOT NULL,
+        owner_id TEXT NOT NULL,status TEXT NOT NULL,platform_object_id TEXT,readback_json TEXT,evidence_json TEXT,reconciled_by TEXT,
+        dispatched_at TEXT NOT NULL,completed_at TEXT,reconciled_at TEXT,updated_at TEXT NOT NULL,
+        FOREIGN KEY(job_id) REFERENCES shopee_discount_jobs(id),FOREIGN KEY(plan_id) REFERENCES shopee_discount_plans(id),
+        FOREIGN KEY(plan_item_id) REFERENCES shopee_discount_plan_items(id));
+      CREATE INDEX idx_shopee_discount_intents_operation_status_age ON shopee_discount_dispatch_intents(operation_uuid,status,dispatched_at);
+      CREATE INDEX idx_shopee_discount_intents_unknown_age ON shopee_discount_dispatch_intents(status,updated_at,id);
+      CREATE UNIQUE INDEX uq_shopee_discount_intents_job_target ON shopee_discount_dispatch_intents(job_id,target_type,target_key);
+      CREATE TABLE shopee_discount_execution_items(intent_id TEXT REFERENCES shopee_discount_dispatch_intents(id));
+      CREATE TABLE shopee_discount_events(intent_id TEXT REFERENCES shopee_discount_dispatch_intents(id));
+      INSERT INTO shopee_discount_jobs VALUES('job'); INSERT INTO shopee_discount_plans VALUES('plan'); INSERT INTO shopee_discount_plan_items VALUES('item');
+      INSERT INTO shopee_discount_dispatch_intents VALUES('intent','job','plan','item','11111111-1111-4111-8111-111111111111','update','target','hash',1,'worker','UNKNOWN',NULL,NULL,NULL,NULL,'2026-08-14T00:00:00.000Z',NULL,NULL,'2026-08-14T00:00:00.000Z');
+      INSERT INTO shopee_discount_execution_items VALUES('intent'); INSERT INTO shopee_discount_events VALUES('intent');`);
+    db.exec(await fs.readFile(path.resolve("migrations/029_shopee_discount_intent_attempts.sql"), "utf8"));
+    assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+    const preserved = db.prepare("SELECT id,status,attempt_no FROM shopee_discount_dispatch_intents").get();
+    assert.equal(preserved.id, "intent"); assert.equal(preserved.status, "UNKNOWN"); assert.equal(preserved.attempt_no, 1);
+  } finally { db.close(); }
+});
 
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shopee-discount-repository-"));
