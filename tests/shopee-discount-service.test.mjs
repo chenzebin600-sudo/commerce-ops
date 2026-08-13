@@ -543,6 +543,34 @@ test("activity names never establish system ownership and next-plan rule needs m
   } finally { await stored.close(); }
 });
 
+test("current preview uses one exact persisted system activity without an explicit selection", async () => {
+  const startTime = String(Math.floor((NOW.getTime() - 60 * 60_000) / 1000));
+  const endTime = String(Math.floor((NOW.getTime() + 24 * 60 * 60_000) / 1000));
+  const shopee = fakeShopee({
+    itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] },
+    discountsByShop: { "1": [{ discount_id: "900", status: "ongoing", start_time: startTime, end_time: endTime }] },
+    discountDetails: { "900": { discount_id: "900", status: "ongoing", start_time: startTime, end_time: endTime, item_list: [] } },
+  });
+  const context = await fixture({ shopee });
+  try {
+    const repository = context.access.repositories.shopeeDiscount;
+    const stored = await repository.createPlan({
+      id: "exact-system-activity", country: "TH",
+      activities: [{ shopId: "1", platformActivityId: "900", metadata: { systemManaged: true, priceTier: "EVENT" } }],
+      targetStartsAt: new Date(Number(startTime) * 1000).toISOString(),
+      targetEndsAt: new Date(Number(endTime) * 1000).toISOString(),
+      sourceSnapshotHash: "exact-snapshot", policyHash: "exact-policy", createdBy: "system",
+    });
+    await repository.markPlanState({ planId: stored.id, fromState: "PREVIEWING", toState: "CANCELLED", expectedVersion: stored.stateVersion });
+    const preview = await context.service.createPreview(previewInput({ activitySelection: [] }), {});
+    const items = await context.service.listPreviewItems(preview.id, {}, { authorizedShopIds: ["1"] });
+    assert.equal(preview.summary.counts.ready, 1);
+    assert.equal(items.items[0].payload.approvalTarget.targetDiscountId, "900");
+    assert.equal(items.items[0].payload.priceTier, "EVENT");
+  } finally { await context.close(); }
+});
+
 test("country-specific site capabilities reject unsupported countries and persist exact currency", async () => {
   const sgShopee = fakeShopee({ shops: [shop("1", "SG")], itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] } });
   const unsupported = await fixture({ shopee: sgShopee });

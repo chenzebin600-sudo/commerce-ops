@@ -933,6 +933,62 @@ test("renewal preflight checks every item and creates only for the fully checked
   } finally { await context.close(); }
 });
 
+test("renewal preflight preserves ready items from earlier pages when the final page is drift-only", async () => {
+  const approvalItems = Array.from({ length: 101 }, (_, index) => approvalItem({
+    item_id: String(100 + index),
+    model_id: String(1000 + index),
+    sku: `SKU-${index + 1}`,
+  }));
+  const context = await fixture({ workflow: "NEXT_RENEWAL", approvalItems });
+  try {
+    context.repository.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+    const original = context.workerContext.readers.getWarehouseState;
+    context.workerContext.readers.getWarehouseState = async (input) => {
+      if (input.item.itemId === "200") return {
+        targetPriceMinor: "1",
+        watermark: input.item.payload.warehouseWatermark,
+        approvedAt: input.item.payload.warehouseApprovedAt,
+      };
+      return original(input);
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(summary.counts.SUCCEEDED, 100);
+    assert.equal(summary.counts.REQUIRES_REAPPROVAL, 1);
+    assert.equal(context.calls.filter(({ operation }) => operation === "createDiscount").length, 1);
+    assert.equal(context.calls.filter(({ operation }) => operation === "addDiscountItems").length, 100);
+  } finally { await context.close(); }
+});
+
+test("renewal per-item auth failure raises one shop issue and does not stop a later shop", async () => {
+  const context = await fixture({ workflow: "NEXT_RENEWAL", approvalItems: [
+    approvalItem(),
+    approvalItem({ item_id: "101", model_id: "1001", sku: "SKU-1B" }),
+    approvalItem({ shop_id: "2", item_id: "200", model_id: "2000", sku: "SKU-2" }),
+  ] });
+  try {
+    context.repository.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+    const original = context.workerContext.readers.getWarehouseState;
+    context.workerContext.readers.getWarehouseState = async (input) => {
+      if (input.item.shopId === "1" && input.item.itemId === "100") {
+        throw Object.assign(new Error("reauthorization required"), { code: "SHOPEE_AUTH_ERROR" });
+      }
+      return original(input);
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(summary.counts.AUTH_BLOCKED, 2);
+    assert.equal(summary.counts.SUCCEEDED, 1);
+    assert.deepEqual(context.calls.map(({ input }) => input.shopId), ["2", "2"]);
+    const issues = context.access.provider.connection.prepare(`SELECT reason_code,evidence_json FROM shopee_discount_events
+      WHERE plan_id=? AND event_type='EXECUTION_ISSUE'`).all(context.domainPlan.id)
+      .filter(({ evidence_json: evidenceJson }) => JSON.parse(evidenceJson).shopId === "1");
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].reason_code, "SHOPEE_AUTH_ERROR");
+    assert.equal(JSON.parse(issues[0].evidence_json).priority, "HIGH");
+  } finally { await context.close(); }
+});
+
 test("current-correction reader failure is isolated to its shop", async () => {
   const context = await fixture({ approvalItems: [approvalItem(), approvalItem({ shop_id: "2", item_id: "200", model_id: "2000", sku: "SKU-2" })] });
   try {

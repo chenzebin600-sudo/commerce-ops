@@ -77,3 +77,16 @@ No live Shopee or other live network endpoint was used. Executor and service int
 
 - All `tests/shopee-discount*.test.mjs`: 183 passed, 0 failed.
 - No live network or Shopee endpoint was used.
+
+## Review round 4 hardening (2026-08-14)
+
+- Renewal validation retains ready work across every bounded shop page. A final drift-only page now marks only its drifted items and cannot suppress earlier validated items. Immediately before activity creation, the executor reloads a bounded batch of the shop's still-`PENDING` execution items from the durable checkpoint and fully revalidates that actual batch.
+- Current-correction preview can derive an unambiguous target from one persisted system-managed activity without an explicit `activitySelection`, but only when the fetched ongoing Discount has the same ID and exact window and the stored activity supplies a valid tier. External Discounts still require explicit selection; missing, stale and ambiguous stored identities fail closed.
+- Any renewal-preflight `SHOPEE_AUTH_ERROR`, including a per-item reader error, blocks the whole affected shop, emits exactly one high-priority safe execution issue for that shop/run, and permits later shops to continue.
+
+### Round 4 verification
+
+- Focused executor/service suite: 77 passed, 0 failed.
+- All `tests/shopee-discount*.test.mjs`: 186 passed, 0 failed.
+- `git diff --check` on scoped files: clean (line-ending conversion warnings only).
+- No live network or Shopee endpoint was used.
