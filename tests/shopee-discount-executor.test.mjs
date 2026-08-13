@@ -671,8 +671,10 @@ test("a definite platform rejection isolates one variant while later variants st
     assert.equal(summary.status, "PARTIAL_SUCCESS");
     assert.equal(summary.counts.REJECTED, 1);
     assert.equal(summary.counts.SUCCEEDED, 1);
-    assert.equal(context.access.provider.connection.prepare(`SELECT status FROM shopee_discount_dispatch_intents
-      WHERE plan_item_id='plan-item-0'`).get().status, "REJECTED");
+    const rejectedIntent = context.access.provider.connection.prepare(`SELECT status,completed_at FROM shopee_discount_dispatch_intents
+      WHERE plan_item_id='plan-item-0'`).get();
+    assert.equal(rejectedIntent.status, "REJECTED");
+    assert.ok(rejectedIntent.completed_at);
   } finally {
     await context.close();
   }
@@ -875,7 +877,7 @@ for (const renewalBlock of [
   {
     name: "overlap race",
     change(context) { context.workerContext.readers.getDiscountState = async () => ({ conflict: true }); },
-    status: "CONFLICT",
+    status: "REQUIRES_REAPPROVAL",
   },
 ]) {
   test(`NEXT_RENEWAL performs no create when ${renewalBlock.name}`, async () => {
@@ -910,6 +912,27 @@ test("renewal preflight reader failure isolates its shop and permits another sho
   } finally { await context.close(); }
 });
 
+test("renewal preflight checks every item and creates only for the fully checked partition", async () => {
+  const context = await fixture({ workflow: "NEXT_RENEWAL", approvalItems: [
+    approvalItem(), approvalItem({ item_id: "101", model_id: "1001", sku: "SKU-2" }),
+  ] });
+  try {
+    const original = context.workerContext.readers.getWarehouseState;
+    const checked = [];
+    context.workerContext.readers.getWarehouseState = async (input) => {
+      checked.push(input.item.id);
+      if (input.item.itemId === "100") return { targetPriceMinor: "1", watermark: input.item.payload.warehouseWatermark, approvedAt: input.item.payload.warehouseApprovedAt };
+      return original(input);
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.deepEqual(new Set(checked), new Set(["plan-item-0", "plan-item-1"]));
+    assert.equal(summary.counts.REQUIRES_REAPPROVAL, 1);
+    assert.equal(summary.counts.SUCCEEDED, 1);
+    assert.deepEqual(context.calls.map(({ operation }) => operation), ["createDiscount", "addDiscountItems"]);
+  } finally { await context.close(); }
+});
+
 test("current-correction reader failure is isolated to its shop", async () => {
   const context = await fixture({ approvalItems: [approvalItem(), approvalItem({ shop_id: "2", item_id: "200", model_id: "2000", sku: "SKU-2" })] });
   try {
@@ -934,6 +957,7 @@ test("executor uses bounded pages and aggregate counts instead of materializing 
     context.repository.listExecutionItems = async () => { throw new Error("unbounded execution item read"); };
     context.repository.listDispatchIntents = async () => { throw new Error("unbounded intent read"); };
     context.repository.listPlanActivities = async () => { throw new Error("unbounded activity read"); };
+    context.repository.listPlanShards = async () => { throw new Error("unbounded shard read"); };
     context.repository.getPlanShopIds = async () => { throw new Error("unbounded shop read"); };
     const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
     const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);

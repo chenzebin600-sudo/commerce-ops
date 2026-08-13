@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { buildApprovalRoot, buildApprovalRootFromShardHashes } from "../lib/shopee-discount/approval-hash.mjs";
+import { buildApprovalRoot, buildApprovalRootFromShardHashes, createApprovalShardAccumulator } from "../lib/shopee-discount/approval-hash.mjs";
 
 function item(overrides = {}) {
   return {
@@ -101,4 +102,14 @@ test("a streamed shard accumulator reproduces the canonical approval root", () =
     item({ shop_id: "shop-a", item_id: "item-1", model_id: "model-1" }),
   ], { shardSize: 1 });
   assert.deepEqual(buildApprovalRootFromShardHashes(built.shardHashes, built.itemCount), built);
+});
+
+test("streaming many shard hashes preserves V2 root without retaining their array", () => {
+  const shardHashes = Array.from({ length: 10_000 }, (_, index) => createHash("sha256").update(String(index)).digest("hex"));
+  const expected = buildApprovalRootFromShardHashes(shardHashes, 10_000);
+  const accumulator = createApprovalShardAccumulator();
+  for (const hash of shardHashes) accumulator.add(hash);
+  assert.deepEqual(accumulator.finish(10_000), {
+    version: expected.version, root: expected.root, itemCount: 10_000, shardCount: 10_000,
+  });
 });

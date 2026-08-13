@@ -74,10 +74,12 @@ function fakeShopee({ shops = [shop("1", "TH")], itemsByShop = {}, modelsByItem 
       return { data: { model: modelsByItem[itemId] || [], tier_variation: [] }, requestId: "models-request", attempts: 1 };
     },
     async listDiscounts({ shopId }) {
-      return { data: { discount_list: discountsByShop[shopId] || [], more: false }, requestId: "discounts-request", attempts: 1 };
+      const fallback = [{ discount_id: "900", status: "ongoing", start_time: String(NOW.getTime() / 1000 - 3600), end_time: String(NOW.getTime() / 1000 + 86400) }];
+      return { data: { discount_list: Object.hasOwn(discountsByShop, shopId) ? discountsByShop[shopId] : fallback, more: false }, requestId: "discounts-request", attempts: 1 };
     },
     async getDiscount({ discountId }) {
-      return { data: discountDetails[discountId] || { discount_id: discountId, item_list: [], more: false }, requestId: "discount-request", attempts: 1 };
+      return { data: discountDetails[discountId] || { discount_id: discountId, status: "ongoing", start_time: String(NOW.getTime() / 1000 - 3600),
+        end_time: String(NOW.getTime() / 1000 + 86400), item_list: [], more: false }, requestId: "discount-request", attempts: 1 };
     },
   };
 }
@@ -133,6 +135,22 @@ test("preview validates single-country shop scope and rejects conflicting tier o
     await assert.rejects(context.service.createPreview(previewInput({ shopOverrides: [{ shopId: "2", priceTier: "EVENT" }] }), {}), { code: "SHOPEE_DISCOUNT_OVERRIDE_SCOPE_MISMATCH" });
     await assert.rejects(context.service.createPreview({ ...previewInput(), unknown: true }, {}), { code: "SHOPEE_DISCOUNT_INPUT_INVALID" });
   } finally { await context.close(); }
+});
+
+test("current preview rejects a selected Discount that is absent or outside its ongoing window", async () => {
+  for (const shopee of [
+    fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] }, discountsByShop: { "1": [] } }),
+    fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] },
+      discountsByShop: { "1": [{ discount_id: "900", status: "ongoing", start_time: "1", end_time: "2" }] },
+      discountDetails: { "900": { discount_id: "900", status: "ongoing", start_time: "1", end_time: "2", item_list: [] } } }),
+  ]) {
+    const context = await fixture({ shopee });
+    try {
+      const preview = await context.service.createPreview(previewInput(), {});
+      assert.equal(preview.summary.counts.ready, 0);
+      assert.equal(preview.summary.codes.CURRENT_ACTIVITY_AMBIGUOUS, 1);
+    } finally { await context.close(); }
+  }
 });
 
 test("preview includes zero stock, shares warehouse SKU prices, falls back per variant, and isolates abnormal variants", async () => {
@@ -332,8 +350,8 @@ test("activity overlap and external tier selection isolate affected variants wit
       "11": [model("101", "SKU-B", "10000", "9500")],
       "12": [model("102", "SKU-C", "10000", "9500")],
     },
-    discountsByShop: { "1": [{ discount_id: "900", discount_name: "External Sale", end_time: String(Math.floor((NOW.getTime() + 60 * 60_000) / 1000)) }] },
-    discountDetails: { "900": { discount_id: "900", discount_name: "External Sale", end_time: String(Math.floor((NOW.getTime() + 60 * 60_000) / 1000)), item_list: [{ item_id: "10", model_list: [{ model_id: "100" }] }], more: false } },
+    discountsByShop: { "1": [{ discount_id: "900", status: "ongoing", discount_name: "External Sale", start_time: String(Math.floor((NOW.getTime() - 60 * 60_000) / 1000)), end_time: String(Math.floor((NOW.getTime() + 60 * 60_000) / 1000)) }] },
+    discountDetails: { "900": { discount_id: "900", status: "ongoing", discount_name: "External Sale", start_time: String(Math.floor((NOW.getTime() - 60 * 60_000) / 1000)), end_time: String(Math.floor((NOW.getTime() + 60 * 60_000) / 1000)), item_list: [{ item_id: "10", model_list: [{ model_id: "100" }] }], more: false } },
   });
   const noSelection = await fixture({ shopee });
   try {
@@ -480,8 +498,8 @@ test("activity names never establish system ownership and next-plan rule needs m
   const shopee = fakeShopee({
     itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL", update_time: Math.floor(NOW.getTime() / 1000) }] },
     modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] },
-    discountsByShop: { "1": [{ discount_id: "900", discount_name: "External-DAILY-Sale", end_time: ending }] },
-    discountDetails: { "900": { discount_id: "900", discount_name: "External-DAILY-Sale", end_time: ending, item_list: [{ item_id: "10", model_list: [{ model_id: "100" }] }] } },
+    discountsByShop: { "1": [{ discount_id: "900", status: "ongoing", discount_name: "External-DAILY-Sale", start_time: String(Math.floor((NOW.getTime() - 60 * 60_000) / 1000)), end_time: ending }] },
+    discountDetails: { "900": { discount_id: "900", status: "ongoing", discount_name: "External-DAILY-Sale", start_time: String(Math.floor((NOW.getTime() - 60 * 60_000) / 1000)), end_time: ending, item_list: [{ item_id: "10", model_list: [{ model_id: "100" }] }] } },
   });
   const context = await fixture({ shopee });
   try {
@@ -490,7 +508,8 @@ test("activity names never establish system ownership and next-plan rule needs m
     assert.equal(external.summary.codes.CURRENT_ACTIVITY_ENDING_SOON, undefined);
   } finally { await context.close(); }
 
-  shopee.getDiscount = async () => ({ data: { discount_id: "900", discount_name: "External-DAILY-Sale", end_time: ending,
+  shopee.getDiscount = async () => ({ data: { discount_id: "900", status: "ongoing", discount_name: "External-DAILY-Sale",
+    start_time: String(Math.floor((NOW.getTime() - 60 * 60_000) / 1000)), end_time: ending,
     item_list: [{ item_id: "10", model_list: [{ model_id: "100", added_at: String(Math.floor(NOW.getTime() / 1000)) }] }] } });
   const membership = await fixture({ shopee });
   try {
@@ -504,8 +523,8 @@ test("activity names never establish system ownership and next-plan rule needs m
   const storedShopee = fakeShopee({
     itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
     modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] },
-    discountsByShop: { "1": [{ discount_id: "900", discount_name: "Arbitrary Name", end_time: ending }] },
-    discountDetails: { "900": { discount_id: "900", discount_name: "Arbitrary Name", end_time: ending,
+    discountsByShop: { "1": [{ discount_id: "900", status: "ongoing", discount_name: "Arbitrary Name", start_time: String(Math.floor((NOW.getTime() - 60 * 60_000) / 1000)), end_time: ending }] },
+    discountDetails: { "900": { discount_id: "900", status: "ongoing", discount_name: "Arbitrary Name", start_time: String(Math.floor((NOW.getTime() - 60 * 60_000) / 1000)), end_time: ending,
       item_list: [{ item_id: "10", model_list: [{ model_id: "100" }] }] } },
   });
   const stored = await fixture({ shopee: storedShopee });
@@ -519,8 +538,8 @@ test("activity names never establish system ownership and next-plan rule needs m
     });
     await repository.markPlanState({ planId: historical.id, fromState: "PREVIEWING", toState: "CANCELLED", expectedVersion: historical.stateVersion });
     const preview = await stored.service.createPreview(previewInput(), { requestId: "stored-system-activity" });
-    assert.equal(preview.summary.codes.EXTERNAL_ACTIVITY_TIER_REQUIRED, undefined);
-    assert.equal((await stored.service.listPreviewItems(preview.id, {}, { authorizedShopIds: ["1"] })).items[0].payload.priceTier, "EVENT");
+    assert.equal(preview.summary.codes.CURRENT_ACTIVITY_TARGET_STALE, 1);
+    assert.equal((await stored.service.listPreviewItems(preview.id, {}, { authorizedShopIds: ["1"] })).items.length, 0);
   } finally { await stored.close(); }
 });
 

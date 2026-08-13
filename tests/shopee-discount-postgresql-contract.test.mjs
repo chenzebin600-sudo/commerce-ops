@@ -283,6 +283,18 @@ test("PostgreSQL dispatch intent atomically checkpoints its canonical execution 
   assert.deepEqual(provider.calls[3].values.slice(-3), ["job-1", "item-1", "intent-1"]);
 });
 
+test("PostgreSQL rejected intent outcomes receive a durable completion timestamp", async () => {
+  const provider = new RecordingProvider([
+    { rows: [{ id: "intent-1", plan_item_id: "item-1" }], rowCount: 1 },
+    { rows: [], rowCount: 1 }, { rows: [], rowCount: 1 },
+  ]);
+  const repository = new PostgresqlShopeeDiscountRepository({ provider, now: () => new Date("2026-08-13T00:01:00.000Z") });
+  assert.equal(await repository.recordIntentOutcome({ intentId: "intent-1", jobId: "job-1", ownerId: "worker-1", epoch: 1,
+    intentStatus: "REJECTED", itemStatus: "REJECTED", reasonCode: "SHOPEE_BUSINESS_ERROR", evidence: { requestId: "request-1" } }), true);
+  assert.match(provider.calls[1].text, /completed_at=CASE WHEN \$1=ANY\(ARRAY\['SUCCEEDED','REJECTED'\]\)/);
+  assert.equal(provider.calls[1].values[4], "2026-08-13T00:01:00.000Z");
+});
+
 test("PostgreSQL due-job claims use skip-locked ordering and conditional updates", async () => {
   const provider = new RecordingProvider([
     { rows: [{ id: "due-1", fencing_epoch: 0 }], rowCount: 1 },

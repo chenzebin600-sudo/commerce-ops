@@ -63,3 +63,17 @@ No live Shopee or other live network endpoint was used. Executor and service int
 - All `tests/shopee-discount*.test.mjs`: 179 passed, 0 failed.
 - Includes SQLite and PostgreSQL migration/adapter contracts, honest rejected attempt/re-auth retry, manual create continuation, exact renewal proof and bounded paging coverage.
 - No live network or Shopee endpoint was used.
+
+## Review round 3 hardening (2026-08-14)
+
+- Renewal preflight scans every bounded page and every item in that page. It returns only fully checked ready items and partitions every warehouse, listing or overlap drift to `REQUIRES_REAPPROVAL`; one drift no longer ends validation early or counts unchecked siblings as ready. Activity creation requires a non-empty checked-ready partition.
+- Current correction accepts an activity selection only when the selected ID exists in the fetched ongoing Discount set and its exact start/end window contains the preview time. Stored system activity identity must match the fetched ID and window before its tier can be reused. New eligible items bind only to this verified target.
+- Definite `REJECTED` intent outcomes now set `completed_at` in both SQLite and PostgreSQL. Adapter tests cover PostgreSQL timestamp binding and executor tests cover persisted SQLite completion.
+- Approval verification pages shard metadata and feeds each verified shard hash to a constant-memory streaming SHA-256 accumulator. The accumulator preserves the exact V2 golden algorithm; a 10,000-shard test verifies equivalence, and the executor test forbids the legacy unbounded shard read.
+- Manual create LINK now uses the indexed `getPlanActivity(planId, shopId)` repository method shared by SQLite and PostgreSQL; reconciliation tests make the unbounded activity-list method throw.
+- PostgreSQL readiness documentation remains deferred to Task 9 as directed.
+
+### Round 3 verification
+
+- All `tests/shopee-discount*.test.mjs`: 183 passed, 0 failed.
+- No live network or Shopee endpoint was used.

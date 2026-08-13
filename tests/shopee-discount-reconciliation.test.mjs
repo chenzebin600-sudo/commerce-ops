@@ -93,6 +93,7 @@ test("LINK_VERIFIED_OBJECT requires exact official object, membership, and minor
   const context = await fixture();
   try {
     const { reconcileIntent } = await import("../lib/shopee-discount/reconciliation.mjs");
+    context.repository.listPlanActivities = async () => { throw new Error("unbounded activity lookup"); };
     const baseReadback = {
       verified: true,
       operationUuid: context.intent.operationUuid,
@@ -262,6 +263,7 @@ test("LINK_VERIFIED_OBJECT for create verifies the stored marker identity and at
     });
     await context.repository.markDispatchUnknown({ intentId: intent.id, ownerId: "worker-1", epoch: 1, evidence: { responseLost: true } });
     context.access.provider.connection.prepare("UPDATE shopee_discount_execution_items SET status='UNKNOWN' WHERE job_id='job-reconcile'").run();
+    context.repository.listPlanActivities = async () => { throw new Error("unbounded activity lookup"); };
     const { reconcileIntent } = await import("../lib/shopee-discount/reconciliation.mjs");
     const exact = {
       verified: true, markerVerified: true, operationUuid: intent.operationUuid, payloadHash: intent.payloadHash,
