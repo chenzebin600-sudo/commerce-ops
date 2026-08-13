@@ -3,9 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
 import { openConfiguredCommerceDataAccess } from "../lib/data/data-access.mjs";
-import { SqliteProvider } from "../lib/data/sqlite/sqlite-provider.mjs";
+import { resolveSqliteProvider, SqliteProvider } from "../lib/data/sqlite/sqlite-provider.mjs";
 
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "commerce-data-access-"));
@@ -146,6 +147,62 @@ test("SQLite provider hides the native connection behind a minimal compatibility
     }
   } finally {
     await context.close();
+  }
+});
+
+test("SQLite provider rejects externally retained native connections", () => {
+  const native = new DatabaseSync(":memory:");
+  const forgedProvider = Object.create(SqliteProvider.prototype);
+  Object.defineProperty(forgedProvider, "connection", { value: native });
+  class OverridingProvider extends SqliteProvider {
+    get connection() { return native; }
+  }
+  const overridingProvider = new OverridingProvider({ databasePath: ":memory:" });
+  const genuineProvider = new SqliteProvider({ databasePath: ":memory:" });
+  try {
+    assert.throws(
+      () => new SqliteProvider({ connection: native }),
+      /provider-owned SQLite connection facade is required/,
+    );
+    assert.throws(
+      () => resolveSqliteProvider(native),
+      /SQLite provider or provider-owned connection facade is required/,
+    );
+    assert.throws(
+      () => resolveSqliteProvider({ dialect: "sqlite", connection: native }),
+      /SQLite provider or provider-owned connection facade is required/,
+    );
+    assert.throws(
+      () => resolveSqliteProvider({ provider: { dialect: "sqlite", connection: native } }),
+      /SQLite provider or provider-owned connection facade is required/,
+    );
+    assert.throws(
+      () => resolveSqliteProvider(forgedProvider),
+      /SQLite provider or provider-owned connection facade is required/,
+    );
+    assert.throws(
+      () => resolveSqliteProvider({ provider: forgedProvider }),
+      /SQLite provider or provider-owned connection facade is required/,
+    );
+    assert.throws(
+      () => resolveSqliteProvider(overridingProvider),
+      /SQLite provider or provider-owned connection facade is required/,
+    );
+    assert.throws(
+      () => Object.defineProperty(genuineProvider, "connection", { value: native }),
+      TypeError,
+    );
+    assert.equal(resolveSqliteProvider(genuineProvider), genuineProvider);
+    assert.equal(resolveSqliteProvider({ provider: genuineProvider }), genuineProvider);
+    assert.notEqual(genuineProvider.connection, native);
+    assert.throws(
+      () => resolveSqliteProvider({ prepare() {}, exec() {} }),
+      /SQLite provider or provider-owned connection facade is required/,
+    );
+  } finally {
+    genuineProvider.close();
+    overridingProvider.close();
+    native.close();
   }
 });
 
@@ -354,6 +411,121 @@ test("async provider mutations started during synchronous run never escape its r
   } finally {
     await context.close();
   }
+});
+
+test("query rejects mutations before they can escape a synchronous rollback", async () => {
+  const context = await fixture();
+  try {
+    const { provider, transactionManager } = context.dataAccess;
+    await provider.execute("CREATE TABLE e2_query_read_only_test (id INTEGER PRIMARY KEY, value TEXT NOT NULL)");
+    await provider.execute("INSERT INTO e2_query_read_only_test(id,value) VALUES (?,?)", [1, "baseline"]);
+    const attempts = [];
+    assert.throws(() => transactionManager.run(() => {
+      attempts.push(provider.query("INSERT INTO e2_query_read_only_test(id,value) VALUES (2,'inserted') RETURNING id"));
+      attempts.push(provider.query("UPDATE e2_query_read_only_test SET value='updated' WHERE id=1 RETURNING id"));
+      attempts.push(provider.query("DELETE FROM e2_query_read_only_test WHERE id=1 RETURNING id"));
+      attempts.push(provider.query("PRAGMA user_version = 42"));
+      throw new Error("rollback owner");
+    }), /rollback owner/);
+    for (const attempt of attempts) {
+      await assert.rejects(attempt, { code: "SQLITE_QUERY_NOT_READ_ONLY" });
+    }
+    assert.deepEqual(
+      (await provider.query("SELECT id,value FROM e2_query_read_only_test ORDER BY id")).rows.map(({ id, value }) => ({ id, value })),
+      [{ id: 1, value: "baseline" }],
+    );
+    assert.equal((await provider.query("PRAGMA user_version")).rows[0].user_version, 0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("rollback cleanup failure poisons every public database surface", async () => {
+  const context = await fixture();
+  try {
+    const { provider } = context.dataAccess;
+    await provider.execute("CREATE TABLE e2_poison_test (id INTEGER PRIMARY KEY)");
+    const facade = provider.connection;
+    const transactionManager = provider.transactionManager;
+    const cachedRead = facade.prepare("SELECT COUNT(*) count FROM e2_poison_test");
+    const cachedWrite = facade.prepare("INSERT INTO e2_poison_test(id) VALUES (?)");
+    await assert.rejects(provider.transaction(async (tx) => {
+      await tx.execute("INSERT INTO e2_poison_test(id) VALUES (?)", [1]);
+      await tx.execute("INSERT OR ROLLBACK INTO e2_poison_test(id) VALUES (?)", [1]);
+    }));
+
+    const poisoned = { code: "SQLITE_TRANSACTION_POISONED" };
+    assert.throws(() => provider.connection, poisoned);
+    assert.throws(() => provider.transactionManager, poisoned);
+    assert.throws(() => facade.prepare("SELECT 1"), poisoned);
+    assert.throws(() => cachedRead.get(), poisoned);
+    assert.throws(() => cachedRead.all(), poisoned);
+    assert.throws(() => [...cachedRead.iterate()], poisoned);
+    assert.throws(() => cachedWrite.run(2), poisoned);
+    assert.throws(() => facade.exec("SELECT 1"), poisoned);
+    assert.throws(() => provider.hasColumn("e2_poison_test", "id"), poisoned);
+    assert.throws(() => transactionManager.run(() => {}), poisoned);
+    await assert.rejects(provider.query("SELECT 1"), poisoned);
+    await assert.rejects(provider.execute("INSERT INTO e2_poison_test(id) VALUES (?)", [2]), poisoned);
+    await assert.rejects(provider.executeScript("SELECT 1"), poisoned);
+    await assert.rejects(provider.transaction(async () => {}), poisoned);
+    await assert.rejects(provider.withTransaction(async () => {}), poisoned);
+  } finally {
+    await context.close();
+  }
+});
+
+test("SQLite owner close rejects managed work while non-owner close has no effect", async () => {
+  const context = await fixture();
+  const { provider, transactionManager } = context.dataAccess;
+  const shared = new SqliteProvider({ connection: provider.connection });
+  let release;
+  let first;
+  try {
+    shared.close();
+    assert.equal((await shared.query("SELECT 1 value")).rows[0].value, 1);
+    transactionManager.run(() => {
+      assert.throws(() => provider.close(), { code: "SQLITE_TRANSACTION_BUSY" });
+    });
+
+    const hold = new Promise((resolve) => { release = resolve; });
+    let entered;
+    const opened = new Promise((resolve) => { entered = resolve; });
+    first = provider.transaction(async () => {
+      entered();
+      await hold;
+    });
+    await opened;
+    const second = shared.transaction(async () => {});
+    assert.throws(() => provider.close(), { code: "SQLITE_TRANSACTION_BUSY" });
+    release();
+    await Promise.all([first, second]);
+  } finally {
+    release?.();
+    await first?.catch(() => {});
+    shared.close();
+    await context.close();
+  }
+});
+
+test("SQLite owner close is idempotent and use after close has a stable error", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "commerce-provider-close-"));
+  const provider = new SqliteProvider({ databasePath: path.join(root, "close.sqlite") });
+  const facade = provider.connection;
+  const cachedRead = facade.prepare("SELECT 1 value");
+  provider.close();
+  assert.doesNotThrow(() => provider.close());
+  const closed = { code: "SQLITE_CONNECTION_CLOSED" };
+  assert.throws(() => provider.connection, closed);
+  assert.throws(() => provider.transactionManager, closed);
+  assert.throws(() => facade.prepare("SELECT 1"), closed);
+  assert.throws(() => cachedRead.get(), closed);
+  assert.throws(() => provider.hasColumn("anything", "id"), closed);
+  await assert.rejects(provider.query("SELECT 1"), closed);
+  await assert.rejects(provider.execute("CREATE TABLE escaped(id INTEGER)"), closed);
+  await assert.rejects(provider.executeScript("SELECT 1"), closed);
+  await assert.rejects(provider.transaction(async () => {}), closed);
+  await fs.rm(root, { recursive: true, force: true });
 });
 
 test("SQLite provider rejects nested and synchronous foreign transactions deterministically without foreign commit", async () => {

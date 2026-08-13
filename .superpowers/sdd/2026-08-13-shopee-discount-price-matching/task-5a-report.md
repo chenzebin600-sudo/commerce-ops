@@ -88,3 +88,53 @@ Result: 115 tests passed, 0 failed.
 - PRAGMA handling is intentionally conservative. A new read-only introspection PRAGMA not present in the allow-list is treated as mutation during foreign active/queued work until explicitly reviewed and added.
 - Provider-owned `close()` remains the lifecycle method used by data-access shutdown; a provider wrapping another provider's facade does not own or close that connection, and the native facade itself exposes no `close` capability.
 - All unrelated dirty workspace files were preserved and excluded from the scoped commit.
+
+## Review round 1: native ownership, read contracts, poison and lifecycle
+
+All five findings from `task-5a-review.md` were addressed through the existing provider/facade/lifecycle seams:
+
+- The public constructor no longer accepts arbitrary `DatabaseSync` or lookalike `prepare`/`exec` objects. A provider creates and owns the native handle from `databasePath`; sharing accepts only a facade minted and registered by another `SqliteProvider`. `resolveSqliteProvider()` applies the same rule. This removes retained-native terminal escapes and leaves one provider-owned authorizer lifecycle per native connection.
+- `query()` is strictly read-only. It rejects non-read lexical forms before its first await and prepares accepted SELECT/EXPLAIN/read-PRAGMA SQL under a SQLite authorizer mode that denies DML, DDL, transaction/savepoint operations, attachment, reindex/analyze, and mutating PRAGMAs. INSERT/UPDATE/DELETE `RETURNING` and assignment PRAGMAs therefore cannot resume after synchronous rollback.
+- Connection health is checked when acquiring the facade/transaction manager, preparing facade statements, invoking cached statement reads/writes, using raw `exec`, calling `hasColumn`, and entering provider query/write/transaction paths. An `INSERT OR ROLLBACK` conflict forces native rollback cleanup failure; the shared state becomes `SQLITE_TRANSACTION_POISONED`, and every tested public database surface fails closed. Poison clears managed ownership tokens because health becomes the stronger permanent gate, allowing the owner to close the unusable native handle.
+- Owner `close()` is idempotent and rejects synchronous, active async, or queued async work with `SQLITE_TRANSACTION_BUSY`. After a successful close, database surfaces fail consistently with `SQLITE_CONNECTION_CLOSED`. Closing a non-owner wrapper remains a no-op and cannot affect the owner or shared authorizer.
+- Shared facade construction reuses the connection-scoped state and authorizer; it does not install or overwrite an authorizer. Only the provider that created the native handle can close it, and only while idle.
+
+Round-one RED evidence was observed before implementation:
+
+1. Raw `DatabaseSync` construction and raw `resolveSqliteProvider()` calls succeeded instead of throwing.
+2. The sync-rollback regression reported a missing rejection because mutation-shaped `query()` promises executed afterward.
+3. The poison regression first failed at `provider.connection`, which remained readable after rollback cleanup failure.
+4. The owner-close regression closed active work and later failed with `database is not open`; repeated close also raised that native error.
+
+The independent round-one review found remaining resolver disguises: a forged object with `dialect: "sqlite"` and a retained native connection passed the old duck-typed early return, an `instanceof` replacement could itself be forged through the prototype chain or an overriding subclass, and a genuine instance's inherited getter could be shadowed after registration. Focused regressions observed the missing exceptions. Resolution now accepts only exact `SqliteProvider` instances registered after successful construction, exact registered nested providers, or registered provider-owned facades. Construction installs the guarded connection as a non-configurable own accessor. Top-level, nested, prototype-forged, overriding-subclass, and post-construction shadowing shapes are rejected.
+
+Fresh round-one verification:
+
+```powershell
+node --check lib/data/sqlite/sqlite-provider.mjs
+node --disable-warning=ExperimentalWarning --test tests/data-access-boundary.test.mjs tests/operation-plan.test.mjs
+```
+
+Result: syntax passed; 33 tests passed, 0 failed.
+
+```powershell
+node --disable-warning=ExperimentalWarning --test tests/data-access-boundary.test.mjs tests/operation-plan.test.mjs tests/audit-service.test.mjs tests/shopee-discount-repository.test.mjs tests/shopee-discount-service.test.mjs tests/shopee-discount-api.test.mjs
+```
+
+Result: 79 tests passed, 0 failed.
+
+```powershell
+node --disable-warning=ExperimentalWarning --test tests/file-review-and-quarantine.test.mjs tests/file-lifecycle-service.test.mjs tests/shopee-health.test.mjs tests/database-provider-compatibility.test.mjs tests/export-file-persistence.test.mjs tests/scheduled-task-soft-delete.test.mjs tests/scheduler-integration.test.mjs
+```
+
+Result: 102 tests passed, 0 failed.
+
+```powershell
+node --disable-warning=ExperimentalWarning --test tests/shopee-discount-*.test.mjs
+```
+
+Result: 115 tests passed, 0 failed.
+
+After the final non-configurable-accessor hardening, the focused infrastructure/Foundation suite was rerun: 33 tests passed, 0 failed. The broader compatibility and Discount suites above had already passed after the resolver registry change and were not redundantly repeated for the accessor-only follow-up.
+
+Round-one compatibility concern: callers that retained and passed an arbitrary native `DatabaseSync` into repositories are intentionally no longer supported. Current production construction uses `databasePath` or an existing provider, and current shared-provider tests use the registered compatibility facade.
