@@ -138,3 +138,31 @@ Result: 115 tests passed, 0 failed.
 After the final non-configurable-accessor hardening, the focused infrastructure/Foundation suite was rerun: 33 tests passed, 0 failed. The broader compatibility and Discount suites above had already passed after the resolver registry change and were not redundantly repeated for the accessor-only follow-up.
 
 Round-one compatibility concern: callers that retained and passed an arbitrary native `DatabaseSync` into repositories are intentionally no longer supported. Current production construction uses `databasePath` or an existing provider, and current shared-provider tests use the registered compatibility facade.
+
+## Review round 2: asynchronous operation reservations
+
+The two round-one re-review findings are fixed with a connection-scoped `inFlight` reservation:
+
+- `query()`, `execute()`, and `executeScript()` reserve the shared connection synchronously before their first await and release exactly once in `finally`. This covers success, access rejection, poison, and native failures.
+- Each executor rechecks shared health immediately after transaction-access awaits and immediately before its native statement invocation. A rollback-cleanup poison transition therefore makes already-started calls reject with the stable `SQLITE_TRANSACTION_POISONED` error without touching the native handle.
+- Owner `close()` treats any `inFlight` reservation as `SQLITE_TRANSACTION_BUSY`. It cannot overtake an already-started query, statement, or script and expose Node's native `ERR_INVALID_STATE`.
+- Managed transactions retain their existing active/pending ownership reservation. Calls through the owner transaction executor reserve only the individual native operation, so transaction queueing is unchanged and no second queue wait is introduced.
+
+Strict RED evidence was observed first. The close interleaving allowed close to win and all three started operations reached a closed native handle. The poison interleaving allowed already-started mutations to resume after rollback cleanup failure. After the reservation change, the exact focused interleavings and all prior boundary/Foundation cases pass.
+
+Fresh round-two focused verification:
+
+```powershell
+node --check lib/data/sqlite/sqlite-provider.mjs
+node --disable-warning=ExperimentalWarning --test tests/data-access-boundary.test.mjs tests/operation-plan.test.mjs
+```
+
+Result: syntax passed; 35 tests passed, 0 failed.
+
+Fresh round-two broader verification:
+
+- Core boundary, Foundation, audit, repository, service, and API: 81 tests passed, 0 failed.
+- File lifecycle, Shopee Health, provider, export, scheduled-task, and scheduler compatibility: 102 tests passed, 0 failed.
+- Complete Shopee Discount suite: 115 tests passed, 0 failed.
+
+The independent round-two review reported no remaining Critical or Important findings and marked the reservation slice ready.

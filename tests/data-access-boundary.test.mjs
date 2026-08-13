@@ -508,6 +508,49 @@ test("SQLite owner close rejects managed work while non-owner close has no effec
   }
 });
 
+test("SQLite owner close cannot overtake reserved async database operations", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "commerce-provider-inflight-close-"));
+  const provider = new SqliteProvider({ databasePath: path.join(root, "close.sqlite") });
+  try {
+    await provider.execute("CREATE TABLE e2_inflight_close_test (id INTEGER PRIMARY KEY)");
+    const operations = [
+      provider.execute("INSERT INTO e2_inflight_close_test(id) VALUES (?)", [1]),
+      provider.executeScript("INSERT INTO e2_inflight_close_test(id) VALUES (2)"),
+      provider.query("SELECT COUNT(*) count FROM e2_inflight_close_test"),
+    ];
+    assert.throws(() => provider.close(), { code: "SQLITE_TRANSACTION_BUSY" });
+    await Promise.all(operations);
+    assert.equal((await provider.query("SELECT COUNT(*) count FROM e2_inflight_close_test")).rows[0].count, 2);
+  } finally {
+    provider.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("already-started async database operations fail closed across poison transition", async () => {
+  const context = await fixture();
+  try {
+    const { provider, transactionManager } = context.dataAccess;
+    await provider.execute("CREATE TABLE e2_inflight_poison_test (id INTEGER PRIMARY KEY)");
+    const operations = [
+      provider.execute("INSERT INTO e2_inflight_poison_test(id) VALUES (?)", [2]),
+      provider.executeScript("INSERT INTO e2_inflight_poison_test(id) VALUES (3)"),
+      provider.query("SELECT COUNT(*) count FROM e2_inflight_poison_test"),
+    ];
+    assert.throws(() => transactionManager.run(() => {
+      provider.connection.prepare("INSERT INTO e2_inflight_poison_test(id) VALUES (?)").run(1);
+      provider.connection.prepare("INSERT OR ROLLBACK INTO e2_inflight_poison_test(id) VALUES (?)").run(1);
+    }));
+    assert.throws(() => provider.close(), { code: "SQLITE_TRANSACTION_BUSY" });
+    for (const operation of operations) {
+      await assert.rejects(operation, { code: "SQLITE_TRANSACTION_POISONED" });
+    }
+    assert.doesNotThrow(() => provider.close());
+  } finally {
+    await context.close();
+  }
+});
+
 test("SQLite owner close is idempotent and use after close has a stable error", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "commerce-provider-close-"));
   const provider = new SqliteProvider({ databasePath: path.join(root, "close.sqlite") });
