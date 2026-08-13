@@ -96,3 +96,13 @@ Fresh round 2 verification: required Task 5 and app-access suite 43 passed; Foun
 - Other Foundation state transitions retain their existing transition/event path.
 
 Fresh round 3 verification: Foundation operation-plan/v1 suite 16 passed; required Task 5/app-access suite 43 passed; all Shopee Discount tests 115 passed; 0 failed.
+
+## Review round 4 shared SQLite transaction boundary
+
+- Async SQLite transactions are now serialized by a connection-scoped queue shared by every `SqliteProvider` wrapping that connection, rather than by a Foundation repository instance.
+- Provider `query`, `execute`, and `executeScript` calls from other logical operations wait for the open transaction; calls through its supplied executor retain ownership. This prevents unrelated repository writes from becoming part of another operation's commit or rollback.
+- Nested async transactions on the same logical operation fail immediately with `SQLITE_TRANSACTION_REENTRANT`; synchronous transaction-manager use while async work is active or queued fails with `SQLITE_TRANSACTION_BUSY`, avoiding deadlock and nested `BEGIN`.
+- Two provider instances and two Foundation repositories are exercised concurrently: approval remains atomic while block and update wait, each operation keeps its own state/event outcome, and an injected approval-event failure rolls back only that approval attempt.
+- The Foundation-specific approval tail was removed; PostgreSQL continues using its existing connection transaction manager.
+
+Fresh round 4 verification: data-access/provider compatibility 13 passed; Foundation operation-plan/v1 17 passed; required Task 5/app-access 43 passed; all Shopee Discount tests 115 passed; 0 failed.

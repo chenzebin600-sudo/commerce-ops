@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
 import { openConfiguredCommerceDataAccess } from "../lib/data/data-access.mjs";
+import { SqliteProvider } from "../lib/data/sqlite/sqlite-provider.mjs";
 
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "commerce-data-access-"));
@@ -110,6 +111,63 @@ test("transaction manager rolls failed work back", async () => {
   } finally {
     await context.close();
   }
+});
+
+test("SQLite provider serializes async transactions across provider instances sharing one connection", async () => {
+  const context = await fixture();
+  const shared = new SqliteProvider({ connection: context.dataAccess.provider.connection });
+  try {
+    const provider = context.dataAccess.provider;
+    await provider.execute("CREATE TABLE e2_async_transaction_test (value TEXT NOT NULL)");
+    const order = [];
+    let releaseFirst;
+    const firstOpen = new Promise((resolve) => { releaseFirst = resolve; });
+    let enteredFirst;
+    const firstEntered = new Promise((resolve) => { enteredFirst = resolve; });
+    const first = provider.transaction(async (tx) => {
+      order.push("first:begin");
+      await tx.execute("INSERT INTO e2_async_transaction_test(value) VALUES (?)", ["first"]);
+      enteredFirst();
+      await firstOpen;
+      order.push("first:end");
+    });
+    await firstEntered;
+    const second = shared.transaction(async (tx) => {
+      order.push("second:begin");
+      await tx.execute("INSERT INTO e2_async_transaction_test(value) VALUES (?)", ["second"]);
+      order.push("second:end");
+    });
+    await Promise.resolve();
+    assert.deepEqual(order, ["first:begin"]);
+    releaseFirst();
+    await Promise.all([first, second]);
+    assert.deepEqual(order, ["first:begin", "first:end", "second:begin", "second:end"]);
+    assert.deepEqual((await provider.query("SELECT value FROM e2_async_transaction_test ORDER BY rowid")).rows.map(({ value }) => value), ["first", "second"]);
+  } finally { shared.close(); await context.close(); }
+});
+
+test("SQLite provider rejects nested and synchronous foreign transactions deterministically without foreign commit", async () => {
+  const context = await fixture();
+  const shared = new SqliteProvider({ connection: context.dataAccess.provider.connection });
+  try {
+    const provider = context.dataAccess.provider;
+    await provider.execute("CREATE TABLE e2_nested_transaction_test (value TEXT NOT NULL)");
+    await assert.rejects(provider.transaction(async (tx) => {
+      await tx.execute("INSERT INTO e2_nested_transaction_test(value) VALUES (?)", ["outer"]);
+      await shared.transaction(async () => {});
+    }), { code: "SQLITE_TRANSACTION_REENTRANT" });
+    assert.equal((await provider.query("SELECT COUNT(*) count FROM e2_nested_transaction_test")).rows[0].count, 0);
+
+    let release;
+    const hold = new Promise((resolve) => { release = resolve; });
+    let entered;
+    const opened = new Promise((resolve) => { entered = resolve; });
+    const active = provider.transaction(async () => { entered(); await hold; });
+    await opened;
+    assert.throws(() => shared.transactionManager.run(() => {}), { code: "SQLITE_TRANSACTION_BUSY" });
+    release();
+    await active;
+  } finally { shared.close(); await context.close(); }
 });
 
 test("account repository facade preserves existing CRUD behavior", async () => {

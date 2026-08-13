@@ -9,6 +9,7 @@ import {
   foundationContentHash,
 } from "../lib/foundation/foundation-contracts.mjs";
 import { FoundationService } from "../lib/foundation/foundation-service.mjs";
+import { FoundationRepository } from "../lib/foundation/foundation-repository.mjs";
 
 const PROJECT_ROOT = path.resolve(".");
 
@@ -155,6 +156,49 @@ test("approval state and exact APPROVED event commit atomically and retry after 
     assert.equal(approvalEvents.length, 1);
     assert.equal(approvalEvents[0].evidence.approvalTextHash, plan.approvalTextHash);
     assert.equal((await context.service.operationPlans.approve(plan.id, binding)).state, "APPROVED");
+  } finally { await context.close(); }
+});
+
+test("Foundation repositories sharing SQLite cannot interleave approval, block, and update operations", async () => {
+  const context = await createContext();
+  try {
+    const secondRepository = new FoundationRepository({ provider: context.access.provider });
+    const secondService = new FoundationService({ repository: secondRepository, now: () => new Date("2026-08-04T06:00:00.000Z") });
+    const approvalPlan = await context.service.operationPlans.create(preview({ id: "concurrent-approval" }));
+    const blockPlan = await context.service.operationPlans.create(preview({ id: "concurrent-block", scope: { shopId: "shop-2" } }));
+    const updatePlan = await context.service.operationPlans.create(preview({ id: "concurrent-update", scope: { shopId: "shop-3" } }));
+    const provider = context.access.provider;
+    const execute = provider.execute.bind(provider);
+    let releaseApproval;
+    const holdApproval = new Promise((resolve) => { releaseApproval = resolve; });
+    let approvalUpdated;
+    const approvalOpen = new Promise((resolve) => { approvalUpdated = resolve; });
+    provider.execute = async (sql, parameters) => {
+      const result = await execute(sql, parameters);
+      if (sql.includes("UPDATE foundation_operation_plans SET state='APPROVED'")) {
+        approvalUpdated();
+        await holdApproval;
+      }
+      return result;
+    };
+    const approving = context.service.operationPlans.approve(approvalPlan.id, {
+      planHash: approvalPlan.planHash, approvalText: "确认发货 1 单", actorType: "user", actorId: "operator-1",
+    });
+    await approvalOpen;
+    const blocking = secondService.operationPlans.block(blockPlan.id, { reasonCode: "CONCURRENT_BLOCK" });
+    const updating = secondRepository.updateOperationPlan(updatePlan.id, { lastErrorCode: "CONCURRENT_UPDATE" },
+      { expectedVersion: updatePlan.stateVersion, now: new Date("2026-08-04T06:00:01.000Z") });
+    await Promise.resolve();
+    const raw = provider.connection;
+    assert.equal(raw.prepare("SELECT state FROM foundation_operation_plans WHERE id=?").get(blockPlan.id).state, "PREVIEWED");
+    assert.equal(raw.prepare("SELECT last_error_code FROM foundation_operation_plans WHERE id=?").get(updatePlan.id).last_error_code, null);
+    releaseApproval();
+    const [approved, blocked, updated] = await Promise.all([approving, blocking, updating]);
+    assert.equal(approved.state, "APPROVED");
+    assert.equal(blocked.state, "BLOCKED");
+    assert.equal(updated.lastErrorCode, "CONCURRENT_UPDATE");
+    assert.equal((await context.service.operationPlans.events(approvalPlan.id)).filter(({ eventType }) => eventType === "APPROVED").length, 1);
+    assert.equal((await secondService.operationPlans.events(blockPlan.id)).filter(({ eventType }) => eventType === "BLOCKED").length, 1);
   } finally { await context.close(); }
 });
 
