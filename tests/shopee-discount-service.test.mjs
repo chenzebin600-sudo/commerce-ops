@@ -338,6 +338,82 @@ test("a normal renewal preview can be approved, queued, and executed without liv
   } finally { await context.close(); }
 });
 
+test("SQLite executes an approved renewal across two shops and eleven variants", async () => {
+  const shopee = fakeShopee({
+    shops: [shop("1", "TH"), shop("2", "TH")],
+    itemsByShop: {
+      "1": [{ item_id: "10", item_status: "NORMAL" }],
+      "2": [{ item_id: "20", item_status: "NORMAL" }],
+    },
+    modelsByItem: {
+      "10": Array.from({ length: 6 }, (_, index) => model(String(100 + index), `SKU-A-${index}`, "10000", "9500")),
+      "20": Array.from({ length: 5 }, (_, index) => model(String(200 + index), `SKU-B-${index}`, "10000", "9500")),
+    },
+  });
+  const context = await fixture({ shopee });
+  try {
+    await context.access.repositories.shopeeDiscount.saveSettings(
+      { encryptedWarehouseKeyCiphertext: "cipher-generation-1" }, { actorId: "test" },
+    );
+    const preview = await context.service.createPreview(previewInput({
+      shopIds: ["1", "2"],
+      workflow: "NEXT_RENEWAL",
+      renewal: { requestedStartAt: "2026-08-15T00:00:00.000Z", durationDays: 30 },
+    }), { requestId: "sqlite-multi-shop-preview" });
+    assert.equal(preview.itemCount, 11);
+    await context.service.approvePreview({
+      planId: preview.id,
+      merkleRoot: preview.merkleRoot,
+      operatorName: "Alice",
+      confirmationText: preview.confirmationText,
+    }, { actorId: "session-user" });
+    await context.service.requestExecution({ planId: preview.id, merkleRoot: preview.merkleRoot }, { identity: "shared" });
+    const writes = [];
+    const workerContext = {
+      repository: context.access.repositories.shopeeDiscount,
+      foundation: context.foundation,
+      workerId: "worker-sqlite-multi",
+      requestId: "sqlite-multi-shop-execute",
+      identity: "shared",
+      currentPolicyHash: preview.policyHash,
+      now: () => NOW,
+      leaseMs: 1_000,
+      writeSecurity: () => readySecurity(),
+      siteCapability: { priceScale: 2, maxAddItems: 10 },
+      shopeeWrite: {
+        async createDiscount(input) { writes.push({ operation: "createDiscount", input }); return { data: {} }; },
+        async addDiscountItems(input) { writes.push({ operation: "addDiscountItems", input }); return { data: {} }; },
+        async updateDiscountItems(input) { writes.push({ operation: "updateDiscountItems", input }); return { data: {} }; },
+      },
+      readers: {
+        async findActivityByMarker() { return null; },
+        async getShopAuthorization() { return { authorized: true }; },
+        async getWarehouseState({ item }) {
+          return { targetPriceMinor: item.targetPriceMinor, watermark: item.payload.warehouseWatermark, approvedAt: item.payload.warehouseApprovedAt };
+        },
+        async getListingState({ item }) { return { status: "ACTIVE", sku: item.sku, originalPriceMinor: item.payload.originalMinor }; },
+        async getDiscountState({ activity }) { return { conflict: false, activityId: activity.platformActivityId, membership: false }; },
+        async readbackIntent({ intent, item, activity }) {
+          const platformActivityId = activity?.platformActivityId || `activity-${activity?.shopId || item?.shopId}`;
+          return item
+            ? { platformObjectId: platformActivityId, activityId: platformActivityId, membership: true,
+              itemId: item.itemId, modelId: item.modelId, priceMinor: item.targetPriceMinor }
+            : { verified: true, platformObjectId: platformActivityId, markerVerified: true, activityId: platformActivityId,
+              operationUuid: intent.operationUuid, payloadHash: intent.payloadHash, shopId: activity.shopId,
+              discountName: activity.metadata.discountName, marker: activity.metadata.marker,
+              fingerprint: activity.metadata.fingerprint, startTime: String(new Date(activity.startsAt).getTime() / 1000),
+              endTime: String(new Date(activity.endsAt).getTime() / 1000) };
+        },
+      },
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const summary = await runApprovedPlan(preview.id, workerContext);
+    assert.equal(summary.status, "SUCCEEDED");
+    assert.equal(writes.filter(({ operation }) => operation === "createDiscount").length, 2);
+    assert.equal(writes.filter(({ operation }) => operation === "addDiscountItems").length, 11);
+  } finally { await context.close(); }
+});
+
 test("a committed scheduler preview replays to the same domain and Foundation plan after due-job crash", async () => {
   const context = await fixture();
   try {
@@ -354,7 +430,7 @@ test("a committed scheduler preview replays to the same domain and Foundation pl
   } finally { await context.close(); }
 });
 
-test("warehouse failure seals nothing and SQLite rejects more than ten variants", async () => {
+test("warehouse failure seals nothing and SQLite previews more than ten variants", async () => {
   const unavailable = await fixture({
     shopee: fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] } }),
     warehouse: { async scanPrices() { return { status: "BLOCKED", code: "WAREHOUSE_UNAVAILABLE", rows: [], warnings: [], evidence: {} }; } },
@@ -369,8 +445,35 @@ test("warehouse failure seals nothing and SQLite rejects more than ten variants"
     modelsByItem: { "10": Array.from({ length: 11 }, (_, index) => model(String(100 + index), `SKU-${index}`, "10000", "9500")) },
   }) });
   try {
-    await assert.rejects(tooMany.service.createPreview(previewInput(), {}), { code: "SHOPEE_DISCOUNT_SQLITE_LIMIT" });
+    const preview = await tooMany.service.createPreview(previewInput(), {});
+    assert.equal(preview.itemCount, 11);
+    assert.equal(preview.state, "PREVIEWED");
   } finally { await tooMany.close(); }
+});
+
+test("SQLite preview supports more than one authorized shop", async () => {
+  const context = await fixture({ shopee: fakeShopee({
+    shops: [shop("1", "TH"), shop("2", "TH")],
+    itemsByShop: {
+      "1": [{ item_id: "10", item_status: "NORMAL" }],
+      "2": [{ item_id: "20", item_status: "NORMAL" }],
+    },
+    modelsByItem: {
+      "10": [model("100", "SKU-1", "10000", "9500")],
+      "20": [model("200", "SKU-2", "10000", "9500")],
+    },
+  }) });
+  try {
+    const preview = await context.service.createPreview(previewInput({
+      shopIds: ["1", "2"],
+      activitySelection: [
+        { shopId: "1", discountId: "900", priceTier: "DAILY" },
+        { shopId: "2", discountId: "900", priceTier: "DAILY" },
+      ],
+    }), {});
+    assert.equal(preview.itemCount, 2);
+    assert.equal(preview.summary.shopCount, 2);
+  } finally { await context.close(); }
 });
 
 test("Foundation root binding failure leaves a non-approvable BLOCKED domain plan", async () => {
