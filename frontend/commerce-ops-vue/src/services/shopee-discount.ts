@@ -230,6 +230,26 @@ export function discountPreviewAvailability(input: DiscountPreviewAvailabilityIn
   return { allowed: true, reason: "" };
 }
 
+export function discountStepOneAvailability(input: {
+  country: string;
+  category: string;
+  shopCount: number;
+  workflow: DiscountWorkflow;
+  renewalStartValid: boolean;
+  previewing: boolean;
+}) {
+  if (input.previewing) return { allowed: false, reason: "正在生成价格预览，暂时不能修改范围" };
+  if (!input.country) return { allowed: false, reason: "请选择国家" };
+  if (!input.category.trim()) return { allowed: false, reason: "请填写大品类" };
+  if (input.shopCount < 1) return { allowed: false, reason: "请选择至少一家店铺" };
+  if (input.workflow === "NEXT_RENEWAL" && !input.renewalStartValid) return { allowed: false, reason: "请填写有效的续期开始时间" };
+  return { allowed: true, reason: "" };
+}
+
+export function discountAdvancedSections(workflow: DiscountWorkflow) {
+  return workflow === "CURRENT_CORRECTION" ? ["advanced"] : [];
+}
+
 function requestBindingKey(binding: DiscountRequestBinding) {
   return JSON.stringify(Object.fromEntries(Object.entries(binding).sort(([left], [right]) => left.localeCompare(right))));
 }
@@ -328,6 +348,32 @@ export class DiscountPageFlowController {
     this.disposed = true;
     this.invalidateRequests();
   }
+}
+
+export type DiscountWizardStep = 1 | 2 | 3;
+
+export class DiscountWizardController {
+  currentStep: DiscountWizardStep = 1;
+
+  goTo(step: DiscountWizardStep, state: { scopeValid: boolean; hasPreview: boolean }) {
+    if (step === 1 || (step === 2 && state.scopeValid) || (step === 3 && state.hasPreview)) {
+      this.currentStep = step;
+      return true;
+    }
+    return false;
+  }
+
+  advanceFromScope(state: { scopeValid: boolean }) {
+    if (!state.scopeValid) return false;
+    this.currentStep = 2;
+    return true;
+  }
+
+  previewStarted() { this.currentStep = 2; }
+  previewSucceeded() { this.currentStep = 3; }
+  previewFailed() { this.currentStep = 2; }
+  planInvalidated() { if (this.currentStep === 3) this.currentStep = 2; }
+  restoreExecution() { this.currentStep = 3; }
 }
 
 export function discountPreviewInputKey(input: CreateDiscountPreviewInput) {

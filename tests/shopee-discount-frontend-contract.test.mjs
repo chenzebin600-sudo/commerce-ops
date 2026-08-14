@@ -219,6 +219,43 @@ test("replacement preview pending window revokes the old plan and requires fresh
   assert.equal(state.confirmationInput, "");
 });
 
+test("discount wizard permits only completed steps and returns invalidated plans to preview setup", async () => {
+  const { DiscountWizardController } = await import(clientUrl.href);
+  const wizard = new DiscountWizardController();
+
+  assert.equal(wizard.currentStep, 1);
+  assert.equal(wizard.goTo(3, { scopeValid: true, hasPreview: false }), false);
+  assert.equal(wizard.advanceFromScope({ scopeValid: false }), false);
+  assert.equal(wizard.currentStep, 1);
+  assert.equal(wizard.advanceFromScope({ scopeValid: true }), true);
+  assert.equal(wizard.currentStep, 2);
+
+  wizard.previewStarted();
+  wizard.previewFailed();
+  assert.equal(wizard.currentStep, 2);
+  wizard.previewSucceeded();
+  assert.equal(wizard.currentStep, 3);
+  wizard.planInvalidated();
+  assert.equal(wizard.currentStep, 2);
+  wizard.restoreExecution();
+  assert.equal(wizard.currentStep, 3);
+  assert.equal(wizard.goTo(1, { scopeValid: true, hasPreview: true }), true);
+  assert.equal(wizard.currentStep, 1);
+});
+
+test("step one validation explains every required field and advanced disclosure follows workflow", async () => {
+  const { discountStepOneAvailability, discountAdvancedSections } = await import(clientUrl.href);
+  const base = { country: "ID", category: "家具", shopCount: 1, workflow: "NEXT_RENEWAL", renewalStartValid: true, previewing: false };
+  assert.deepEqual(discountStepOneAvailability(base), { allowed: true, reason: "" });
+  assert.equal(discountStepOneAvailability({ ...base, country: "" }).reason, "请选择国家");
+  assert.equal(discountStepOneAvailability({ ...base, category: " " }).reason, "请填写大品类");
+  assert.equal(discountStepOneAvailability({ ...base, shopCount: 0 }).reason, "请选择至少一家店铺");
+  assert.equal(discountStepOneAvailability({ ...base, renewalStartValid: false }).reason, "请填写有效的续期开始时间");
+  assert.equal(discountStepOneAvailability({ ...base, previewing: true }).reason, "正在生成价格预览，暂时不能修改范围");
+  assert.deepEqual(discountAdvancedSections("CURRENT_CORRECTION"), ["advanced"]);
+  assert.deepEqual(discountAdvancedSections("NEXT_RENEWAL"), []);
+});
+
 test("dashboard execution polling and manual refresh share one latest operational snapshot owner and dispose fences late work", async () => {
   const { DiscountPageFlowController } = await import(clientUrl.href);
   const state = { preview: null, previewing: false, approving: false, executing: false, itemLoading: false, operatorName: "", confirmationInput: "" };
@@ -289,6 +326,43 @@ test("page uses backend field names, one request fingerprint and accessible fail
   assert.match(page, /aria-live="polite"/);
   assert.match(page, /role="alert"/);
   assert.match(page, /@media \(max-width:/);
+});
+
+test("page presents the discount workflow as three guided steps", () => {
+  const page = read("frontend/commerce-ops-vue/src/pages/ShopeeDiscountPage.vue");
+  for (const text of [
+    "第 1 步", "选择任务与范围",
+    "第 2 步", "配置例外并生成预览",
+    "第 3 步", "人工确认并执行",
+    "新建或续期折扣活动", "修正现有折扣活动",
+    "例外与高级设置", "运行与异常",
+    "continueToOverrides", "openStep", "activeStep", "el-steps",
+  ]) assert.ok(page.includes(text), `missing ${text}`);
+});
+
+test("page advances wizard steps only after guarded preview and restore commits", () => {
+  const page = read("frontend/commerce-ops-vue/src/pages/ShopeeDiscountPage.vue");
+  for (const text of [
+    "wizard.previewStarted()",
+    "wizard.previewSucceeded()",
+    "wizard.previewFailed()",
+    "wizard.planInvalidated()",
+    "wizard.restoreExecution()",
+    "stepThreeSection.value?.focus()",
+  ]) assert.ok(page.includes(text), `missing guarded wizard transition ${text}`);
+  assert.match(page, /if \(!pageFlow\.acceptPreview[\s\S]*wizard\.previewSucceeded\(\)/);
+  assert.match(page, /if \(!requestGuard\.isCurrent\(ticket, binding\)\) return;[\s\S]*wizard\.restoreExecution\(\)/);
+});
+
+test("wizard navigation is keyboard semantic, mobile adapted, preview locked and has one primary step-two action", () => {
+  const page = read("frontend/commerce-ops-vue/src/pages/ShopeeDiscountPage.vue");
+  for (const text of [
+    'class="step-nav-button"', 'type="button"', 'class="wizard-mobile-nav"',
+    ':disabled="previewing"', '<fieldset :disabled="previewing" :inert="previewing"',
+    "discountStepOneAvailability", "discountAdvancedSections",
+  ]) assert.ok(page.includes(text), `missing ${text}`);
+  assert.match(page, /\.step-fieldset:disabled\s*\{[^}]*pointer-events:\s*none/);
+  assert.doesNotMatch(page, /type="primary"[^>]*@click="confirmBatchImport"/);
 });
 
 test("restore request generation rejects a deferred response after scope invalidation", async () => {

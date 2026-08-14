@@ -7,21 +7,23 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   approveDiscountPreview, createDiscountPreview, executeDiscountPreview, loadDiscountActivities,
-  discountPreviewAvailability, discountPreviewInputKey, DiscountPageFlowController, DiscountRequestGuard,
+  discountAdvancedSections, discountPreviewAvailability, discountPreviewInputKey, discountStepOneAvailability,
+  DiscountPageFlowController, DiscountRequestGuard, DiscountWizardController,
   loadDiscountIssues, loadDiscountPreviewItems, loadDiscountRuns, loadDiscountShops, loadDiscountStatus,
   requestDiscountScan, lookupDiscountOverrides, lookupDiscountOverrideBatch, reconcileDiscountIntent, loadDiscountSettings, saveDiscountSettings, verifyDiscountSettings,
   loadDiscountPreview, loadDiscountUnknownIntents,
   type ActivityTierSelection, type DiscountActivity, type DiscountIssue, type DiscountOverrideLookupRow, type DiscountSettings, type DiscountUnknownIntent,
   type DiscountPreview, type DiscountPreviewItem, type DiscountRun, type DiscountShop, type DiscountStatus,
   type CreateDiscountPreviewInput, type DiscountTier, type DiscountWorkflow, type LinkTierOverride, type TierOverride,
+  type DiscountWizardStep,
 } from "@/services/shopee-discount";
 
 const tiers: Array<{ value: DiscountTier; label: string }> = [
   { value: "DAILY", label: "日常价" }, { value: "EVENT", label: "活动价" }, { value: "MEGA", label: "大促价" },
 ];
 const workflows: Array<{ value: DiscountWorkflow; label: string; hint: string }> = [
-  { value: "CURRENT_CORRECTION", label: "修正当前活动", hint: "只调整已选择 Discount 活动中的折扣价" },
-  { value: "NEXT_RENEWAL", label: "创建下一期活动", hint: "当前活动后重新开始完整 30 天周期" },
+  { value: "CURRENT_CORRECTION", label: "修正现有折扣活动", hint: "只调整已选择 Discount 活动中的折扣价" },
+  { value: "NEXT_RENEWAL", label: "新建或续期折扣活动", hint: "适用于新店，或在当前活动后开始完整 30 天周期" },
 ];
 
 const loading = ref(true);
@@ -64,10 +66,16 @@ const issues = ref<DiscountIssue[]>([]);
 const unknownIntents = ref<DiscountUnknownIntent[]>([]);
 const unknownIntentCursor = ref<string | null>(null);
 const unknownIntentLoading = ref(false);
-const activeTab = ref("preview");
+const activeTab = ref("execution");
+const activeStep = ref<DiscountWizardStep>(1);
+const advancedSections = ref<string[]>(discountAdvancedSections(workflow.value));
+const stepOneSection = ref<HTMLElement | null>(null);
+const stepTwoSection = ref<HTMLElement | null>(null);
+const stepThreeSection = ref<HTMLElement | null>(null);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let assigningInitialCountry = false;
 const requestGuard = new DiscountRequestGuard();
+const wizard = new DiscountWizardController();
 const pageFlow = new DiscountPageFlowController({
   get preview() { return preview.value; }, set preview(value) { preview.value = value; },
   get previewing() { return previewing.value; }, set previewing(value) { previewing.value = value; },
@@ -93,6 +101,14 @@ const gateReason = computed(() => {
 const scopeValid = computed(() => Boolean(country.value && category.value.trim() && effectiveShopIds.value.length));
 const renewalStartValid = computed(() => workflow.value !== "NEXT_RENEWAL"
   || (typeof renewalStart.value === "string" && renewalStart.value.trim().length > 0 && Number.isFinite(new Date(renewalStart.value).getTime())));
+const stepOneAvailability = computed(() => discountStepOneAvailability({
+  country: country.value,
+  category: category.value,
+  shopCount: effectiveShopIds.value.length,
+  workflow: workflow.value,
+  renewalStartValid: renewalStartValid.value,
+  previewing: previewing.value,
+}));
 const previewRequest = computed<CreateDiscountPreviewInput | null>(() => {
   const requestedStartAt = renewalStart.value;
   if (!renewalStartValid.value || (workflow.value === "NEXT_RENEWAL" && typeof requestedStartAt !== "string")) return null;
@@ -151,8 +167,26 @@ function defaultRenewalStart() {
   return local.toISOString().slice(0, 16);
 }
 
+function syncWizardStep() { activeStep.value = wizard.currentStep; }
+
+function openStep(step: DiscountWizardStep) {
+  if (previewing.value) return;
+  wizard.goTo(step, { scopeValid: stepOneAvailability.value.allowed, hasPreview: Boolean(preview.value) });
+  syncWizardStep();
+  const target = step === 1 ? stepOneSection : step === 2 ? stepTwoSection : stepThreeSection;
+  void nextTick(() => target.value?.focus());
+}
+
+function continueToOverrides() {
+  if (!stepOneAvailability.value.allowed || !wizard.advanceFromScope({ scopeValid: true })) return;
+  syncWizardStep();
+  void nextTick(() => stepTwoSection.value?.focus());
+}
+
 function resetPlan() {
   pageFlow.invalidateRequests();
+  wizard.planInvalidated();
+  syncWizardStep();
   preview.value = null;
   previewItems.value = [];
   nextCursor.value = null;
@@ -165,7 +199,7 @@ function resetPlan() {
   scanning.value = false;
   unknownIntentLoading.value = false;
   loading.value = false;
-  activeTab.value = "preview";
+  activeTab.value = "execution";
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = null;
 }
@@ -185,6 +219,7 @@ watch(country, (_next, previous) => {
   if (previous && !assigningInitialCountry) resetPlan();
 });
 watch(previewRequestKey, (next, previous) => { if (next !== previous && !assigningInitialCountry) resetPlan(); });
+watch(workflow, (next) => { advancedSections.value = discountAdvancedSections(next); });
 
 function shopName(shopId: string) {
   return shops.value.find((shop) => shop.shopId === shopId)?.name || shopId;
@@ -333,7 +368,10 @@ async function restorePlan(planId: string, prerequisite?: { ticket: ReturnType<D
     preview.value = restored;
     previewItems.value = page.items;
     nextCursor.value = page.nextCursor;
+    wizard.restoreExecution();
+    syncWizardStep();
     activeTab.value = "execution";
+    void nextTick(() => stepThreeSection.value?.focus());
   } catch (error) { if (requestGuard.isCurrent(ticket, binding)) ElMessage.error(error instanceof Error ? error.message : "恢复执行方案失败"); }
 }
 async function loadSettingsPanel() { try { settings.value = await loadDiscountSettings(); } catch { settings.value = null; } }
@@ -406,6 +444,8 @@ async function generatePreview() {
   if (!canPreview.value || !request) return;
   const binding = scopeBinding();
   const ticket = pageFlow.beginPreview(binding.scopeKey);
+  wizard.previewStarted();
+  syncWizardStep();
   previewItems.value = [];
   nextCursor.value = null;
   errorMessage.value = "";
@@ -414,12 +454,16 @@ async function generatePreview() {
     if (!pageFlow.acceptPreview(ticket, scopeBinding().scopeKey, next)) return;
     await loadMoreItems();
     if (!requestGuard.isCurrent(ticket, scopeBinding())) return;
-    activeTab.value = "preview";
+    wizard.previewSucceeded();
+    syncWizardStep();
+    void nextTick(() => stepThreeSection.value?.focus());
     ElMessage.success("价格预览已生成，尚未执行任何 Shopee 写入");
   } catch (error) {
     if (requestGuard.isCurrent(ticket, scopeBinding())) {
       const message = error instanceof Error ? error.message : "生成预览失败";
       errorMessage.value = message;
+      wizard.previewFailed();
+      syncWizardStep();
       ElMessage.error(message);
     }
   } finally { pageFlow.finishPreview(ticket, scopeBinding().scopeKey); }
@@ -589,6 +633,22 @@ onBeforeUnmount(() => {
       <el-tag :type="gateOpen ? 'success' : 'danger'" effect="light">{{ gateOpen ? '可人工确认' : '禁止写入' }}</el-tag>
     </section>
 
+    <nav class="wizard-steps" aria-label="折扣控价步骤">
+      <el-steps :active="activeStep - 1" finish-status="success" align-center>
+        <el-step description="确定店铺、任务和默认价格"><template #title><button class="step-nav-button" type="button" :aria-current="activeStep === 1 ? 'step' : undefined" :disabled="previewing" @click="openStep(1)">选择任务与范围</button></template></el-step>
+        <el-step description="按需覆盖并检查价格"><template #title><button class="step-nav-button" type="button" :aria-current="activeStep === 2 ? 'step' : undefined" :disabled="previewing || !stepOneAvailability.allowed" @click="openStep(2)">配置例外并生成预览</button></template></el-step>
+        <el-step description="复核差异后提交执行"><template #title><button class="step-nav-button" type="button" :aria-current="activeStep === 3 ? 'step' : undefined" :disabled="previewing || !preview" @click="openStep(3)">人工确认并执行</button></template></el-step>
+      </el-steps>
+      <ol class="wizard-mobile-nav">
+        <li><button type="button" :class="{ active: activeStep === 1 }" :aria-current="activeStep === 1 ? 'step' : undefined" :disabled="previewing" @click="openStep(1)"><span>1</span>选择任务与范围</button></li>
+        <li><button type="button" :class="{ active: activeStep === 2 }" :aria-current="activeStep === 2 ? 'step' : undefined" :disabled="previewing || !stepOneAvailability.allowed" @click="openStep(2)"><span>2</span>配置例外并预览</button></li>
+        <li><button type="button" :class="{ active: activeStep === 3 }" :aria-current="activeStep === 3 ? 'step' : undefined" :disabled="previewing || !preview" @click="openStep(3)"><span>3</span>确认并执行</button></li>
+      </ol>
+    </nav>
+
+    <section v-show="activeStep === 1" ref="stepOneSection" class="wizard-step wizard-step--active" tabindex="-1" aria-labelledby="discount-step-one">
+      <header class="step-heading"><div><span class="step-kicker">第 1 步</span><h2 id="discount-step-one">选择任务与范围</h2><p>先确定本次要处理哪些店铺，以及新建活动还是修正现有活动。</p></div></header>
+      <fieldset :disabled="previewing" :inert="previewing" class="step-fieldset">
     <section class="scope-panel" aria-label="价格匹配范围">
       <header><div><h3>匹配范围与价格策略</h3><p>默认覆盖所选国家全部健康店铺及其全部在售商品。</p></div></header>
       <div class="scope-grid">
@@ -605,6 +665,8 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <el-collapse class="secondary-settings">
+      <el-collapse-item name="settings" title="系统设置（非日常操作）">
     <section v-if="settings" class="scope-panel" aria-label="折扣控价设置">
       <header><div><h3>安全设置</h3><p>密钥仅提交到服务端加密保存，页面只显示脱敏提示。</p></div></header>
       <div class="scope-grid">
@@ -615,7 +677,25 @@ onBeforeUnmount(() => {
       </div>
       <div class="approval-actions"><el-button @click="saveSettingsPanel">保存设置</el-button><el-button @click="verifySettingsPanel">验证 Key</el-button></div>
     </section>
+      </el-collapse-item>
+    </el-collapse>
+      <div class="step-actions">
+        <span v-if="!stepOneAvailability.allowed" class="step-blocked-reason">{{ stepOneAvailability.reason }}</span>
+        <el-button type="primary" :disabled="!stepOneAvailability.allowed" @click="continueToOverrides">下一步：配置例外</el-button>
+      </div>
+      </fieldset>
+    </section>
 
+    <section v-show="activeStep === 2" ref="stepTwoSection" class="wizard-step wizard-step--active" tabindex="-1" aria-labelledby="discount-step-two">
+      <header class="step-heading"><div><span class="step-kicker">第 2 步</span><h2 id="discount-step-two">配置例外并生成预览</h2><p>没有特殊商品时无需添加覆盖，直接按默认规则生成预览。</p></div><el-button text @click="openStep(1)">返回修改范围</el-button></header>
+      <fieldset :disabled="previewing" :inert="previewing" class="step-fieldset">
+      <div class="default-rule-summary">
+        <div><strong>本次默认规则</strong><span>覆盖 {{ effectiveShopIds.length }} 家店铺的全部在售商品，使用{{ tierLabel(defaultTier) }}。</span></div>
+        <el-tag effect="plain">{{ selectedWorkflow?.label }}</el-tag>
+      </div>
+      <el-collapse v-model="advancedSections" class="advanced-settings">
+        <el-collapse-item name="advanced">
+          <template #title><span class="advanced-title">例外与高级设置 <el-tag size="small" effect="plain">{{ shopOverrides.length + linkOverrides.length + activitySelection.length }} 项</el-tag></span></template>
     <section class="override-grid">
       <article class="config-panel">
         <header><div><h3>店铺覆盖</h3><p>仅影响本期方案，下一期重新选择。</p></div><el-button text type="primary" :icon="Plus" @click="addShopOverride">添加</el-button></header>
@@ -658,20 +738,23 @@ onBeforeUnmount(() => {
       <article class="config-panel batch-panel">
         <header><div><h3>批量导入链接覆盖</h3><p>CSV 列：shop_id,item_id_or_product_link,price_tier,note。导入前回显店铺、Item、SKU、变体数、最终档位与规则来源。</p></div><FileSpreadsheet :size="19" /></header>
         <el-input v-model="batchText" type="textarea" :rows="4" aria-label="批量导入链接覆盖" placeholder="shop_id,item_id_or_product_link,price_tier,note" />
-        <div class="batch-actions"><button type="button" class="file-button" @click="batchFileInput?.click()">选择 CSV</button><input ref="batchFileInput" class="visually-hidden" type="file" accept=".csv,text/csv,text/plain" aria-label="选择链接覆盖 CSV 文件" @change="readBatchFile" /><el-button :loading="batchValidating" @click="validateBatch">服务端校验并回显</el-button><el-button v-if="batchValidatedRows.length" type="primary" @click="confirmBatchImport">确认导入 {{ batchValidatedRows.length }} 条</el-button></div>
+        <div class="batch-actions"><button type="button" class="file-button" @click="batchFileInput?.click()">选择 CSV</button><input ref="batchFileInput" class="visually-hidden" type="file" accept=".csv,text/csv,text/plain" aria-label="选择链接覆盖 CSV 文件" @change="readBatchFile" /><el-button :loading="batchValidating" @click="validateBatch">服务端校验并回显</el-button><el-button v-if="batchValidatedRows.length" @click="confirmBatchImport">确认导入 {{ batchValidatedRows.length }} 条</el-button></div>
         <div v-if="batchErrors.length" class="validation-errors" role="alert"><strong>导入未通过</strong><span v-for="message in batchErrors.slice(0, 8)" :key="message">{{ message }}</span></div>
         <div v-if="batchValidatedRows.length" class="edit-list" aria-label="批量覆盖校验回显"><div v-for="row in batchValidatedRows" :key="`${row.shopId}-${row.itemId}`" class="edit-row"><span>{{ row.shopName }} · Item {{ row.itemId }} · SKU {{ row.sku }} · {{ row.variantCount }} 变体 · {{ tierLabel(row.priceTier) }} · {{ row.ruleSource || 'LINK_OVERRIDE' }} · {{ row.note }}</span></div></div>
       </article>
     </section>
+        </el-collapse-item>
+      </el-collapse>
 
     <section class="preview-action" aria-label="价格预览操作">
       <div><strong>所有价格均按站点最小货币单位向下取整</strong><span>数仓无有效目标价时，使用 Shopee 原价的 1% off；异常变体单独跳过。</span><span v-if="!canPreview" class="preview-action-error">{{ previewBlockedReason }}</span><span v-else-if="errorMessage" class="preview-action-error">{{ errorMessage }}</span></div>
       <el-button type="primary" :icon="SearchCheck" :loading="previewing" :disabled="!canPreview" @click="generatePreview">生成价格预览</el-button>
     </section>
+      </fieldset>
+    </section>
 
-    <section class="workbench">
-      <el-tabs v-model="activeTab">
-        <el-tab-pane name="preview" label="预览明细">
+    <section v-show="activeStep === 3" ref="stepThreeSection" class="wizard-step wizard-step--active" tabindex="-1" aria-labelledby="discount-step-three">
+      <header class="step-heading"><div><span class="step-kicker">第 3 步</span><h2 id="discount-step-three">人工确认并执行</h2><p>先核对价格差异和异常项，再由运营人工确认并提交任务。</p></div><el-button text @click="openStep(2)">返回修改例外</el-button></header>
           <div v-if="preview" class="preview-content">
             <div class="metric-grid" aria-label="价格预览汇总">
               <article><span>发现变体</span><strong>{{ preview.summary.counts?.discovered || 0 }}</strong></article>
@@ -700,9 +783,12 @@ onBeforeUnmount(() => {
               <div class="approval-actions"><el-button :loading="approving" :disabled="!canApprove" @click="approvePlan">确认价格方案</el-button><el-button type="primary" :icon="Play" :loading="executing" :disabled="!canExecute" @click="executePlan">{{ executeLabel }}</el-button></div>
             </div>
           </div>
-          <el-empty v-else description="设置范围后生成价格预览。此操作只读，不会修改 Shopee。" />
-        </el-tab-pane>
+          <el-empty v-else description="尚未生成价格预览。预览是只读操作，不会修改 Shopee。"><el-button @click="openStep(2)">返回第 2 步生成预览</el-button></el-empty>
+    </section>
 
+    <section class="workbench operations-section" aria-labelledby="discount-operations">
+      <header class="operations-heading"><div><span class="step-kicker">辅助区域</span><h2 id="discount-operations">运行与异常</h2><p>查看执行状态、UNKNOWN 协调和续期提醒，不影响上方三步主流程。</p></div></header>
+      <el-tabs v-model="activeTab">
         <el-tab-pane name="execution">
           <template #label><span class="tab-label"><Play :size="15" />执行进度</span></template>
           <div class="batch-actions" aria-label="恢复历史执行方案"><span>最近执行：</span><el-button v-for="run in runs.slice(0, 10)" :key="run.id" size="small" @click="restorePlan(run.planId)">{{ run.planId }} · {{ run.status }}</el-button></div>
@@ -759,7 +845,30 @@ onBeforeUnmount(() => {
 .gate-strip.closed { color: #991b1b; border-color: #fecaca; background: #fef2f2; }
 .gate-strip > div { display: grid; flex: 1; gap: 2px; }
 .gate-strip strong { font-size: 12px; }.gate-strip span { font-size: 11px; opacity: .82; }
-.scope-panel, .config-panel, .workbench, .preview-action { border: 1px solid var(--ops-border-light); border-radius: var(--ops-radius-md); background: var(--ops-surface); box-shadow: var(--ops-shadow-sm); }
+.wizard-steps, .wizard-step, .scope-panel, .config-panel, .workbench, .preview-action { border: 1px solid var(--ops-border-light); border-radius: var(--ops-radius-md); background: var(--ops-surface); box-shadow: var(--ops-shadow-sm); }
+.wizard-steps { padding: 18px 20px 15px; }
+.step-nav-button { padding: 2px 4px; border: 0; border-radius: 4px; color: inherit; background: transparent; cursor: pointer; font: inherit; font-weight: 600; }
+.step-nav-button:hover:not(:disabled), .step-nav-button:focus-visible { color: var(--ops-primary); outline: 2px solid color-mix(in srgb, var(--ops-primary) 24%, transparent); outline-offset: 2px; }
+.step-nav-button:disabled { cursor: not-allowed; opacity: .5; }
+.wizard-mobile-nav { display: none; }
+.wizard-step { display: grid; gap: 14px; padding: 18px; outline: none; }
+.step-fieldset { display: grid; gap: 14px; min-width: 0; padding: 0; margin: 0; border: 0; }
+.step-fieldset:disabled { pointer-events: none; opacity: .74; }
+.wizard-step--active { animation: step-enter .2s ease-out; }
+.step-heading, .operations-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.step-heading h2, .operations-heading h2 { margin: 2px 0 0; font-size: 17px; letter-spacing: -.02em; }
+.step-heading p, .operations-heading p { margin: 5px 0 0; color: var(--ops-text-secondary); font-size: 12px; }
+.step-kicker { color: var(--ops-primary); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.step-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding-top: 2px; }
+.step-blocked-reason { color: var(--ops-danger); font-size: 11px; }
+.secondary-settings, .advanced-settings { border-top: 1px solid var(--ops-border-light); border-bottom: 1px solid var(--ops-border-light); }
+.secondary-settings :deep(.el-collapse-item__header), .advanced-settings :deep(.el-collapse-item__header) { font-weight: 600; }
+.secondary-settings .scope-panel { margin: 2px 0 12px; box-shadow: none; }
+.advanced-title { display: inline-flex; align-items: center; gap: 8px; }
+.default-rule-summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 14px; border-left: 3px solid var(--ops-primary); border-radius: var(--ops-radius-sm); background: var(--ops-surface-muted); }
+.default-rule-summary > div { display: grid; gap: 4px; }.default-rule-summary strong { font-size: 12px; }.default-rule-summary span { color: var(--ops-text-secondary); font-size: 11px; }
+.operations-section { padding-top: 15px; }.operations-heading { margin-bottom: 8px; }
+@keyframes step-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 .scope-panel { padding: 15px; }.scope-panel > header, .config-panel > header, .approval-box > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .scope-panel h3, .config-panel h3, .approval-box h3 { margin: 0; font-size: 14px; }
 .scope-grid { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)); gap: 10px; margin-top: 14px; }
@@ -781,5 +890,5 @@ onBeforeUnmount(() => {
 .execution-panel { display: grid; gap: 15px; padding: 4px 2px; }.execution-head { justify-content: space-between; gap: 12px; }.execution-head > div { display: grid; gap: 4px; }.execution-head strong { font-size: 13px; }.execution-head span { color: var(--ops-text-muted); font-size: 11px; }.counter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(105px, 1fr)); border: 1px solid var(--ops-border-light); border-radius: var(--ops-radius-sm); overflow: hidden; }.counter-grid div { display: grid; gap: 4px; padding: 11px; border-right: 1px solid var(--ops-border-light); }.counter-grid span { color: var(--ops-text-muted); font-size: 10px; }.counter-grid strong { font-size: 17px; }
 @media (max-width: 1260px) { .scope-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }.edit-row.link-row { grid-template-columns: 1fr 1fr; }.edit-row.link-row .el-button { justify-self: end; } }
 @media (max-width: 900px) { .commandbar { align-items: flex-start; }.command-actions { flex-wrap: wrap; justify-content: flex-end; }.override-grid { grid-template-columns: 1fr; }.scope-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.approval-fields { grid-template-columns: 1fr; }.field.wide { grid-column: auto; } }
-@media (max-width: 620px) { .commandbar, .preview-action, .shop-scope { display: grid; }.command-actions, .approval-actions { justify-content: stretch; }.command-actions .el-button, .approval-actions .el-button, .preview-action .el-button { width: 100%; margin-left: 0; }.scope-grid, .metric-grid { grid-template-columns: 1fr; }.edit-row, .edit-row.link-row { grid-template-columns: 1fr; }.gate-strip { align-items: flex-start; }.gate-strip > .el-tag { margin-left: auto; }.workbench { padding-inline: 9px; } }
+@media (max-width: 620px) { .commandbar, .preview-action, .shop-scope, .default-rule-summary { display: grid; }.command-actions, .approval-actions, .step-actions { display: grid; justify-content: stretch; }.command-actions .el-button, .approval-actions .el-button, .preview-action .el-button, .step-actions .el-button { width: 100%; margin-left: 0; }.scope-grid, .metric-grid { grid-template-columns: 1fr; }.edit-row, .edit-row.link-row { grid-template-columns: 1fr; }.gate-strip { align-items: flex-start; }.gate-strip > .el-tag { margin-left: auto; }.workbench { padding-inline: 9px; }.wizard-steps { padding: 8px; }.wizard-steps :deep(.el-steps) { display: none; }.wizard-mobile-nav { display: grid; gap: 5px; padding: 0; margin: 0; list-style: none; }.wizard-mobile-nav button { display: grid; grid-template-columns: 24px 1fr; align-items: center; width: 100%; padding: 8px 10px; border: 0; border-radius: 7px; color: var(--ops-text-secondary); background: transparent; text-align: left; }.wizard-mobile-nav button span { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--ops-surface-muted); font-size: 11px; font-weight: 700; }.wizard-mobile-nav button.active { color: var(--ops-primary); background: color-mix(in srgb, var(--ops-primary) 8%, var(--ops-surface)); font-weight: 700; }.wizard-mobile-nav button.active span { color: #fff; background: var(--ops-primary); }.wizard-mobile-nav button:disabled { opacity: .45; }.wizard-mobile-nav button:focus-visible { outline: 2px solid var(--ops-primary); outline-offset: 2px; }.wizard-step { padding: 14px 11px; }.step-heading, .operations-heading { display: grid; }.step-heading > .el-button { justify-self: start; margin-left: 0; } }
 </style>
