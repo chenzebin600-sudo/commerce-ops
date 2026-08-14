@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
 import { FoundationService } from "../lib/foundation/foundation-service.mjs";
-import { ShopeeDiscountService } from "../lib/shopee-discount/service.mjs";
+import { parseShopeeProductReference, ShopeeDiscountService } from "../lib/shopee-discount/service.mjs";
 import { schedulerRequestId } from "../lib/shopee-discount/scheduler.mjs";
 
 const NOW = new Date("2026-08-13T10:00:00.000Z");
@@ -1025,6 +1025,49 @@ test("manual execution invokes only the authenticated production callback after 
   } finally { await context.close(); }
 });
 
+test("authenticated manual execution resumes an EXECUTING job after its lease expires", async () => {
+  let context;
+  let calls = 0;
+  let clock = new Date(NOW);
+  context = await fixture({
+    shopee: fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] } }),
+    serviceOptions: {
+      now: () => new Date(clock),
+      executeApprovedPlan: async (planId, { job }) => {
+        calls += 1;
+        if (calls !== 1) return;
+        const repository = context.access.repositories.shopeeDiscount;
+        const claim = await repository.claimJob({ jobId: job.id, ownerId: "crashed-worker", leaseMs: 100 });
+        const plan = await repository.getPlan(planId);
+        await repository.markPlanState({ planId, fromState: "APPROVED", toState: "EXECUTING", expectedVersion: plan.stateVersion });
+        const foundationPlan = await context.foundation.operationPlans.get(plan.foundationPlanId);
+        await context.foundation.operationPlans.beginExecution(foundationPlan.id, {
+          planHash: foundationPlan.planHash,
+          scope: foundationPlan.scope,
+          sourceSnapshot: foundationPlan.sourceSnapshot,
+          policy: foundationPlan.policy,
+          items: foundationPlan.items,
+          actorId: "crashed-worker",
+        });
+        assert.equal(claim.claimed, true);
+      },
+    },
+  });
+  context.access.repositories.shopeeDiscount.now = () => new Date(clock);
+  try {
+    const preview = await context.service.createPreview(previewInput({ workflow: "NEXT_RENEWAL", renewal: { requestedStartAt: "2026-08-15T00:00:00.000Z", durationDays: 30 } }), { requestId: "resume-preview" });
+    await context.service.approvePreview({ planId: preview.id, merkleRoot: preview.merkleRoot, operatorName: "Alice", confirmationText: preview.confirmationText }, { actorId: "ops-1" });
+    const actor = { actorId: "ops-1", identity: { actorId: "ops-1", roles: ["shopee_discount_execute"] } };
+    await context.service.requestExecution({ planId: preview.id, merkleRoot: preview.merkleRoot }, actor);
+    clock = new Date(NOW.getTime() + 10_000);
+    const running = (await context.access.repositories.shopeeDiscount.listExecutionJobs(preview.id))[0];
+    assert.equal(running.status, "RUNNING");
+    assert.ok(new Date(running.leaseUntil).getTime() <= clock.getTime());
+    await context.service.requestExecution({ planId: preview.id, merkleRoot: preview.merkleRoot }, actor);
+    assert.equal(calls, 2);
+  } finally { await context.close(); }
+});
+
 test("current correction scan reads live Discounts and produces a draft without approval or execution", async () => {
   const context = await fixture({ shopee: fakeShopee({
     itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] },
@@ -1054,4 +1097,12 @@ test("settings stay redacted, verify fail-closed, and Shopee links resolve to bo
     assert.equal(lookup.parsedItemId, "10");
     assert.deepEqual(lookup.rows.map(({ shopId, itemId, sku, variantCount }) => ({ shopId, itemId, sku, variantCount })), [{ shopId: "1", itemId: "10", sku: "SKU-ONE", variantCount: 2 }]);
   } finally { await context.close(); }
+});
+
+test("Shopee product reference parser accepts only anchored canonical HTTPS links", () => {
+  assert.deepEqual(parseShopeeProductReference("https://shopee.co.th/product-name-i.1.10?utm_source=ops"), { shopId: "1", itemId: "10", kind: "PRODUCT_LINK" });
+  assert.deepEqual(parseShopeeProductReference("https://shopee.sg/product/2/20"), { shopId: "2", itemId: "20", kind: "PRODUCT_LINK" });
+  assert.equal(parseShopeeProductReference("prefix https://shopee.co.th/product-name-i.1.10 suffix"), null);
+  assert.equal(parseShopeeProductReference("https://shopee.co.th.evil.example/product-name-i.1.10"), null);
+  assert.equal(parseShopeeProductReference("http://shopee.co.th/product-name-i.1.10"), null);
 });

@@ -182,6 +182,7 @@ const discountService = new ShopeeDiscountService({
   shopee: discountReadAdapter,
   warehouse: discountWarehouse,
   writeSecurity: () => ({ enabled: false, mode: "closed", reasonCode: "SCHEDULER_PREVIEW_ONLY" }),
+  enforceSettings: true,
   siteCapabilities: {
     [shopeeDiscountCountry]: {
       currency: runtimeEnv.SHOPEE_DISCOUNT_CURRENCY || (shopeeDiscountCountry === "TH" ? "THB" : ""),

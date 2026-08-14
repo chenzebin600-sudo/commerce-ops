@@ -3,7 +3,7 @@ import {
   AlertTriangle, BellRing, CheckCircle2, FileSpreadsheet, Play, Plus, RefreshCw, SearchCheck,
   ShieldAlert, Trash2,
 } from "@lucide/vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   approveDiscountPreview, createDiscountPreview, executeDiscountPreview, loadDiscountActivities,
@@ -43,6 +43,8 @@ const linkOverrides = ref<LinkTierOverride[]>([]);
 const activitySelection = ref<ActivityTierSelection[]>([]);
 const batchText = ref("");
 const batchErrors = ref<string[]>([]);
+const batchValidatedRows = ref<Array<DiscountOverrideLookupRow & { priceTier: DiscountTier; note: string }>>([]);
+const batchValidating = ref(false);
 const batchFileInput = ref<HTMLInputElement | null>(null);
 const overrideQuery = ref("");
 const overrideMatches = ref<DiscountOverrideLookupRow[]>([]);
@@ -108,8 +110,12 @@ const previewRequestKey = computed(() => previewRequest.value
 const canPreview = computed(() => scopeValid.value && renewalStartValid.value && !batchErrors.value.length && !previewing.value);
 const canApprove = computed(() => pageFlow.canApprove(Boolean(preview.value?.state === "PREVIEWED" && preview.value.itemCount > 0 && gateOpen.value
   && operatorName.value.trim() && confirmationInput.value === preview.value.confirmationText && !approving.value)));
-const canExecute = computed(() => pageFlow.canExecute(Boolean(preview.value?.state === "APPROVED" && gateOpen.value && !executing.value)));
 const currentRun = computed(() => preview.value ? runs.value.find((run) => run.planId === preview.value?.id) || null : null);
+const runLeaseExpired = computed(() => Boolean(currentRun.value?.status === "RUNNING"
+  && (!currentRun.value.leaseUntil || new Date(currentRun.value.leaseUntil).getTime() <= Date.now())));
+const canExecute = computed(() => pageFlow.canExecute(Boolean(gateOpen.value && !executing.value
+  && (preview.value?.state === "APPROVED" || (preview.value?.state === "EXECUTING" && runLeaseExpired.value)))));
+const executeLabel = computed(() => preview.value?.state === "EXECUTING" ? "恢复 / 重新检查执行任务" : "提交人工确认后的执行任务");
 const executionPercent = computed(() => {
   const run = currentRun.value;
   const total = preview.value?.itemCount || 0;
@@ -160,6 +166,7 @@ watch(country, () => {
   linkOverrides.value = [];
   activitySelection.value = [];
   batchErrors.value = [];
+  batchValidatedRows.value = [];
 });
 watch(previewRequestKey, resetPlan);
 
@@ -210,31 +217,53 @@ function addActivitySelection() {
   resetPlan();
 }
 
-function validateBatch() {
-  const rows: LinkTierOverride[] = [];
+async function validateBatch() {
+  const candidates: Array<{ shopId: string; itemRef: string; priceTier: DiscountTier; note: string; line: number }> = [];
   const errors: string[] = [];
   const seen = new Set<string>();
   const lines = batchText.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length > 101) errors.push("单次最多校验 100 条链接覆盖");
   lines.forEach((line, index) => {
     const cells = line.split(/[,\t]/).map((cell) => cell.trim());
     if (index === 0 && cells[0]?.toLowerCase().includes("shop")) return;
-    const [shopId = "", itemId = "", rawTier = "", note = ""] = cells;
+    const [shopId = "", itemRef = "", rawTier = "", note = ""] = cells;
     const priceTier = rawTier.toUpperCase() as DiscountTier;
-    const key = `${shopId}:${itemId}`;
-    if (!/^\d+$/.test(shopId) || !/^\d+$/.test(itemId)) errors.push(`第 ${index + 1} 行：Shop ID 与 Item ID 必须为数字`);
+    const key = `${shopId}:${itemRef}`;
+    if (!/^\d+$/.test(shopId) || !itemRef) errors.push(`第 ${index + 1} 行：Shop ID 必须为数字，Item ID 或商品链接不能为空`);
     else if (!effectiveShopIds.value.includes(shopId)) errors.push(`第 ${index + 1} 行：店铺不在当前范围`);
     else if (!tiers.some((entry) => entry.value === priceTier)) errors.push(`第 ${index + 1} 行：价格档位仅支持 DAILY、EVENT、MEGA`);
     else if (!note) errors.push(`第 ${index + 1} 行：必须填写备注`);
-    else if (seen.has(key) || linkOverrides.value.some((entry) => `${entry.shopId}:${entry.itemId}` === key)) errors.push(`第 ${index + 1} 行：店铺与链接重复`);
-    else { seen.add(key); rows.push({ shopId, itemId, priceTier, note }); }
+    else if (seen.has(key)) errors.push(`第 ${index + 1} 行：店铺与链接重复`);
+    else { seen.add(key); candidates.push({ shopId, itemRef, priceTier, note, line: index + 1 }); }
   });
   batchErrors.value = errors;
-  if (!errors.length && rows.length) {
-    linkOverrides.value.push(...rows);
-    batchText.value = "";
-    ElMessage.success(`已导入 ${rows.length} 条链接覆盖`);
-    resetPlan();
-  } else if (!lines.length) batchErrors.value = ["请粘贴或选择 CSV 内容"];
+  batchValidatedRows.value = [];
+  if (!lines.length) { batchErrors.value = ["请粘贴或选择 CSV 内容"]; return; }
+  if (errors.length) return;
+  batchValidating.value = true;
+  try {
+    const echoes = [];
+    for (const candidate of candidates) {
+      const lookup = await lookupDiscountOverrides({ country: country.value, shopIds: [candidate.shopId], query: candidate.itemRef,
+        priceTier: candidate.priceTier, note: candidate.note, limit: 2 });
+      if (lookup.rows.length !== 1) throw new Error(`第 ${candidate.line} 行：商品无法唯一解析`);
+      const row = lookup.rows[0];
+      if (linkOverrides.value.some((entry) => entry.shopId === row.shopId && entry.itemId === row.itemId)) throw new Error(`第 ${candidate.line} 行：商品已经添加`);
+      echoes.push({ ...row, priceTier: candidate.priceTier, note: candidate.note });
+    }
+    batchValidatedRows.value = echoes;
+    ElMessage.success(`已校验 ${echoes.length} 条，请确认回显后导入`);
+  } catch (error) { batchErrors.value = [error instanceof Error ? error.message : "批量校验失败"]; }
+  finally { batchValidating.value = false; }
+}
+
+function confirmBatchImport() {
+  linkOverrides.value.push(...batchValidatedRows.value.map((row) => ({ shopId: row.shopId, itemId: row.itemId, priceTier: row.priceTier, note: row.note })));
+  const count = batchValidatedRows.value.length;
+  batchValidatedRows.value = [];
+  batchText.value = "";
+  resetPlan();
+  ElMessage.success(`已导入 ${count} 条链接覆盖`);
 }
 
 async function searchOverrides() {
@@ -253,7 +282,19 @@ async function reconcileIssue(issue: DiscountIssue, resolution: "LINK_VERIFIED_O
   const intentId = String(issue.evidence?.intentId || "");
   if (!intentId) return ElMessage.error("该异常没有可协调的 Intent ID");
   try {
-    await reconcileDiscountIntent(intentId, resolution, resolution === "ABANDONED" ? { accepted: true, reasonCode: "OPERATOR_ACCEPTED_UNKNOWN" } : undefined);
+    let evidence: Record<string, unknown> | undefined;
+    if (resolution === "ABANDONED") {
+      const prompt = await ElMessageBox.prompt("请输入规范原因代码（大写字母、数字、下划线），该代码将写入审计证据。", "接受 UNKNOWN 风险并放弃", {
+        inputPlaceholder: "例如：OPERATOR_CONFIRMED_PLATFORM_UNRESOLVED",
+        inputValidator: (value) => /^[A-Z][A-Z0-9_]{2,100}$/.test(value) || "原因代码格式无效",
+        confirmButtonText: "继续风险确认", cancelButtonText: "取消",
+      });
+      await ElMessageBox.confirm(`确认接受重复写或漏写风险并放弃该 UNKNOWN？\n原因：${prompt.value}`, "最终风险确认", {
+        type: "warning", confirmButtonText: "确认接受并放弃", cancelButtonText: "返回检查",
+      });
+      evidence = { accepted: true, reasonCode: prompt.value, operatorNote: prompt.value };
+    }
+    await reconcileDiscountIntent(intentId, resolution, evidence);
     ElMessage.success("UNKNOWN 决策已记录审计"); await refreshOperationalData();
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : "UNKNOWN 协调失败"); }
 }
@@ -270,7 +311,7 @@ function readBatchFile(event: Event) {
   if (!file) return;
   if (file.size > 512 * 1024) { batchErrors.value = ["文件不能超过 512 KB"]; return; }
   const reader = new FileReader();
-  reader.onload = () => { batchText.value = String(reader.result || ""); validateBatch(); };
+  reader.onload = () => { batchText.value = String(reader.result || ""); void validateBatch(); };
   reader.onerror = () => { batchErrors.value = ["文件读取失败，请检查文件编码"]; };
   reader.readAsText(file);
   input.value = "";
@@ -530,10 +571,11 @@ onBeforeUnmount(() => {
       </article>
 
       <article class="config-panel batch-panel">
-        <header><div><h3>批量导入链接覆盖</h3><p>CSV 列：shop_id,item_id,price_tier,note。导入前回显店铺、Item、SKU、变体数、最终档位与规则来源。</p></div><FileSpreadsheet :size="19" /></header>
-        <el-input v-model="batchText" type="textarea" :rows="4" aria-label="批量导入链接覆盖" placeholder="shop_id,item_id,price_tier,note" />
-        <div class="batch-actions"><button type="button" class="file-button" @click="batchFileInput?.click()">选择 CSV</button><input ref="batchFileInput" class="visually-hidden" type="file" accept=".csv,text/csv,text/plain" aria-label="选择链接覆盖 CSV 文件" @change="readBatchFile" /><el-button @click="validateBatch">校验并导入</el-button></div>
+        <header><div><h3>批量导入链接覆盖</h3><p>CSV 列：shop_id,item_id_or_product_link,price_tier,note。导入前回显店铺、Item、SKU、变体数、最终档位与规则来源。</p></div><FileSpreadsheet :size="19" /></header>
+        <el-input v-model="batchText" type="textarea" :rows="4" aria-label="批量导入链接覆盖" placeholder="shop_id,item_id_or_product_link,price_tier,note" />
+        <div class="batch-actions"><button type="button" class="file-button" @click="batchFileInput?.click()">选择 CSV</button><input ref="batchFileInput" class="visually-hidden" type="file" accept=".csv,text/csv,text/plain" aria-label="选择链接覆盖 CSV 文件" @change="readBatchFile" /><el-button :loading="batchValidating" @click="validateBatch">服务端校验并回显</el-button><el-button v-if="batchValidatedRows.length" type="primary" @click="confirmBatchImport">确认导入 {{ batchValidatedRows.length }} 条</el-button></div>
         <div v-if="batchErrors.length" class="validation-errors" role="alert"><strong>导入未通过</strong><span v-for="message in batchErrors.slice(0, 8)" :key="message">{{ message }}</span></div>
+        <div v-if="batchValidatedRows.length" class="edit-list" aria-label="批量覆盖校验回显"><div v-for="row in batchValidatedRows" :key="`${row.shopId}-${row.itemId}`" class="edit-row"><span>{{ row.shopName }} · Item {{ row.itemId }} · SKU {{ row.sku }} · {{ row.variantCount }} 变体 · {{ tierLabel(row.priceTier) }} · {{ row.ruleSource || 'LINK_OVERRIDE' }} · {{ row.note }}</span></div></div>
       </article>
     </section>
 
@@ -570,7 +612,7 @@ onBeforeUnmount(() => {
                 <label class="field wide"><span>输入完整确认语句</span><el-input v-model="confirmationInput" aria-label="输入完整确认语句" :placeholder="preview.confirmationText" :disabled="preview.state !== 'PREVIEWED'" /><small>应输入：{{ preview.confirmationText }}</small></label>
               </div>
               <div v-if="!gateOpen" class="inline-warning"><ShieldAlert :size="16" />{{ gateReason }}</div>
-              <div class="approval-actions"><el-button :loading="approving" :disabled="!canApprove" @click="approvePlan">确认价格方案</el-button><el-button type="primary" :icon="Play" :loading="executing" :disabled="!canExecute" @click="executePlan">提交人工确认后的执行任务</el-button></div>
+              <div class="approval-actions"><el-button :loading="approving" :disabled="!canApprove" @click="approvePlan">确认价格方案</el-button><el-button type="primary" :icon="Play" :loading="executing" :disabled="!canExecute" @click="executePlan">{{ executeLabel }}</el-button></div>
             </div>
           </div>
           <el-empty v-else description="设置范围后生成价格预览。此操作只读，不会修改 Shopee。" />

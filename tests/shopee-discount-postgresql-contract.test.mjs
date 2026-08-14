@@ -8,7 +8,7 @@ import { PostgresqlShopeeDiscountRepository } from "../lib/shopee-discount/postg
 import { loadPostgresqlMigrations, runPostgresqlMigrations } from "../lib/data/postgresql/migration-runner.mjs";
 
 const PUBLIC_METHODS = [
-  "getStorageMode", "getSettings", "saveSettings", "createPlan", "getPlan", "listPlans",
+  "getStorageMode", "getSettings", "saveSettings", "invalidateActivePlans", "createPlan", "getPlan", "listPlans",
   "appendPlanShard", "sealPlan", "approvePlan", "markPlanState", "createJob", "getJob", "claimJob",
   "renewJobLease", "checkpointJob", "createDispatchIntent", "completeDispatchIntent",
   "markDispatchUnknown", "getDispatchIntent", "listDispatchIntents", "recordIntentOutcome", "reconcileIntent",
@@ -259,6 +259,19 @@ test("PostgreSQL settings redact historical credential-shaped metadata on output
   assert.deepEqual(settings.metadata, {
     warehouseKeyVerifiedAt: "2026-08-13T11:30:00.000Z",
   });
+});
+
+test("PostgreSQL settings explicitly clear the inactive credential mode", async () => {
+  const provider = new RecordingProvider([{ rows: [{
+    id: "default", enabled: true, timezone: "Asia/Shanghai", encrypted_warehouse_key_ciphertext: null,
+    warehouse_key_reference: "vault://discount/key", warehouse_key_hint: "managed reference", metadata_json: {},
+    warehouse_key_updated_at: new Date("2026-08-13T12:00:00.000Z"), created_at: new Date("2026-08-13T00:00:00.000Z"), updated_at: new Date("2026-08-13T12:00:00.000Z"),
+  }], rowCount: 1 }]);
+  const repository = new PostgresqlShopeeDiscountRepository({ provider, now: () => new Date("2026-08-13T12:00:00.000Z") });
+  await repository.saveSettings({ encryptedWarehouseKeyCiphertext: null, warehouseKeyReference: "vault://discount/key", warehouseKeyHint: "managed reference", metadata: {} }, { actorId: "admin" });
+  const call = provider.calls[0];
+  assert.match(call.text, /encrypted_warehouse_key_ciphertext=CASE WHEN \$1 THEN \$2/);
+  assert.deepEqual(call.values.slice(0, 6), [true, null, true, "vault://discount/key", true, "managed reference"]);
 });
 
 test("PostgreSQL plan state changes reject lifecycle shortcuts before SQL", async () => {

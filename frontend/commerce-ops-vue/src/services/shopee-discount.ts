@@ -185,7 +185,7 @@ export interface DiscountScanJob {
 }
 
 export interface DiscountSettings { enabled: boolean; timezone: string; warehouseConfigured: boolean; warehouseKeyHint?: string | null; warehouseKeyReference?: string | null; warehouseKeyVerifiedAt?: string | null; updatedAt?: string | null; updatedBy?: string | null }
-export interface DiscountOverrideLookupRow { shopId: string; shopName: string; itemId: string; sku: string; variantCount: number }
+export interface DiscountOverrideLookupRow { shopId: string; shopName: string; itemId: string; sku: string; variantCount: number; finalTier?: DiscountTier | null; ruleSource?: string | null; note?: string | null }
 export interface DiscountOverrideLookup { query: string; parsedItemId?: string | null; rows: DiscountOverrideLookupRow[] }
 
 export type DiscountRequestLane = "dashboard" | "operationalSnapshot" | "preview" | "approve" | "execute" | "items" | "scan";
@@ -380,7 +380,7 @@ export function saveDiscountSettings(input: { enabled?: boolean; timezone?: stri
   return apiJson<DiscountSettings>(`${BASE}/settings`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
 }
 export function verifyDiscountSettings() { return apiJson<DiscountSettings>(`${BASE}/settings/verify`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); }
-export function lookupDiscountOverrides(input: { country: string; shopIds: string[]; query: string; limit?: number }) {
+export function lookupDiscountOverrides(input: { country: string; shopIds: string[]; query: string; limit?: number; priceTier?: DiscountTier; note?: string }) {
   return apiJson<DiscountOverrideLookup>(`${BASE}/overrides/lookup`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
 }
 export function loadDiscountIntent(intentId: string) { return apiJson<Record<string, unknown>>(`${BASE}/intents/${encodeURIComponent(intentId)}`); }

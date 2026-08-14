@@ -126,7 +126,7 @@ import { WarehouseControlPriceClient } from "./lib/shopee-discount/warehouse-cli
 import { resolveShopeeWriteSecurity } from "./lib/shopee-discount/write-security.mjs";
 import { ShopeeDiscountService } from "./lib/shopee-discount/service.mjs";
 import { createShopeeDiscountApi } from "./lib/shopee-discount/api.mjs";
-import { createManualExecutionRuntime, createProductionReaders } from "./lib/shopee-discount/production-runtime.mjs";
+import { createManualExecutionRuntime, createProductionReaders, relayNonTransmissionEvidence } from "./lib/shopee-discount/production-runtime.mjs";
 import { foundationContentHash } from "./lib/foundation/foundation-contracts.mjs";
 import { ShopeeAdvertisingService } from "./lib/advertising/shopee-advertising-service.mjs";
 import { createShopeeAdvertisingApi } from "./lib/advertising/shopee-advertising-api.mjs";
@@ -453,10 +453,11 @@ const shopeeDiscountService = new ShopeeDiscountService({
       const response = await shopeeHealthClient.request("/api/shopee/operation-status", decryptSecret((await dataAccess.repositories.shopeeHealth.getSettings({ includeSecret: true })).encryptedTokenKey), {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ operation_uuid: intent.operationUuid }),
       });
-      return { deterministic: response?.transmitted === false, transmitted: response?.transmitted, source: "RELAY", operationUuid: intent.operationUuid, relayRequestId: response?.request_id || null };
+      return relayNonTransmissionEvidence(intent, response);
     },
   },
   executeApprovedPlan: executeShopeeDiscountManually,
+  enforceSettings: true,
   approvalTtlMs: Number(runtimeEnv.SHOPEE_DISCOUNT_APPROVAL_TTL_MS || 10 * 60_000),
   siteCapabilities: {
     [String(runtimeEnv.SHOPEE_DISCOUNT_COUNTRY || "TH").toUpperCase()]: {
