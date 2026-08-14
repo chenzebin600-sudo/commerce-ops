@@ -109,3 +109,25 @@ test("Shopee privileged identity is accepted only from an authenticated trusted 
   assert.equal(directContext.identity, null);
   assert.equal(directContext.privilegedIdentity, null);
 });
+
+test("loopback compatibility mode supplies the local Shopee operator without proxy authentication", () => {
+  const localContext = createHttpAuditContext(
+    request({ authorization: "", remoteAddress: "::ffff:127.0.0.1", method: "GET" }),
+    new URL("http://localhost/api/shopee-discount/intents"),
+    { localCompatibilityMode: true },
+  );
+  assert.deepEqual(localContext.identity, {
+    actorId: "local-operator",
+    roles: ["shopee_discount_execute"],
+    source: "loopback_compatibility",
+  });
+  assert.equal(localContext.privilegedIdentity, "privileged_execute_identity");
+
+  const remoteContext = createHttpAuditContext(
+    request({ authorization: "", remoteAddress: "10.0.0.8", method: "GET" }),
+    new URL("http://local/api/shopee-discount/intents"),
+    { localCompatibilityMode: true },
+  );
+  assert.equal(remoteContext.identity, null);
+  assert.equal(remoteContext.privilegedIdentity, null);
+});
