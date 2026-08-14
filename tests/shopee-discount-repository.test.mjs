@@ -197,6 +197,42 @@ test("plan shards are transactional, contiguous, and immutable after sealing", a
   }
 });
 
+test("preview ownership takeover compares the exact lease snapshot and fences the previous epoch", async () => {
+  const context = await fixture();
+  try {
+    const lease1 = "2026-08-13T10:01:00.000Z", lease2 = "2026-08-13T10:02:00.000Z";
+    await context.repository.createPlan(plan("plan-owned", { summary: {
+      previewOwnerToken: "owner-a", previewOwnerEpoch: 1, previewOwnerLeaseUntil: lease1,
+    } }));
+    const renewed = await context.repository.claimPreviewOwnership({ planId: "plan-owned", expectedOwnerToken: "owner-a",
+      expectedOwnerEpoch: 1, expectedLeaseUntil: lease1, ownerToken: "owner-a", leaseUntil: lease2,
+      now: "2026-08-13T10:00:30.000Z" });
+    assert.equal(renewed.summary.previewOwnerEpoch, 1);
+    assert.equal(await context.repository.claimPreviewOwnership({ planId: "plan-owned", expectedOwnerToken: "owner-a",
+      expectedOwnerEpoch: 1, expectedLeaseUntil: lease1, ownerToken: "owner-b", leaseUntil: "2026-08-13T10:03:00.000Z",
+      now: "2026-08-13T10:01:01.000Z" }), null, "a stale lease snapshot cannot steal a renewed owner");
+    const takeover = await context.repository.claimPreviewOwnership({ planId: "plan-owned", expectedOwnerToken: "owner-a",
+      expectedOwnerEpoch: 1, expectedLeaseUntil: lease2, ownerToken: "owner-b", leaseUntil: "2026-08-13T10:04:00.000Z",
+      now: "2026-08-13T10:02:01.000Z" });
+    assert.equal(takeover.summary.previewOwnerEpoch, 2);
+    await assert.rejects(context.repository.appendPlanShard({ planId: "plan-owned", shardIndex: 0, shardHash: "old-owner",
+      items: [item(0)], ownerToken: "owner-a", ownerEpoch: 1 }), { code: "SHOPEE_DISCOUNT_PREVIEW_LEASE_LOST" });
+  } finally { await context.close(); }
+});
+
+test("idempotent shard replay binds every persisted price and payload field", async () => {
+  const context = await fixture();
+  try {
+    await context.repository.createPlan(plan("plan-content"));
+    const original = item(0);
+    await context.repository.appendPlanShard({ planId: "plan-content", shardIndex: 0, shardHash: "approval-root", items: [original] });
+    await assert.rejects(context.repository.appendPlanShard({ planId: "plan-content", shardIndex: 0, shardHash: "approval-root",
+      items: [{ ...original, currency: "USD", scale: 0, currentPriceMinor: "999", targetPriceMinor: "888",
+        payload: { ...original.payload, stock: 0, reasonCode: "CHANGED" } }] }),
+    { code: "SHOPEE_DISCOUNT_PREVIEW_SAGA_CONFLICT" });
+  } finally { await context.close(); }
+});
+
 test("database plan-state invariant rejects an empty sealed Merkle root", async () => {
   const context = await fixture();
   try {

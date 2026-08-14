@@ -2,7 +2,7 @@
 
 ## Scope and snapshot
 
-This E2 report prepares a future migration; it does not install PostgreSQL, create PostgreSQL tables, connect a driver, dual-write, or modify formal SQLite data. Base row-count evidence was captured from the configured formal database on 2026-07-16 after `PRAGMA integrity_check = ok`. The additive schema inventory was reconciled on 2026-08-14 through SQLite migration `033_shopee_discount_baseline_lookup.sql` and PostgreSQL migration `041_shopee_discount_baseline_lookup.sql`. No live PostgreSQL DDL execution is claimed. Row counts are planning evidence rather than a live operational dashboard.
+This E2 report prepares a future migration; it does not install PostgreSQL, create PostgreSQL tables, connect a driver, dual-write, or modify formal SQLite data. Base row-count evidence was captured from the configured formal database on 2026-07-16 after `PRAGMA integrity_check = ok`. The additive schema inventory was reconciled on 2026-08-14 through SQLite migration `034_shopee_discount_preview_fencing.sql` and PostgreSQL migration `042_shopee_discount_preview_fencing.sql`. No live PostgreSQL DDL execution is claimed. Row counts are planning evidence rather than a live operational dashboard.
 
 ## Current tables
 
@@ -108,16 +108,16 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 
 ### Shopee Discount additive inventory
 
-当前清单截至 SQLite `033_shopee_discount_baseline_lookup.sql` 与 PostgreSQL `041_shopee_discount_baseline_lookup.sql`。041 仅为真实存在的事件表增加正规化 baseline scope 列和可索引查询；本报告仍不声称执行过 live DDL。
+当前清单截至 SQLite `034_shopee_discount_preview_fencing.sql` 与 PostgreSQL `042_shopee_discount_preview_fencing.sql`。033/041 增加可索引 baseline scope；034/042 增加 preview owner token/epoch/lease 与 canonical shard content hash。本报告仍不声称执行过 live DDL。
 
 The following tables were added after the row-count snapshot. Their schemas and migration contracts were verified locally; production row counts have not been sampled and must not be inferred as zero.
 
 | Table | SQLite migration | PostgreSQL migration | Operational invariant |
 |---|---|---|---|
 | `shopee_discount_settings` | 027 | 027 | singleton configuration; encrypted warehouse-key ciphertext/reference is never returned by APIs |
-| `shopee_discount_plans` | 027 | 027 + 035 | immutable approval root and Foundation plan binding |
+| `shopee_discount_plans` | 027 + 034 | 027 + 035 + 042 | immutable approval root/Foundation binding；preview ownership 使用 token + epoch + exact lease CAS fencing |
 | `shopee_discount_activities` | 027 | 027 | one approved activity target per plan/shop window |
-| `shopee_discount_plan_shards` | 027 | 027 | immutable bounded Merkle shards |
+| `shopee_discount_plan_shards` | 027 + 034 | 027 + 042 | immutable bounded Merkle shards；canonical persisted-content hash prevents partial replay equivalence |
 | `shopee_discount_plan_items` | 027 | 027 | immutable variant-level price decisions in minor-unit text |
 | `shopee_discount_approvals` | 027 | 027 | exact human approval binding and evidence |
 | `shopee_discount_jobs` | 027 | 027 | leased/fenced execution jobs |
@@ -192,7 +192,7 @@ Runtime-only dialect operations are now located under `lib/data/sqlite`; `script
 ## Migration sequence
 
 1. Freeze schema changes and create a verified SQLite backup plus file manifest.
-2. Reconcile the full SQLite migration ledger through `033_shopee_discount_baseline_lookup.sql` with the additive PostgreSQL ledger through `041_shopee_discount_baseline_lookup.sql`, preserving keys, checks, indexes, delete behavior, fencing, `UNKNOWN`, notification coordination, and indexed baseline scope semantics.
+2. Reconcile the full SQLite migration ledger through `034_shopee_discount_preview_fencing.sql` with the additive PostgreSQL ledger through `042_shopee_discount_preview_fencing.sql`, preserving keys, checks, indexes, delete behavior, preview ownership fencing, canonical shard hashes, `UNKNOWN`, notification coordination, and indexed baseline scope semantics.
 3. Create PostgreSQL adapters behind the existing Provider/Repository contracts; keep SQLite as the active provider.
 4. Import reference/config tables: accounts and DingTalk configs, preserving encrypted bytes.
 5. Import task/run/event history, then export/file and lifecycle relationships in FK order.

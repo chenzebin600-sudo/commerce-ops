@@ -914,10 +914,12 @@ test("expired production preview owner resumes and verifies already persisted sh
     const shardCount = context.access.provider.connection.prepare("SELECT COUNT(*) count FROM shopee_discount_plan_shards WHERE plan_id=?")
       .get(first.id).count;
     const staleSummary = { ...stored.summary, previewOwnerToken: "crashed-owner",
-      previewOwnerLeaseUntil: new Date(NOW.getTime() - 1).toISOString() };
+      previewOwnerEpoch: stored.summary.previewOwnerEpoch + 1, previewOwnerLeaseUntil: new Date(NOW.getTime() - 1).toISOString() };
     context.access.provider.connection.prepare(`UPDATE shopee_discount_plans SET state='PREVIEWING',merkle_root=NULL,
-      item_count=0,shard_count=0,sealed_at=NULL,state_version=state_version+1,summary_json=? WHERE id=?`)
-      .run(JSON.stringify(staleSummary), first.id);
+      item_count=0,shard_count=0,sealed_at=NULL,state_version=state_version+1,summary_json=?,preview_owner_token=?,
+      preview_owner_epoch=?,preview_owner_lease_until=? WHERE id=?`)
+      .run(JSON.stringify(staleSummary), staleSummary.previewOwnerToken, staleSummary.previewOwnerEpoch,
+        staleSummary.previewOwnerLeaseUntil, first.id);
 
     const resumed = await context.service.createPreview(previewInput(), requestContext);
     assert.equal(resumed.id, first.id);
@@ -925,5 +927,30 @@ test("expired production preview owner resumes and verifies already persisted sh
     assert.equal(context.access.provider.connection.prepare("SELECT COUNT(*) count FROM shopee_discount_plan_shards WHERE plan_id=?")
       .get(first.id).count, shardCount);
     assert.equal((await context.access.repositories.shopeeDiscount.getPlan(first.id)).state, "PREVIEWED");
+  } finally { await context.close(); }
+});
+
+test("production preview heartbeats a single long-running shop with a virtual clock", async () => {
+  let clock = new Date(NOW);
+  const shopee = fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] } });
+  const getModels = shopee.getModelList.bind(shopee);
+  shopee.getModelList = async (input) => {
+    setTimeout(() => { clock = new Date(clock.getTime() + 45); }, 12);
+    setTimeout(() => { clock = new Date(clock.getTime() + 45); }, 28);
+    await new Promise((resolve) => setTimeout(resolve, 55));
+    return getModels(input);
+  };
+  const context = await fixture({ shopee, serviceOptions: {
+    now: () => clock, previewLeaseMs: 60, previewHeartbeatMs: 10,
+  } });
+  context.access.repositories.shopeeDiscount.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+  const claim = context.access.repositories.shopeeDiscount.claimPreviewOwnership.bind(context.access.repositories.shopeeDiscount);
+  let renewals = 0;
+  context.access.repositories.shopeeDiscount.claimPreviewOwnership = async (input) => { renewals += 1; return claim(input); };
+  try {
+    const preview = await context.service.createPreview(previewInput(), { actorId: "operator", requestId: "long-shop" });
+    assert.equal(preview.state, "PREVIEWED");
+    assert.ok(renewals >= 3, `expected heartbeat renewals during the shop, observed ${renewals}`);
   } finally { await context.close(); }
 });

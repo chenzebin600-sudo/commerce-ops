@@ -98,7 +98,11 @@ test("capacity check streams the locked country scale through bounded pages", as
   assert.equal(report.pages.shops, 1);
   assert.equal(report.pages.links, 1_000);
   assert.equal(report.pages.variants, 10_000);
-  assert.equal(report.bounds.maxResidentRecords, 1_000);
+  assert.equal(report.bounds.sourcePageRecords, 1_000);
+  assert.ok(report.bounds.maxResidentRecords <= 2_000);
+  assert.equal(report.bounds.plannerShardRecords, 1_000);
+  assert.equal(report.productionCore.selectedVariants, 10_000_000);
+  assert.equal(report.productionCore.persistedShards, 10_000);
   assert.equal(report.bounds.heapGrowthBytes, 0);
   assert.equal(report.databaseMode, "SIMULATED_PAGED_DRY_RUN");
   assert.equal(report.livePostgresqlDdlExecuted, false);
@@ -371,7 +375,7 @@ test("SQLite migrations are fresh-install, 027-upgrade, and reopen idempotent th
   const databasePath = path.join(root, "commerce.sqlite");
   await fs.mkdir(initialMigrations);
   const migrationNames = (await fs.readdir(path.resolve("migrations"))).filter((name) => name.endsWith(".sql"));
-  for (const name of migrationNames.filter((candidate) => !/^(?:028|029|030|031|032|033)_shopee_discount/.test(candidate))) {
+  for (const name of migrationNames.filter((candidate) => !/^(?:028|029|030|031|032|033|034)_shopee_discount/.test(candidate))) {
     await fs.copyFile(path.resolve("migrations", name), path.join(initialMigrations, name));
   }
   try {
@@ -391,11 +395,16 @@ test("SQLite migrations are fresh-install, 027-upgrade, and reopen idempotent th
       "031_shopee_discount_notification_coordination.sql",
       "032_shopee_discount_notification_legacy_sending.sql",
       "033_shopee_discount_baseline_lookup.sql",
+      "034_shopee_discount_preview_fencing.sql",
     ]);
     const columns = access.provider.connection.prepare("PRAGMA table_info('shopee_discount_notifications')").all().map(({ name }) => name);
     assert.equal(columns.includes("coordination_state"), true);
     const eventColumns = access.provider.connection.prepare("PRAGMA table_info('shopee_discount_events')").all().map(({ name }) => name);
     assert.equal(eventColumns.includes("baseline_shop_id"), true);
+    const planColumns = access.provider.connection.prepare("PRAGMA table_info('shopee_discount_plans')").all().map(({ name }) => name);
+    assert.equal(planColumns.includes("preview_owner_epoch"), true);
+    const shardColumns = access.provider.connection.prepare("PRAGMA table_info('shopee_discount_plan_shards')").all().map(({ name }) => name);
+    assert.equal(shardColumns.includes("content_hash"), true);
     const queryPlan = access.provider.connection.prepare(`EXPLAIN QUERY PLAN SELECT evidence_json FROM shopee_discount_events
       WHERE event_type='WAREHOUSE_BASELINE' AND baseline_country=? AND baseline_category=?
       AND baseline_shop_id IS ? AND baseline_tier=? ORDER BY occurred_at DESC,id DESC LIMIT 1`)

@@ -1,4 +1,5 @@
 import { pathToFileURL } from "node:url";
+import { createProductionShardAccumulator, indexActivitySelections } from "../lib/shopee-discount/production-preview-core.mjs";
 
 const LOCKED_SCALE = Object.freeze({ shopCount: 1_000, linksPerShop: 1_000, variantsPerShop: 10_000 });
 const MAX_PAGE_SIZE = 10_000;
@@ -57,8 +58,17 @@ export async function runCapacityCheck({
   const initialHeap = Number(heapUsed());
   let peakHeap = initialHeap;
   let maxResidentRecords = 0;
+  let maxPlannerResidentRecords = 0;
   const pages = { shops: 0, links: 0, variants: 0 };
   const observed = { shops: 0, links: 0, variants: 0 };
+  const activitySelectionsByShop = indexActivitySelections(Array.from({ length: shops }, (_, shopOffset) => ({
+    shopId: `shop-0-${shopOffset}`, discountId: `discount-${shopOffset}`, priceTier: "DAILY",
+  })));
+  let persistedShards = 0, selectedVariants = 0;
+  const plannerAccumulator = createProductionShardAccumulator({ shardSize: batch, async flushShard(items) {
+    if (items.some(({ activity }) => !activity)) throw capacityError("SHOPEE_DISCOUNT_CAPACITY_PLANNER_MISMATCH", "Planner selection lost an indexed activity");
+    persistedShards += 1;
+  } });
 
   const observe = (records) => {
     if (!Array.isArray(records) || records.length > batch) {
@@ -122,9 +132,20 @@ export async function runCapacityCheck({
   await consume("shops", shops, (cursor, limit) => source.shops(cursor, limit), async (shopPage) => {
     for (const shop of shopPage) {
       await consume("links", links, (cursor, limit) => source.links(shop, cursor, limit));
-      await consume("variants", variants, (cursor, limit) => source.variants(shop, cursor, limit));
+      await consume("variants", variants, (cursor, limit) => source.variants(shop, cursor, limit), async (variantPage) => {
+        const shopId = String(shop.shopId ?? shop.id);
+        if (!activitySelectionsByShop.has(shopId)) activitySelectionsByShop.set(shopId, [{ shopId, discountId: `discount-${shopId}`, priceTier: "DAILY" }]);
+        const activity = activitySelectionsByShop.get(shopId)?.[0] || null;
+        for (const variant of variantPage) {
+          maxPlannerResidentRecords = Math.max(maxPlannerResidentRecords, variantPage.length + plannerAccumulator.size);
+          const pending = plannerAccumulator.add({ variant, activity });
+          selectedVariants += Number(Boolean(activity));
+          if (pending) await pending;
+        }
+      });
     }
   });
+  await plannerAccumulator.flush();
 
   const heapGrowthBytes = Math.max(0, peakHeap - initialHeap);
   if (heapGrowthBytes > maxHeapGrowthBytes) {
@@ -134,7 +155,10 @@ export async function runCapacityCheck({
     scale: { shops, links: shops * links, variants: shops * variants },
     observed,
     pages,
-    bounds: { pageSize: batch, maxResidentRecords, heapGrowthBytes, maxHeapGrowthBytes },
+    bounds: { pageSize: batch, maxResidentRecords: Math.max(maxResidentRecords, maxPlannerResidentRecords),
+      sourcePageRecords: maxResidentRecords, plannerShardRecords: plannerAccumulator.maxBuffered, heapGrowthBytes, maxHeapGrowthBytes },
+    productionCore: { activitySelection: "indexed-by-shop", selectedVariants, shardAccumulator: "production-preview-core", persistedShards,
+      repositoryPaging: mode === "postgresql" ? "injected-repository-seam" : "bounded-dry-source" },
     elapsedMs: Number(now()) - startedAt,
     databaseMode: mode === "postgresql" ? "POSTGRESQL_PAGED_BENCHMARK" : "SIMULATED_PAGED_DRY_RUN",
     livePostgresqlDdlExecuted: false,

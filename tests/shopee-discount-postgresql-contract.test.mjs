@@ -187,6 +187,23 @@ test("PostgreSQL events normalize driver Date values to ISO strings", async () =
   assert.equal(event.createdAt, "2026-08-13T01:00:01.000Z");
 });
 
+test("PostgreSQL warehouse baselines write and query only the indexed 041 scope columns", async () => {
+  const baseline = { scope: { country: "TH", category: "HOME", shopId: "shop-1", tier: "EVENT" }, rows: [] };
+  const provider = new RecordingProvider([
+    { rows: [{ id: "baseline-1", occurred_at: new Date("2026-08-13T01:00:00.000Z"), created_at: new Date("2026-08-13T01:00:00.000Z") }], rowCount: 1 },
+    { rows: [{ evidence_json: baseline }], rowCount: 1 },
+  ]);
+  const repository = new PostgresqlShopeeDiscountRepository({ provider });
+  await repository.appendEvent({ id: "baseline-1", eventType: "WAREHOUSE_BASELINE", evidence: baseline });
+  assert.deepEqual(await repository.getLatestWarehouseBaseline({ country: "TH", category: "HOME", shopId: "shop-1", tier: "EVENT" }), baseline);
+  assert.match(provider.calls[0].text, /baseline_country,baseline_category,baseline_shop_id,baseline_tier/);
+  assert.deepEqual(provider.calls[0].values.slice(-4), ["TH", "HOME", "shop-1", "EVENT"]);
+  assert.match(provider.calls[1].text, /baseline_country=\$1 AND baseline_category=\$2/);
+  assert.match(provider.calls[1].text, /baseline_shop_id IS NOT DISTINCT FROM \$3/);
+  assert.match(provider.calls[1].text, /baseline_tier=\$4/);
+  assert.doesNotMatch(provider.calls[1].text, /evidence_json\s*->/);
+});
+
 test("PostgreSQL settings require an allowlisted metadata object and bind safe metadata", async () => {
   const provider = new RecordingProvider();
   const repository = new PostgresqlShopeeDiscountRepository({ provider });
@@ -297,6 +314,41 @@ test("PostgreSQL shard append uses one transaction and one parameterized item ba
   assert.match(inserts[0].text, /\$38/);
   assert.equal(inserts[0].text.includes("129900"), false);
   assert.equal(inserts[0].values.includes("129900"), true);
+  const shardInsert = provider.calls.find(({ text }) => /INSERT INTO .*shopee_discount_plan_shards/i.test(text));
+  assert.match(shardInsert.text, /content_hash/);
+  assert.match(shardInsert.values.at(-1), /^[a-f0-9]{64}$/);
+});
+
+test("PostgreSQL preview ownership CAS binds the exact token epoch and lease snapshot", async () => {
+  const lease1 = new Date("2026-08-13T00:01:00.000Z"), lease2 = new Date("2026-08-13T00:02:00.000Z");
+  const provider = new RecordingProvider([
+    { rows: [row({ preview_owner_token: "owner-a", preview_owner_epoch: 4, preview_owner_lease_until: lease1,
+      summary_json: { previewOwnerToken: "owner-a", previewOwnerEpoch: 4, previewOwnerLeaseUntil: lease1.toISOString() } })], rowCount: 1 },
+    { rows: [row({ preview_owner_token: "owner-a", preview_owner_epoch: 4, preview_owner_lease_until: lease2,
+      summary_json: { previewOwnerToken: "owner-a", previewOwnerEpoch: 4, previewOwnerLeaseUntil: lease2.toISOString() } })], rowCount: 1 },
+  ]);
+  const repository = new PostgresqlShopeeDiscountRepository({ provider, now: () => new Date("2026-08-13T00:00:30.000Z") });
+  const renewed = await repository.claimPreviewOwnership({ planId: "plan-1", expectedOwnerToken: "owner-a",
+    expectedOwnerEpoch: 4, expectedLeaseUntil: lease1.toISOString(), ownerToken: "owner-a", leaseUntil: lease2,
+    now: "2026-08-13T00:00:30.000Z" });
+  assert.equal(renewed.summary.previewOwnerEpoch, 4);
+  assert.match(provider.calls[1].text, /preview_owner_token IS NOT DISTINCT FROM \$7/);
+  assert.match(provider.calls[1].text, /preview_owner_epoch=\$8/);
+  assert.match(provider.calls[1].text, /preview_owner_lease_until IS NOT DISTINCT FROM \$9/);
+  assert.deepEqual(provider.calls[1].values.slice(-3), ["owner-a", 4, lease1.toISOString()]);
+});
+
+test("PostgreSQL shard replay rejects a different canonical persisted-content hash", async () => {
+  const provider = new RecordingProvider([
+    { rows: [{ id: "plan-1", state: "PREVIEWING", preview_owner_token: null }], rowCount: 1 },
+    { rows: [{ shard_hash: "approval-root", content_hash: "different", item_count: 1 }], rowCount: 1 },
+  ]);
+  const repository = new PostgresqlShopeeDiscountRepository({ provider });
+  await assert.rejects(repository.appendPlanShard({ planId: "plan-1", shardIndex: 0, shardHash: "approval-root", items: [{
+    sequence: 0, shopId: "shop-1", itemId: "item-1", modelId: "model-1", sku: "SKU", currency: "THB", scale: 2,
+    currentPriceMinor: "100", controlPriceMinor: "90", targetPriceMinor: "90", payloadHash: "approval-item",
+    payload: { stock: 1, reasonCode: "WAREHOUSE" },
+  }] }), { code: "SHOPEE_DISCOUNT_PREVIEW_SAGA_CONFLICT" });
 });
 
 test("PostgreSQL sealing rejects an empty Merkle root before opening a transaction", async () => {
