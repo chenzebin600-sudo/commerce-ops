@@ -64,3 +64,8 @@
 - Preview heartbeat shutdown first prevents new ticks, clears the timer and then awaits the single in-flight renewal chain. Renewal failure is propagated, work failure cannot return while renewal remains active, and no renewal occurs after return.
 - Capacity sampling now observes the after-add and before-flush critical points and samples heap there. Locked scale reports source page 1,000, shard buffer 1,000, their simultaneous sum 2,000, persistent activity-selection map 1,000 and total tracked records 3,000 rather than under-reporting 1,999.
 - Round-four verification: broad Shopee/PostgreSQL 274/274 passed; full `npm test` passed 1,399 with 2 intentional skips. Capacity observed the full locked scale with 17,649,888 bytes measured heap growth and `livePostgresqlDdlExecuted=false`. Frontend check/build passed with only the existing chunk-size warning.
+
+## Breaker review fix round 5
+
+- Capacity resident accounting now tracks the outer shop page for its full nested-loop lifetime. Locked scale reports four simultaneously resident bounded components: shop page 1,000, nested source/variant page 1,000, shard buffer 1,000 and activity-selection map 1,000; the honest peak is 4,000 records. Heap sampling remains active at page, after-add and before-flush critical points.
+- Round-five verification: capacity focused 2/2 and broad Shopee/PostgreSQL 274/274 passed; full `npm test` passed 1,399 with 2 intentional skips. Capacity CLI measured 17,660,848 bytes heap growth and `livePostgresqlDdlExecuted=false`. Frontend check/build passed with only the existing chunk-size warning.

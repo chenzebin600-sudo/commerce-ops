@@ -57,19 +57,20 @@ export async function runCapacityCheck({
   const startedAt = Number(now());
   const initialHeap = Number(heapUsed());
   let peakHeap = initialHeap;
-  let maxResidentRecords = 0, currentSourcePageRecords = 0;
-  let maxSourcePlusShardRecords = 0;
+  let maxSourcePageRecords = 0, currentShopPageRecords = 0, currentSourcePageRecords = 0;
+  let maxShopPageRecords = 0, maxResidentRecords = 0;
   const pages = { shops: 0, links: 0, variants: 0 };
   const observed = { shops: 0, links: 0, variants: 0 };
   const activitySelectionsByShop = indexActivitySelections(Array.from({ length: mode === "dry-run" ? shops : 0 }, (_, shopOffset) => ({
     shopId: `shop-0-${shopOffset}`, discountId: `discount-${shopOffset}`, priceTier: "DAILY",
   })));
   let persistedShards = 0, selectedVariants = 0;
-  const samplePlannerResident = ({ buffered }) => {
+  const sampleResident = (buffered = plannerAccumulator?.size || 0) => {
     peakHeap = Math.max(peakHeap, Number(heapUsed()));
-    maxSourcePlusShardRecords = Math.max(maxSourcePlusShardRecords, currentSourcePageRecords + buffered);
+    maxResidentRecords = Math.max(maxResidentRecords,
+      currentShopPageRecords + currentSourcePageRecords + buffered + activitySelectionsByShop.size);
   };
-  const plannerAccumulator = createProductionShardAccumulator({ shardSize: batch, observe: samplePlannerResident, async flushShard(items) {
+  const plannerAccumulator = createProductionShardAccumulator({ shardSize: batch, observe: ({ buffered }) => sampleResident(buffered), async flushShard(items) {
     if (items.some(({ activity }) => !activity)) throw capacityError("SHOPEE_DISCOUNT_CAPACITY_PLANNER_MISMATCH", "Planner selection lost an indexed activity");
     persistedShards += 1;
   } });
@@ -78,7 +79,7 @@ export async function runCapacityCheck({
     if (!Array.isArray(records) || records.length > batch) {
       throw capacityError("SHOPEE_DISCOUNT_CAPACITY_PAGE_UNBOUNDED", "A source page exceeded the configured bound");
     }
-    maxResidentRecords = Math.max(maxResidentRecords, records.length);
+    maxSourcePageRecords = Math.max(maxSourcePageRecords, records.length);
     peakHeap = Math.max(peakHeap, Number(heapUsed()));
   };
 
@@ -114,6 +115,11 @@ export async function runCapacityCheck({
         throw capacityError("SHOPEE_DISCOUNT_CAPACITY_INCOMPLETE", `${kind} source did not prove its declared total`);
       }
       observe(page.items);
+      if (kind === "shops") {
+        currentShopPageRecords = page.items.length;
+        maxShopPageRecords = Math.max(maxShopPageRecords, currentShopPageRecords);
+      } else currentSourcePageRecords = page.items.length;
+      sampleResident();
       pages[kind] += 1;
       count += page.items.length;
       if (!page.items.length || count > expected || (page.nextCursor != null && page.items.length !== requestedLimit)
@@ -121,6 +127,8 @@ export async function runCapacityCheck({
         throw capacityError("SHOPEE_DISCOUNT_CAPACITY_INCOMPLETE", `${kind} source did not make bounded progress`);
       }
       await onItems?.(page.items);
+      if (kind === "shops") currentShopPageRecords = 0;
+      else currentSourcePageRecords = 0;
       if (page.nextCursor == null) break;
       const next = String(page.nextCursor);
       if (!next || seenCursors.has(next)) {
@@ -137,7 +145,6 @@ export async function runCapacityCheck({
     for (const shop of shopPage) {
       await consume("links", links, (cursor, limit) => source.links(shop, cursor, limit));
       await consume("variants", variants, (cursor, limit) => source.variants(shop, cursor, limit), async (variantPage) => {
-        currentSourcePageRecords = variantPage.length;
         const shopId = String(shop.shopId ?? shop.id);
         if (!activitySelectionsByShop.has(shopId)) activitySelectionsByShop.set(shopId, [{ shopId, discountId: `discount-${shopId}`, priceTier: "DAILY" }]);
         const activity = activitySelectionsByShop.get(shopId)?.[0] || null;
@@ -146,7 +153,6 @@ export async function runCapacityCheck({
           selectedVariants += Number(Boolean(activity));
           if (pending) await pending;
         }
-        currentSourcePageRecords = 0;
       });
     }
   });
@@ -161,9 +167,9 @@ export async function runCapacityCheck({
     observed,
     pages,
     bounds: { pageSize: batch,
-      maxResidentRecords: maxSourcePlusShardRecords + activitySelectionsByShop.size,
-      maxResidentComponents: { sourcePageRecords: maxResidentRecords, plannerShardRecords: plannerAccumulator.maxBuffered,
-        sourcePlusShardRecords: maxSourcePlusShardRecords, activitySelectionEntries: activitySelectionsByShop.size },
+      maxResidentRecords,
+      maxResidentComponents: { shopPageRecords: maxShopPageRecords, sourcePageRecords: maxSourcePageRecords,
+        plannerShardRecords: plannerAccumulator.maxBuffered, activitySelectionEntries: activitySelectionsByShop.size },
       heapGrowthBytes, maxHeapGrowthBytes },
     productionCore: { activitySelection: "indexed-by-shop", selectedVariants, shardAccumulator: "production-preview-core", persistedShards,
       repositoryPaging: mode === "postgresql" ? "injected-repository-seam" : "bounded-dry-source" },
