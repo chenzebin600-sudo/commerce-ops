@@ -39,6 +39,12 @@ const routes = [
     meta: { title: "Shopee API 控制台", subtitle: "选择店铺和接口，安全执行单店或批量 Shopee V2 请求。" },
   },
   {
+    path: "/shopee-discount",
+    name: "shopee-discount",
+    component: () => import("@/pages/ShopeeDiscountPage.vue"),
+    meta: { title: "Shopee 折扣控价", subtitle: "匹配数仓目标价，预览并人工确认 Shopee Discount 折扣任务。" },
+  },
+  {
     path: "/returns-collection",
     name: "returns-collection",
     component: () => import("@/pages/ReturnsCollectionPage.vue"),

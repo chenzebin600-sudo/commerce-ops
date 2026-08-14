@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   BarChart3,
+  BadgePercent,
   Boxes,
   Braces,
   ChevronLeft,
@@ -44,6 +45,7 @@ const groups = [
     { path: "/mabang", label: "马帮数据", icon: ShoppingBag },
     { path: "/mabang-listing", label: "商品刊登", icon: Send },
     { path: "/inventory-sync", label: "库存同步", icon: RefreshCw },
+    { path: "/shopee-discount", label: "折扣控价", icon: BadgePercent },
     { path: "/shopee-api", label: "Shopee API", icon: Braces },
     { path: "/returns-collection", label: "售后数据采集", icon: Database },
     { path: "/fulfillment", label: "自动发货", icon: Truck },
