@@ -57,15 +57,19 @@ export async function runCapacityCheck({
   const startedAt = Number(now());
   const initialHeap = Number(heapUsed());
   let peakHeap = initialHeap;
-  let maxResidentRecords = 0;
-  let maxPlannerResidentRecords = 0;
+  let maxResidentRecords = 0, currentSourcePageRecords = 0;
+  let maxSourcePlusShardRecords = 0;
   const pages = { shops: 0, links: 0, variants: 0 };
   const observed = { shops: 0, links: 0, variants: 0 };
-  const activitySelectionsByShop = indexActivitySelections(Array.from({ length: shops }, (_, shopOffset) => ({
+  const activitySelectionsByShop = indexActivitySelections(Array.from({ length: mode === "dry-run" ? shops : 0 }, (_, shopOffset) => ({
     shopId: `shop-0-${shopOffset}`, discountId: `discount-${shopOffset}`, priceTier: "DAILY",
   })));
   let persistedShards = 0, selectedVariants = 0;
-  const plannerAccumulator = createProductionShardAccumulator({ shardSize: batch, async flushShard(items) {
+  const samplePlannerResident = ({ buffered }) => {
+    peakHeap = Math.max(peakHeap, Number(heapUsed()));
+    maxSourcePlusShardRecords = Math.max(maxSourcePlusShardRecords, currentSourcePageRecords + buffered);
+  };
+  const plannerAccumulator = createProductionShardAccumulator({ shardSize: batch, observe: samplePlannerResident, async flushShard(items) {
     if (items.some(({ activity }) => !activity)) throw capacityError("SHOPEE_DISCOUNT_CAPACITY_PLANNER_MISMATCH", "Planner selection lost an indexed activity");
     persistedShards += 1;
   } });
@@ -133,15 +137,16 @@ export async function runCapacityCheck({
     for (const shop of shopPage) {
       await consume("links", links, (cursor, limit) => source.links(shop, cursor, limit));
       await consume("variants", variants, (cursor, limit) => source.variants(shop, cursor, limit), async (variantPage) => {
+        currentSourcePageRecords = variantPage.length;
         const shopId = String(shop.shopId ?? shop.id);
         if (!activitySelectionsByShop.has(shopId)) activitySelectionsByShop.set(shopId, [{ shopId, discountId: `discount-${shopId}`, priceTier: "DAILY" }]);
         const activity = activitySelectionsByShop.get(shopId)?.[0] || null;
         for (const variant of variantPage) {
-          maxPlannerResidentRecords = Math.max(maxPlannerResidentRecords, variantPage.length + plannerAccumulator.size);
           const pending = plannerAccumulator.add({ variant, activity });
           selectedVariants += Number(Boolean(activity));
           if (pending) await pending;
         }
+        currentSourcePageRecords = 0;
       });
     }
   });
@@ -155,8 +160,11 @@ export async function runCapacityCheck({
     scale: { shops, links: shops * links, variants: shops * variants },
     observed,
     pages,
-    bounds: { pageSize: batch, maxResidentRecords: Math.max(maxResidentRecords, maxPlannerResidentRecords),
-      sourcePageRecords: maxResidentRecords, plannerShardRecords: plannerAccumulator.maxBuffered, heapGrowthBytes, maxHeapGrowthBytes },
+    bounds: { pageSize: batch,
+      maxResidentRecords: maxSourcePlusShardRecords + activitySelectionsByShop.size,
+      maxResidentComponents: { sourcePageRecords: maxResidentRecords, plannerShardRecords: plannerAccumulator.maxBuffered,
+        sourcePlusShardRecords: maxSourcePlusShardRecords, activitySelectionEntries: activitySelectionsByShop.size },
+      heapGrowthBytes, maxHeapGrowthBytes },
     productionCore: { activitySelection: "indexed-by-shop", selectedVariants, shardAccumulator: "production-preview-core", persistedShards,
       repositoryPaging: mode === "postgresql" ? "injected-repository-seam" : "bounded-dry-source" },
     elapsedMs: Number(now()) - startedAt,

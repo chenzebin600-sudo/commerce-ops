@@ -98,9 +98,10 @@ test("capacity check streams the locked country scale through bounded pages", as
   assert.equal(report.pages.shops, 1);
   assert.equal(report.pages.links, 1_000);
   assert.equal(report.pages.variants, 10_000);
-  assert.equal(report.bounds.sourcePageRecords, 1_000);
-  assert.ok(report.bounds.maxResidentRecords <= 2_000);
-  assert.equal(report.bounds.plannerShardRecords, 1_000);
+  assert.deepEqual(report.bounds.maxResidentComponents, {
+    sourcePageRecords: 1_000, plannerShardRecords: 1_000, sourcePlusShardRecords: 2_000, activitySelectionEntries: 1_000,
+  });
+  assert.equal(report.bounds.maxResidentRecords, 3_000);
   assert.equal(report.productionCore.selectedVariants, 10_000_000);
   assert.equal(report.productionCore.persistedShards, 10_000);
   assert.equal(report.bounds.heapGrowthBytes, 0);

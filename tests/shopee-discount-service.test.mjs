@@ -954,3 +954,57 @@ test("production preview heartbeats a single long-running shop with a virtual cl
     assert.ok(renewals >= 3, `expected heartbeat renewals during the shop, observed ${renewals}`);
   } finally { await context.close(); }
 });
+
+test("a stale preview owner cannot block Foundation after takeover wins the domain fence", async () => {
+  const shopee = fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] } });
+  const context = await fixture({ shopee });
+  context.access.repositories.shopeeDiscount.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+  const repository = context.access.repositories.shopeeDiscount;
+  const bind = repository.bindFoundationPlan.bind(repository);
+  repository.bindFoundationPlan = async () => { throw Object.assign(new Error("bind failed"), { code: "BIND_FAILED" }); };
+  const mark = repository.markPlanState.bind(repository);
+  repository.markPlanState = async (input) => {
+    const stored = await repository.getPlan(input.planId);
+    context.access.provider.connection.prepare(`UPDATE shopee_discount_plans SET state='PREVIEWED',merkle_root=?,
+      preview_owner_token='new-owner',preview_owner_epoch=preview_owner_epoch+1 WHERE id=?`).run(stored.summary.merkleRoot, input.planId);
+    return mark(input);
+  };
+  const block = context.foundation.operationPlans.block.bind(context.foundation.operationPlans);
+  let foundationBlocks = 0;
+  context.foundation.operationPlans.block = async (...args) => { foundationBlocks += 1; return block(...args); };
+  try {
+    await assert.rejects(context.service.createPreview(previewInput(), { actorId: "operator", requestId: "stale-block" }),
+      { code: "SHOPEE_DISCOUNT_FOUNDATION_BIND_FAILED" });
+    assert.equal(foundationBlocks, 0);
+    const domain = (await repository.listPlans()).find(({ createdBy }) => createdBy === "operator");
+    assert.equal(domain.state, "PREVIEWED");
+    assert.equal((await context.foundation.operationPlans.get(`shopee-discount-${domain.summary.previewSagaId.slice(0, 40)}`)).state, "PREVIEWED");
+  } finally { repository.bindFoundationPlan = bind; await context.close(); }
+});
+
+test("heartbeat failure drains the single flight and never renews after preview returns", async () => {
+  const shopee = fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] } });
+  shopee.getModelList = async () => { await new Promise((resolve) => setTimeout(resolve, 35)); throw new Error("planner failed"); };
+  const context = await fixture({ shopee, serviceOptions: { previewLeaseMs: 100, previewHeartbeatMs: 10 } });
+  context.access.repositories.shopeeDiscount.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+  const repository = context.access.repositories.shopeeDiscount;
+  const claim = repository.claimPreviewOwnership.bind(repository);
+  let calls = 0, active = 0;
+  repository.claimPreviewOwnership = async (input) => {
+    calls += 1;
+    if (calls !== 2) return claim(input);
+    active += 1;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    active -= 1;
+    throw Object.assign(new Error("renew failed"), { code: "RENEW_FAILED" });
+  };
+  try {
+    await assert.rejects(context.service.createPreview(previewInput(), { actorId: "operator", requestId: "heartbeat-drain" }));
+    assert.equal(active, 0, "preview must await its in-flight heartbeat before returning");
+    const settledCalls = calls;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(calls, settledCalls, "no heartbeat may renew after preview returns");
+  } finally { await new Promise((resolve) => setTimeout(resolve, 270)); await context.close(); }
+});
