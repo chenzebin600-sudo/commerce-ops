@@ -85,8 +85,14 @@ test("shared migration set contains the additive bridge for every missing C modu
     "033_shared_development_modules",
     "034_shared_module_text_identifiers",
     "035_shopee_discount_foundation_links",
+    "036_shopee_discount_execution",
+    "037_shopee_discount_intent_attempts",
+    "038_shopee_discount_notification_delivery",
+    "039_shopee_discount_notification_coordination",
+    "040_shopee_discount_notification_legacy_sending",
   ]);
-  const additive = migrations[2].sql;
+  const byVersion = new Map(migrations.map((migration) => [migration.version, migration.sql]));
+  const additive = byVersion.get("033_shared_development_modules");
   for (const table of [
     "advertising_performance_facts",
     "advertising_source_batches",
@@ -108,7 +114,7 @@ test("shared migration set contains the additive bridge for every missing C modu
   assert.match(additive, /"task_id" text REFERENCES "app"\."foundation_tasks" \("id"\)/);
   assert.match(additive, /"dingtalk_config_id" text REFERENCES "app"\."dingtalk_robot_configs" \("id"\)/);
   assert.doesNotMatch(additive, /DROP\s|TRUNCATE\s|DELETE\s+FROM|UPDATE\s+"app"/i);
-  const identifierFix = migrations[3].sql;
+  const identifierFix = byVersion.get("034_shared_module_text_identifiers");
   for (const [table, column] of [
     ["advertising_performance_facts", "product_id"],
     ["advertising_target_policies", "product_id"],
@@ -120,10 +126,15 @@ test("shared migration set contains the additive bridge for every missing C modu
     assert.match(identifierFix, new RegExp(`ALTER TABLE "app"\\."${table}" ALTER COLUMN "${column}" TYPE text`));
   }
   assert.doesNotMatch(identifierFix, /DROP\s|TRUNCATE\s|DELETE\s+FROM|UPDATE\s+"app"/i);
-  const discountLinks = migrations[4].sql;
+  const discountLinks = byVersion.get("035_shopee_discount_foundation_links");
   assert.match(discountLinks, /shopee_discount_plans_foundation_plan_fk/);
   assert.match(discountLinks, /REFERENCES "app"\."foundation_operation_plans" \("id"\)/);
   assert.match(discountLinks, /NOT VALID/);
+  assert.match(byVersion.get("036_shopee_discount_execution"), /shopee_discount_execution_items/);
+  assert.match(byVersion.get("037_shopee_discount_intent_attempts"), /uq_shopee_discount_intents_active_target/);
+  assert.match(byVersion.get("038_shopee_discount_notification_delivery"), /uq_shopee_discount_notifications_dedupe/);
+  assert.match(byVersion.get("039_shopee_discount_notification_coordination"), /delivery_lease_until/);
+  assert.match(byVersion.get("040_shopee_discount_notification_legacy_sending"), /DINGTALK_DELIVERY_UPGRADE_UNKNOWN/);
 });
 
 test("migration runner locks, verifies identity, and records each migration", async () => {
@@ -163,7 +174,8 @@ test("legacy adoption plan has no unresolved forward relation dependencies", asy
   });
   assert.equal(available.has("shopee_discount_plans"), true);
   assert.equal(available.has("foundation_operation_plans"), true);
-  assert.match(adoptionPlan.at(-1).sql, /shopee_discount_plans_foundation_plan_fk/);
+  assert.match(adoptionPlan.find(({ version }) => version === "035_shopee_discount_foundation_links").sql,
+    /shopee_discount_plans_foundation_plan_fk/);
 });
 
 test("migration runner rejects checksum drift before executing SQL", async () => {

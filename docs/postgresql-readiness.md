@@ -2,7 +2,7 @@
 
 ## Scope and snapshot
 
-This E2 report prepares a future migration; it does not install PostgreSQL, create PostgreSQL tables, connect a driver, dual-write, or modify formal SQLite data. Base row-count evidence was captured from the configured formal database on 2026-07-16 after `PRAGMA integrity_check = ok`; the additive schema inventory was reconciled through migration 026 on 2026-08-08. Row counts are planning evidence rather than a live operational dashboard.
+This E2 report prepares a future migration; it does not install PostgreSQL, create PostgreSQL tables, connect a driver, dual-write, or modify formal SQLite data. Base row-count evidence was captured from the configured formal database on 2026-07-16 after `PRAGMA integrity_check = ok`. The additive schema inventory was reconciled on 2026-08-14 through SQLite migration `032_shopee_discount_notification_legacy_sending.sql` and PostgreSQL migration `040_shopee_discount_notification_legacy_sending.sql`. No live PostgreSQL DDL execution is claimed. Row counts are planning evidence rather than a live operational dashboard.
 
 ## Current tables
 
@@ -106,6 +106,26 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 | `shopee_health_appeals` | 0 | local human appeal workflow | `id` | issue `RESTRICT`; one appeal per health issue |
 | `shopee_health_appeal_events` | 0 | immutable appeal collaboration history | `id` | appeal `CASCADE`; indexed chronological timeline |
 
+### Shopee Discount additive inventory
+
+The following tables were added after the row-count snapshot. Their schemas and migration contracts were verified locally; production row counts have not been sampled and must not be inferred as zero.
+
+| Table | SQLite migration | PostgreSQL migration | Operational invariant |
+|---|---|---|---|
+| `shopee_discount_settings` | 027 | 027 | singleton configuration; encrypted warehouse-key ciphertext/reference is never returned by APIs |
+| `shopee_discount_plans` | 027 | 027 + 035 | immutable approval root and Foundation plan binding |
+| `shopee_discount_activities` | 027 | 027 | one approved activity target per plan/shop window |
+| `shopee_discount_plan_shards` | 027 | 027 | immutable bounded Merkle shards |
+| `shopee_discount_plan_items` | 027 | 027 | immutable variant-level price decisions in minor-unit text |
+| `shopee_discount_approvals` | 027 | 027 | exact human approval binding and evidence |
+| `shopee_discount_jobs` | 027 | 027 | leased/fenced execution jobs |
+| `shopee_discount_dispatch_intents` | 027 + 029 | 027 + 037 | durable intent-before-send; active `UNKNOWN`/`DISPATCHED` targets cannot be replayed |
+| `shopee_discount_execution_items` | 028 | 036 | per-variant partial outcome; no whole-shop rollback |
+| `shopee_discount_events` | 027 | 027 | redacted immutable audit evidence |
+| `shopee_discount_due_jobs` | 027 | 027 | persistent daily/manual/renewal/reminder work with lease fencing |
+| `shopee_discount_notifications` | 027 + 030–032 | 027 + 038–040 | deduplicated delivery and fail-closed coordination of ambiguous sends |
+| `shopee_discount_warehouse_baselines` | 027 | 027 | watermark and anomaly baseline evidence |
+
 ## Type conversion details
 
 ### JSON text
@@ -171,7 +191,7 @@ Runtime-only dialect operations are now located under `lib/data/sqlite`; `script
 ## Migration sequence
 
 1. Freeze schema changes and create a verified SQLite backup plus file manifest.
-2. Build PostgreSQL migrations from the twenty-one recorded SQLite migrations through 022, preserving keys, checks, indexes, and delete behavior.
+2. Reconcile the full SQLite migration ledger through `032_shopee_discount_notification_legacy_sending.sql` with the additive PostgreSQL ledger through `040_shopee_discount_notification_legacy_sending.sql`, preserving keys, checks, indexes, delete behavior, fencing, `UNKNOWN`, and notification coordination semantics.
 3. Create PostgreSQL adapters behind the existing Provider/Repository contracts; keep SQLite as the active provider.
 4. Import reference/config tables: accounts and DingTalk configs, preserving encrypted bytes.
 5. Import task/run/event history, then export/file and lifecycle relationships in FK order.

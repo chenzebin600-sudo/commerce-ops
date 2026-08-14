@@ -32,6 +32,7 @@ import { ShopeeDiscountService } from "./lib/shopee-discount/service.mjs";
 import {
   ShopeeDiscountScheduler,
   durableActivityVariantCount,
+  resolveShopeeDiscountSchedulerStartup,
   schedulerRequestId,
 } from "./lib/shopee-discount/scheduler.mjs";
 import { ShopeeDiscountNotifications } from "./lib/shopee-discount/notifications.mjs";
@@ -138,21 +139,10 @@ const shopeeHealthService = new ShopeeHealthService({
   robotRepository: db,
 });
 
-const shopeeDiscountSchedulerEnabled = String(runtimeEnv.SHOPEE_DISCOUNT_SCHEDULER_ENABLED || "").trim().toLowerCase() === "true";
-const shopeeDiscountShopIds = String(runtimeEnv.SHOPEE_DISCOUNT_SCHEDULER_SHOP_IDS || "")
-  .split(",").map((value) => value.trim()).filter((value) => /^[1-9]\d*$/.test(value));
-let shopeeDiscountShopTimeZones = {};
-if (shopeeDiscountSchedulerEnabled) {
-  try {
-    shopeeDiscountShopTimeZones = JSON.parse(String(runtimeEnv.SHOPEE_DISCOUNT_SHOP_TIMEZONES_JSON || "{}"));
-  } catch {
-    throw new Error("SHOPEE_DISCOUNT_SHOP_TIMEZONES_JSON must be a JSON object");
-  }
-  if (!shopeeDiscountShopTimeZones || typeof shopeeDiscountShopTimeZones !== "object" || Array.isArray(shopeeDiscountShopTimeZones)
-    || shopeeDiscountShopIds.some((shopId) => typeof shopeeDiscountShopTimeZones[shopId] !== "string" || !shopeeDiscountShopTimeZones[shopId].trim())) {
-    throw new Error("Every Shopee Discount scheduler shop requires an IANA timezone");
-  }
-}
+const shopeeDiscountStartup = resolveShopeeDiscountSchedulerStartup(runtimeEnv);
+const shopeeDiscountSchedulerEnabled = shopeeDiscountStartup.enabled;
+const shopeeDiscountShopIds = shopeeDiscountStartup.shopIds;
+const shopeeDiscountShopTimeZones = shopeeDiscountStartup.shopTimeZones;
 const shopeeDiscountCountry = String(runtimeEnv.SHOPEE_DISCOUNT_COUNTRY || "TH").trim().toUpperCase();
 const shopeeDiscountCategory = String(runtimeEnv.SHOPEE_DISCOUNT_CATEGORY || "家具").trim();
 const shopeeDiscountTier = String(runtimeEnv.SHOPEE_DISCOUNT_DEFAULT_TIER || "DAILY").trim().toUpperCase();

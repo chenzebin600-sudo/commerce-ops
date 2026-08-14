@@ -35,6 +35,7 @@
     "postgres:f4:check": "node --disable-warning=ExperimentalWarning scripts/postgresql-f4-compatibility-check.mjs",
     "postgres:migrate": "node --disable-warning=ExperimentalWarning scripts/postgresql-migrate.mjs",
     "postgres:shared-smoke": "node --disable-warning=ExperimentalWarning scripts/postgresql-shared-smoke.mjs",
+    "shopee-discount:capacity-check": "node --disable-warning=ExperimentalWarning scripts/shopee-discount-capacity-check.mjs",
     "sqlite:cutover-snapshot": "node --disable-warning=ExperimentalWarning scripts/sqlite-cutover-snapshot.mjs",
     "validate:growth-radar:g1a5": "node --disable-warning=ExperimentalWarning scripts/validate-growth-radar-g1a5.mjs",
     "build:growth-radar:v2": "npm --prefix frontend/growth-radar-v2 run build",

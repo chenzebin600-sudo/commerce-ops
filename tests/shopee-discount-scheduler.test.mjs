@@ -8,6 +8,7 @@ import {
   durableActivityVariantCount,
   localDateTimeToUtc,
   reminderDueJobs,
+  resolveShopeeDiscountSchedulerStartup,
   schedulerRequestId,
 } from "../lib/shopee-discount/scheduler.mjs";
 
@@ -156,8 +157,15 @@ test("each shop carries its own persisted IANA timezone and invalid zones fail b
     code: "SHOPEE_DISCOUNT_TIMEZONE_INVALID",
   });
   const rootSource = await fs.readFile(new URL("../scheduler.mjs", import.meta.url), "utf8");
-  assert.match(rootSource, /SHOPEE_DISCOUNT_SHOP_TIMEZONES_JSON/);
   assert.match(rootSource, /shops:\s*shopeeDiscountShopIds\.map/);
+  assert.equal(resolveShopeeDiscountSchedulerStartup({
+    SHOPEE_DISCOUNT_SCHEDULER_ENABLED: "true",
+    SHOPEE_DISCOUNT_SCHEDULER_SHOP_IDS: "1",
+    SHOPEE_DISCOUNT_SHOP_TIMEZONES_JSON: "not-json",
+    SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL: "https://warehouse.example",
+    SHOPEE_DISCOUNT_DINGTALK_CONFIG_ID: "group",
+    SHOPEE_DISCOUNT_ENTRY_BASE_URL: "http://localhost/discount",
+  }).reasonCode, "SHOPEE_DISCOUNT_SCHEDULER_TIMEZONES_REQUIRED");
 });
 
 test("renewal draft creates one authoritative human Foundation task and never approves", async () => {
