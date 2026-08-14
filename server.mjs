@@ -429,22 +429,25 @@ const shopeeDiscountSecurity = () => resolveShopeeWriteSecurity({
     },
   },
 });
-const shopeeDiscountSiteCapability = {
-  priceScale: Number(runtimeEnv.SHOPEE_DISCOUNT_PRICE_SCALE || 2),
-  minPriceMinor: runtimeEnv.SHOPEE_DISCOUNT_MIN_PRICE_MINOR || "1",
-  maxPriceMinor: runtimeEnv.SHOPEE_DISCOUNT_MAX_PRICE_MINOR || "999999999",
-  priceStepMinor: runtimeEnv.SHOPEE_DISCOUNT_PRICE_STEP_MINOR || "1",
+const shopeeDiscountSiteCapabilities = resolveShopeeDiscountSiteCapabilities(runtimeEnv);
+const shopeeDiscountExecutionCapabilities = Object.fromEntries(Object.entries(shopeeDiscountSiteCapabilities).map(([country, capability]) => [country, {
+  priceScale: capability.scale,
+  minPriceMinor: capability.minMinor,
+  maxPriceMinor: capability.maxMinor,
+  priceStepMinor: capability.stepMinor,
   maxAddItems: Math.min(50, Number(runtimeEnv.SHOPEE_DISCOUNT_MAX_ADD_ITEMS || 50)),
-};
-const shopeeDiscountWriteAdapter = new ShopeeWriteAdapter({ transport: shopeeDiscountRelayTransport, siteCapability: shopeeDiscountSiteCapability });
+}]));
+const shopeeDiscountWriteAdapters = Object.fromEntries(Object.entries(shopeeDiscountExecutionCapabilities).map(([country, siteCapability]) => [
+  country, new ShopeeWriteAdapter({ transport: shopeeDiscountRelayTransport, siteCapability }),
+]));
 const shopeeDiscountPolicy = { version: 1, fallback: "ORIGINAL_1_PERCENT_OFF", staleApprovalWarningDays: 35 };
 const shopeeDiscountPolicyHash = foundationContentHash(shopeeDiscountPolicy);
 const shopeeDiscountProductionReaders = createProductionReaders({ shopee: shopeeDiscountReadAdapter, warehouse: shopeeDiscountWarehouse });
 const executeShopeeDiscountManually = createManualExecutionRuntime({
   repository: dataAccess.repositories.shopeeDiscount, foundation: foundationService,
-  shopeeRead: shopeeDiscountReadAdapter, shopeeWrite: shopeeDiscountWriteAdapter, warehouse: shopeeDiscountWarehouse,
+  shopeeRead: shopeeDiscountReadAdapter, shopeeWrites: shopeeDiscountWriteAdapters, warehouse: shopeeDiscountWarehouse,
   writeSecurity: shopeeDiscountSecurity, currentPolicyHash: shopeeDiscountPolicyHash,
-  siteCapability: shopeeDiscountSiteCapability,
+  siteCapabilities: shopeeDiscountExecutionCapabilities,
 });
 const shopeeDiscountService = new ShopeeDiscountService({
   repository: dataAccess.repositories.shopeeDiscount,
@@ -473,7 +476,7 @@ const shopeeDiscountService = new ShopeeDiscountService({
   executeApprovedPlan: executeShopeeDiscountManually,
   enforceSettings: true,
   approvalTtlMs: Number(runtimeEnv.SHOPEE_DISCOUNT_APPROVAL_TTL_MS || 10 * 60_000),
-  siteCapabilities: resolveShopeeDiscountSiteCapabilities(runtimeEnv),
+  siteCapabilities: shopeeDiscountSiteCapabilities,
 });
 const handleShopeeDiscountApi = createShopeeDiscountApi({ service: shopeeDiscountService });
 const exportFileService = createExportFileService({

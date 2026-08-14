@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createProductionReaders, relayNonTransmissionEvidence, resolveWarehouseSettingsKey } from "../lib/shopee-discount/production-runtime.mjs";
+import { createManualExecutionRuntime, createProductionReaders, relayNonTransmissionEvidence, resolveWarehouseSettingsKey } from "../lib/shopee-discount/production-runtime.mjs";
 
 function shopeeFixture() {
   const details = {
@@ -83,4 +83,21 @@ test("managed warehouse key references require a resolver and are never treated 
   assert.equal(observedReference, settings.warehouseKeyReference);
   assert.equal(key, "zndr_resolved_secret");
   await assert.rejects(resolveWarehouseSettingsKey(settings, { resolveManagedReference: async (reference) => reference }), { code: "SHOPEE_DISCOUNT_WAREHOUSE_KEY_INVALID" });
+});
+
+test("manual production execution selects the writer and price capability from the plan country", async () => {
+  const selected = {};
+  const idCapability = { priceScale: 0, minPriceMinor: "1", maxPriceMinor: "999999999", priceStepMinor: "1", maxAddItems: 50 };
+  const idWriter = { country: "ID" };
+  const execute = createManualExecutionRuntime({
+    repository: { async getPlan() { return { id: "plan-id", country: "ID" }; } },
+    foundation: {}, shopeeRead: {}, warehouse: {}, writeSecurity: () => ({ enabled: true }), currentPolicyHash: "policy",
+    siteCapabilities: { ID: idCapability }, shopeeWrites: { ID: idWriter },
+    runPlan: async (planId, context) => { selected.planId = planId; selected.context = context; return { status: "SUCCEEDED" }; },
+  });
+
+  await execute("plan-id", { context: { identity: { actorId: "operator" }, requestId: "request-id" } });
+  assert.equal(selected.planId, "plan-id");
+  assert.equal(selected.context.siteCapability, idCapability);
+  assert.equal(selected.context.shopeeWrite, idWriter);
 });
