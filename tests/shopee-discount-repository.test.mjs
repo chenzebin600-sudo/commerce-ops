@@ -143,7 +143,7 @@ test("migration registers every Shopee Discount table and both data-access stora
     assert.deepEqual(await context.repository.getStorageMode(), {
       dialect: "sqlite",
       productionScale: false,
-      pilotLimits: { shops: 1, variants: 10 },
+      pilotLimits: null,
     });
   } finally {
     await context.close();
