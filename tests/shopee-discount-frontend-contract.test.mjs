@@ -276,7 +276,7 @@ test("page uses backend field names, one request fingerprint and accessible fail
   assert.match(router, /path: "\/shopee-discount"/);
   assert.match(sidebar, /path: "\/shopee-discount", label: "折扣控价"/);
   for (const text of ["discountPreviewInputKey", "DiscountPageFlowController", ".name", ".endsAt", ".dispatchedAt", ".intentId", "loadDiscountUnknownIntents", "lookupDiscountOverrideBatch", "restorePlan", "输入完整确认语句", "异常与 UNKNOWN 协调", "续期提醒"]) assert.ok(page.includes(text), `missing ${text}`);
-  assert.match(page, /watch\(previewRequestKey, resetPlan\)/);
+  assert.match(page, /watch\(previewRequestKey,/);
   assert.match(page, /pageFlow\.beginPreview\(binding\.scopeKey\)/);
   assert.match(page, /pageFlow\.canApprove/);
   assert.match(page, /pageFlow\.canExecute/);
@@ -302,4 +302,50 @@ test("restore request generation rejects a deferred response after scope invalid
   guard.invalidateAll();
   release();
   assert.equal(await result, false);
+});
+
+test("a deferred dashboard cannot mint a restore lane after scope reset or unmount", async () => {
+  const { DiscountPageFlowController, DiscountRequestGuard } = await import(clientUrl.href);
+  const state = { preview: null, previewing: false, approving: false, executing: false, itemLoading: false, operatorName: "", confirmationInput: "" };
+  for (const stop of ["scope-reset", "unmount"]) {
+    const guard = new DiscountRequestGuard();
+    const flow = new DiscountPageFlowController(state, guard);
+    const dashboard = guard.begin("dashboard", {});
+    const operational = flow.beginOperationalSnapshot();
+    const response = deferred();
+    let restoreStarted = false;
+    const pending = response.promise.then(() => {
+      if (!guard.isCurrent(dashboard, {}) || !flow.isOperationalSnapshotCurrent(operational)) return;
+      guard.begin("restore", { scopeKey: "TH", planId: "plan-old" });
+      restoreStarted = true;
+    });
+    if (stop === "unmount") flow.dispose(); else flow.invalidateRequests();
+    response.resolve();
+    await pending;
+    assert.equal(restoreStarted, false, stop);
+  }
+});
+
+test("UNKNOWN page tickets reject refresh and out-of-order pages", async () => {
+  const { DiscountRequestGuard } = await import(clientUrl.href);
+  const guard = new DiscountRequestGuard();
+  const page1 = { scopeKey: "TH", cursor: "cursor-1" };
+  const oldTicket = guard.begin("unknownIntents", page1);
+  guard.invalidate("unknownIntents");
+  assert.equal(guard.isCurrent(oldTicket, page1), false, "refresh invalidates load-more");
+  const newerTicket = guard.begin("unknownIntents", { scopeKey: "TH", cursor: "cursor-2" });
+  const staleTicket = guard.begin("unknownIntents", page1);
+  assert.equal(guard.isCurrent(newerTicket, { scopeKey: "TH", cursor: "cursor-2" }), false);
+  assert.equal(guard.isCurrent(staleTicket, page1), true);
+  const page = read("frontend/commerce-ops-vue/src/pages/ShopeeDiscountPage.vue");
+  for (const marker of ["unknownIntentLoading.value", "unknownIntentCursor.value !== expectedCursor", "seen.has(intentId)", "requestGuard.invalidate(\"unknownIntents\")"])
+    assert.ok(page.includes(marker), `missing UNKNOWN pagination fence: ${marker}`);
+});
+
+test("CSV data-row cap is exactly 1000 with or without a header", () => {
+  const page = read("frontend/commerce-ops-vue/src/pages/ShopeeDiscountPage.vue");
+  assert.match(page, /const hasHeader =/);
+  assert.match(page, /const dataRowCount = lines\.length - Number\(hasHeader\)/);
+  assert.match(page, /if \(dataRowCount > 1000\)/);
+  assert.doesNotMatch(page, /lines\.length > 1001/);
 });

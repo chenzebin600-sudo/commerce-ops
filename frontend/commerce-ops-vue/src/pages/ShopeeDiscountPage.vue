@@ -63,8 +63,10 @@ const activities = ref<DiscountActivity[]>([]);
 const issues = ref<DiscountIssue[]>([]);
 const unknownIntents = ref<DiscountUnknownIntent[]>([]);
 const unknownIntentCursor = ref<string | null>(null);
+const unknownIntentLoading = ref(false);
 const activeTab = ref("preview");
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let assigningInitialCountry = false;
 const requestGuard = new DiscountRequestGuard();
 const pageFlow = new DiscountPageFlowController({
   get preview() { return preview.value; }, set preview(value) { preview.value = value; },
@@ -152,6 +154,7 @@ function resetPlan() {
   executing.value = false;
   itemLoading.value = false;
   scanning.value = false;
+  unknownIntentLoading.value = false;
   loading.value = false;
   activeTab.value = "preview";
   if (pollTimer) clearInterval(pollTimer);
@@ -163,15 +166,16 @@ function planBinding(plan = preview.value) {
   return plan ? { scopeKey: previewRequestKey.value, planId: plan.id, merkleRoot: plan.merkleRoot } : null;
 }
 
-watch(country, () => {
+watch(country, (_next, previous) => {
   selectedShopIds.value = [];
   shopOverrides.value = [];
   linkOverrides.value = [];
   activitySelection.value = [];
   batchErrors.value = [];
   batchValidatedRows.value = [];
+  if (previous && !assigningInitialCountry) resetPlan();
 });
-watch(previewRequestKey, resetPlan);
+watch(previewRequestKey, (next, previous) => { if (next !== previous && !assigningInitialCountry) resetPlan(); });
 
 function shopName(shopId: string) {
   return shops.value.find((shop) => shop.shopId === shopId)?.name || shopId;
@@ -225,10 +229,12 @@ async function validateBatch() {
   const errors: string[] = [];
   const seen = new Set<string>();
   const lines = batchText.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (lines.length > 1001) errors.push("单次最多校验 1000 条链接覆盖");
+  const hasHeader = Boolean(lines[0]?.split(/[,\t]/)[0]?.trim().toLowerCase().includes("shop"));
+  const dataRowCount = lines.length - Number(hasHeader);
+  if (dataRowCount > 1000) errors.push("单次最多校验 1000 条链接覆盖");
   lines.forEach((line, index) => {
     const cells = line.split(/[,\t]/).map((cell) => cell.trim());
-    if (index === 0 && cells[0]?.toLowerCase().includes("shop")) return;
+    if (index === 0 && hasHeader) return;
     const [shopId = "", itemRef = "", rawTier = "", note = ""] = cells;
     const priceTier = rawTier.toUpperCase() as DiscountTier;
     const key = `${shopId}:${itemRef}`;
@@ -306,7 +312,8 @@ async function reconcileUnknownIntent(intent: DiscountUnknownIntent, resolution:
   await reconcileIssue({ intentId: intent.intentId, evidence: {}, planId: intent.planId } as DiscountIssue, resolution);
 }
 
-async function restorePlan(planId: string) {
+async function restorePlan(planId: string, prerequisite?: { ticket: ReturnType<DiscountRequestGuard["begin"]>; binding: Record<string, string> }) {
+  if (prerequisite && !requestGuard.isCurrent(prerequisite.ticket, prerequisite.binding)) return;
   const binding = { scopeKey: previewRequestKey.value, planId };
   const ticket = requestGuard.begin("restore", binding);
   try {
@@ -340,8 +347,11 @@ function readBatchFile(event: Event) {
 }
 
 async function loadDashboard() {
-  const dashboardTicket = requestGuard.begin("dashboard", {});
+  const dashboardBinding = {};
+  const dashboardTicket = requestGuard.begin("dashboard", dashboardBinding);
   const snapshotTicket = pageFlow.beginOperationalSnapshot();
+  requestGuard.invalidate("unknownIntents");
+  unknownIntentLoading.value = false;
   loading.value = true;
   errorMessage.value = "";
   try {
@@ -359,18 +369,27 @@ async function loadDashboard() {
     if (requestGuard.isCurrent(dashboardTicket, {})) {
       status.value = nextStatus;
       shops.value = nextShops;
-      if (!country.value) country.value = countries.value[0] || "";
+      if (!country.value) {
+        assigningInitialCountry = true;
+        country.value = countries.value[0] || "";
+      }
     }
     await nextTick();
+    assigningInitialCountry = false;
+    if (!requestGuard.isCurrent(dashboardTicket, dashboardBinding)
+      || !pageFlow.isOperationalSnapshotCurrent(snapshotTicket)) return;
     if (!preview.value) {
       const recoverable = nextRuns.find((run) => ["RUNNING", "PENDING"].includes(run.status));
-      if (recoverable) await restorePlan(recoverable.planId);
+      if (recoverable) await restorePlan(recoverable.planId, { ticket: dashboardTicket, binding: dashboardBinding });
     }
   } catch (error) {
     if (requestGuard.isCurrent(dashboardTicket, {}) && pageFlow.isOperationalSnapshotCurrent(snapshotTicket)) {
       errorMessage.value = error instanceof Error ? error.message : "折扣控价数据加载失败";
     }
-  } finally { if (requestGuard.isCurrent(dashboardTicket, {})) loading.value = false; }
+  } finally {
+    assigningInitialCountry = false;
+    if (requestGuard.isCurrent(dashboardTicket, {})) loading.value = false;
+  }
 }
 
 async function generatePreview() {
@@ -469,6 +488,8 @@ async function executePlan() {
 
 async function refreshOperationalData() {
   const ticket = pageFlow.beginOperationalSnapshot();
+  requestGuard.invalidate("unknownIntents");
+  unknownIntentLoading.value = false;
   try {
     const [nextRuns, nextActivities, nextIssues, nextUnknownIntents] = await Promise.all([
       loadDiscountRuns({ limit: 50 }), loadDiscountActivities({ limit: 50 }), loadDiscountIssues({ limit: 50 }), loadDiscountUnknownIntents({ limit: 50 }),
@@ -484,10 +505,23 @@ async function refreshOperationalData() {
 }
 
 async function loadMoreUnknownIntents() {
-  if (!unknownIntentCursor.value) return;
-  const page = await loadDiscountUnknownIntents({ limit: 50, cursor: unknownIntentCursor.value });
-  unknownIntents.value.push(...page.items);
-  unknownIntentCursor.value = page.nextCursor;
+  const expectedCursor = unknownIntentCursor.value;
+  if (!expectedCursor || unknownIntentLoading.value) return;
+  const binding = { scopeKey: previewRequestKey.value, cursor: expectedCursor };
+  const ticket = requestGuard.begin("unknownIntents", binding);
+  unknownIntentLoading.value = true;
+  try {
+    const page = await loadDiscountUnknownIntents({ limit: 50, cursor: expectedCursor });
+    if (!requestGuard.isCurrent(ticket, binding) || unknownIntentCursor.value !== expectedCursor
+      || previewRequestKey.value !== binding.scopeKey) return;
+    const seen = new Set(unknownIntents.value.map(({ intentId }) => intentId));
+    unknownIntents.value.push(...page.items.filter(({ intentId }) => !seen.has(intentId)));
+    unknownIntentCursor.value = page.nextCursor;
+  } catch (error) {
+    if (requestGuard.isCurrent(ticket, binding)) ElMessage.error(error instanceof Error ? error.message : "加载 UNKNOWN Intent 失败");
+  } finally {
+    if (requestGuard.isCurrent(ticket, binding)) unknownIntentLoading.value = false;
+  }
 }
 
 function startPolling() {
@@ -678,7 +712,7 @@ onBeforeUnmount(() => {
             <el-table-column label="目标" min-width="260"><template #default="scope"><span class="evidence">{{ scope.row.targetType }} · {{ scope.row.targetKey }}</span></template></el-table-column>
             <el-table-column label="协调决策" min-width="330"><template #default="scope"><div class="batch-actions"><el-button size="small" @click="reconcileUnknownIntent(scope.row, 'LINK_VERIFIED_OBJECT')">关联已核验对象</el-button><el-button size="small" @click="reconcileUnknownIntent(scope.row, 'CONFIRMED_NOT_SENT')">确认未发送</el-button><el-button size="small" type="danger" @click="reconcileUnknownIntent(scope.row, 'ABANDONED')">接受并放弃</el-button></div></template></el-table-column>
           </el-table>
-          <div class="pagination-row"><span>已加载 {{ unknownIntents.length }} 条 UNKNOWN Intent</span><el-button v-if="unknownIntentCursor" @click="loadMoreUnknownIntents">加载下一页</el-button></div>
+          <div class="pagination-row"><span>已加载 {{ unknownIntents.length }} 条 UNKNOWN Intent</span><el-button v-if="unknownIntentCursor" :loading="unknownIntentLoading" :disabled="unknownIntentLoading" @click="loadMoreUnknownIntents">加载下一页</el-button></div>
         </el-tab-pane>
 
         <el-tab-pane name="renewals">

@@ -191,8 +191,8 @@ export interface DiscountOverrideLookup { query: string; parsedItemId?: string |
 export interface DiscountUnknownIntent { intentId: string; id: string; planId: string; jobId: string; operationUuid: string; targetType: string; targetKey: string; status: "UNKNOWN"; reasonCode?: string | null; dispatchedAt?: string | null }
 export interface DiscountOverrideBatchEcho extends DiscountOverrideLookupRow { index: number; status: "READY" | "ERROR"; query: string; errorCode?: string }
 
-export type DiscountRequestLane = "dashboard" | "operationalSnapshot" | "preview" | "approve" | "execute" | "items" | "scan" | "restore";
-export interface DiscountRequestBinding { scopeKey?: string; planId?: string; merkleRoot?: string }
+export type DiscountRequestLane = "dashboard" | "operationalSnapshot" | "preview" | "approve" | "execute" | "items" | "scan" | "restore" | "unknownIntents";
+export interface DiscountRequestBinding { scopeKey?: string; planId?: string; merkleRoot?: string; cursor?: string | null }
 export interface DiscountRequestTicket { lane: DiscountRequestLane; generation: number; bindingKey: string }
 
 export interface DiscountPageFlowState {
@@ -232,7 +232,7 @@ export class DiscountRequestGuard {
   }
 
   invalidateAll() {
-    for (const lane of ["dashboard", "operationalSnapshot", "preview", "approve", "execute", "items", "scan", "restore"] as const) this.invalidate(lane);
+    for (const lane of ["dashboard", "operationalSnapshot", "preview", "approve", "execute", "items", "scan", "restore", "unknownIntents"] as const) this.invalidate(lane);
   }
 
   isCurrent(ticket: DiscountRequestTicket, binding: DiscountRequestBinding) {

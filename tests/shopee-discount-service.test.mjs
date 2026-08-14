@@ -251,10 +251,14 @@ test("a normal renewal preview can be approved, queued, and executed without liv
   });
   const context = await fixture({ shopee });
   try {
+    await context.access.repositories.shopeeDiscount.saveSettings(
+      { encryptedWarehouseKeyCiphertext: "cipher-generation-1" }, { actorId: "test" },
+    );
     const preview = await context.service.createPreview(previewInput({
       workflow: "NEXT_RENEWAL",
       renewal: { requestedStartAt: "2026-08-15T00:00:00.000Z", durationDays: 30 },
     }), { requestId: "renewal-e2e-preview" });
+    assert.equal(preview.summary.settingsGeneration, 1);
     await context.service.approvePreview({
       planId: preview.id,
       merkleRoot: preview.merkleRoot,

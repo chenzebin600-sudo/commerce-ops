@@ -197,6 +197,25 @@ test("plan shards are transactional, contiguous, and immutable after sealing", a
   }
 });
 
+test("streaming preview finalization preserves immutable settings and request bindings", async () => {
+  const context = await fixture();
+  try {
+    await context.repository.createPlan(plan("plan-generation", { summary: {
+      previewSagaId: "saga-1", previewInputHash: "input-1", settingsGeneration: 7,
+      previewOwnerToken: "owner-a", previewOwnerEpoch: 1, streaming: true,
+    } }));
+    const finalized = await context.repository.finalizePreviewMetadata({
+      planId: "plan-generation", sourceSnapshotHash: "snapshot-final",
+      summary: { counts: { ready: 1 }, merkleRoot: "root-final" },
+      ownerToken: "owner-a", ownerEpoch: 1,
+    });
+    assert.equal(finalized.summary.settingsGeneration, 7);
+    assert.equal(finalized.summary.previewSagaId, "saga-1");
+    assert.equal(finalized.summary.previewInputHash, "input-1");
+    assert.deepEqual(finalized.summary.counts, { ready: 1 });
+  } finally { await context.close(); }
+});
+
 test("preview ownership takeover compares the exact lease snapshot and fences the previous epoch", async () => {
   const context = await fixture();
   try {
