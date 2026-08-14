@@ -41,3 +41,9 @@
 - Forward migrations SQLite 031/PostgreSQL 039 add a delivery lease and explicit `coordination_state='UNKNOWN'`. A process loss after DingTalk claim is never blindly resent: after lease expiry it becomes terminal manual coordination with bounded evidence and the recovered due job fails visibly.
 - Daily scheduling now creates one durable child job per shop and local logical day. Changing scope from A to A+B reuses A and adds only B. Each child persists its own configured IANA timezone; manual renewal scans resolve the same per-shop map and fail closed if absent.
 - Fix-round focused scheduler/notification/PostgreSQL suite: 38 passed, 0 failed. Affected Foundation/repository/scheduler/data-access suite: 38 passed, 0 failed. All `tests/shopee-discount*.test.mjs`: 218 passed, 0 failed. No live network request was made.
+
+## Breaker review fix round 2
+
+- A due job reclaimed slightly before the notification delivery lease expires now performs an owner/epoch-fenced durable deferral of that same unique job to `deliveryLeaseUntil`. It remains `PENDING`; it is not terminally failed or duplicated. At expiry the next claim atomically converts the uncertain send to `FAILED` plus `coordination_state='UNKNOWN'`, and the due job records the manual-coordination outcome.
+- Forward migrations 031/039 now deterministically convert notification rows that were already `SENDING` before delivery leases existed into honest `FAILED/UNKNOWN` coordination records, including bounded migration-source evidence. They can no longer remain permanently `IN_FLIGHT` because of a NULL lease.
+- Round 2 focused scheduler/notification/PostgreSQL and upgrade suite: 41 passed, 0 failed. Affected Foundation/repository/scheduler/data-access suite: 38 passed, 0 failed. All `tests/shopee-discount*.test.mjs`: 221 passed, 0 failed. No live network request was made.

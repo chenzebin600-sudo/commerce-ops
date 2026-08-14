@@ -37,6 +37,10 @@ function memoryRepository(now) {
       Object.assign(dueJobs.get(dueJobId), { status, result, lastErrorCode });
       return true;
     },
+    async deferDueJob({ dueJobId, dueAt, result, lastErrorCode }) {
+      Object.assign(dueJobs.get(dueJobId), { status: "PENDING", ownerId: null, dueAt: new Date(dueAt), result, lastErrorCode });
+      return true;
+    },
     async renewDueJobLease() { renewals += 1; return true; },
   };
 }
@@ -239,4 +243,31 @@ test("runner start is single-instance, lease-gated, and stop waits for the in-fl
   const lostSharedLease = new ShopeeDiscountScheduler({ repository, externalTaskPolicy: activePolicy(), ownerId: "worker-3", now: () => now,
     acquireSharedLease: async () => false });
   await assert.rejects(lostSharedLease.tick(), { code: "SHOPEE_DISCOUNT_SCHEDULER_INACTIVE" });
+});
+
+test("reclaimed reminder defers until the still-live notification lease instead of losing unique work", async () => {
+  let now = new Date("2026-08-14T01:00:00.000Z");
+  const repository = memoryRepository(now);
+  const notifications = {
+    async sendReminder() {
+      if (now < new Date("2026-08-14T01:00:10.000Z")) {
+        throw Object.assign(new Error("in flight"), {
+          code: "SHOPEE_DISCOUNT_NOTIFICATION_IN_FLIGHT",
+          retryAt: "2026-08-14T01:00:10.000Z",
+        });
+      }
+      throw Object.assign(new Error("coordinate"), { code: "SHOPEE_DISCOUNT_NOTIFICATION_COORDINATION_REQUIRED" });
+    },
+  };
+  const scheduler = new ShopeeDiscountScheduler({ repository, notifications, externalTaskPolicy: activePolicy(), ownerId: "recovery", now: () => now,
+    foundation: { tasks: { create: async (input) => ({ id: "task", input: input.input }) } } });
+  const job = await repository.createDueJob({ jobType: "REMINDER", dedupeKey: "reminder:race", dueAt: now,
+    payload: { planId: "plan-1", shopId: "1", severity: "WARNING", startsAt: "2026-08-15T00:00:00.000Z" } });
+  await scheduler.tick({ enqueueDaily: false });
+  assert.equal(job.status, "PENDING");
+  assert.equal(new Date(job.dueAt).toISOString(), "2026-08-14T01:00:10.000Z");
+  now = new Date("2026-08-14T01:00:10.000Z");
+  await scheduler.tick({ enqueueDaily: false });
+  assert.equal(job.status, "FAILED");
+  assert.equal(job.lastErrorCode, "SHOPEE_DISCOUNT_NOTIFICATION_COORDINATION_REQUIRED");
 });

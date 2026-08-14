@@ -10,7 +10,7 @@ const PUBLIC_METHODS = [
   "appendPlanShard", "sealPlan", "approvePlan", "markPlanState", "createJob", "getJob", "claimJob",
   "renewJobLease", "checkpointJob", "createDispatchIntent", "completeDispatchIntent",
   "markDispatchUnknown", "getDispatchIntent", "listDispatchIntents", "recordIntentOutcome", "reconcileIntent",
-  "appendEvent", "createDueJob", "claimDueJobs", "renewDueJobLease", "completeDueJob", "completeJob", "bindActivityPlatformId",
+  "appendEvent", "createDueJob", "claimDueJobs", "renewDueJobLease", "deferDueJob", "completeDueJob", "completeJob", "bindActivityPlatformId",
   "bindFoundationPlan", "getPlanShopIds", "listPlanShards", "listPlanShardsPage", "listPlanItems", "getPlanItem", "getPlanApproval",
   "countPlanItemsByShop", "countPlanShops", "listExecutionJobs", "listPlanActivities", "listPlanActivitiesPage", "getPlanActivity", "prepareExecutionItems", "listExecutionItems",
   "listExecutionItemsPage", "listDispatchIntentsPage", "countExecutionItemsByStatus",
@@ -115,7 +115,19 @@ test("forward notification coordination migration keeps SQLite and PostgreSQL le
     assert.match(sql, /delivery_lease_until/);
     assert.match(sql, /coordination_state/);
     assert.match(sql, /UNKNOWN/);
+    assert.match(sql, /delivery_status[^;]*FAILED/s);
+    assert.match(sql, /WHERE[^;]*delivery_status[^;]*SENDING[^;]*delivery_lease_until[^;]*NULL/s);
   }
+});
+
+test("PostgreSQL due-job deferral is owner/epoch fenced and returns unique work to PENDING", async () => {
+  const provider = new RecordingProvider([{ rowCount: 1, rows: [] }]);
+  const repository = new PostgresqlShopeeDiscountRepository({ provider, now: () => new Date("2026-08-14T01:00:00.000Z") });
+  assert.equal(await repository.deferDueJob({ dueJobId: "due-1", ownerId: "worker", epoch: 2,
+    dueAt: "2026-08-14T01:00:10.000Z", result: { code: "IN_FLIGHT" }, lastErrorCode: "IN_FLIGHT" }), true);
+  assert.match(provider.calls[0].text, /status='PENDING'/);
+  assert.match(provider.calls[0].text, /owner_id=\$6 AND fencing_epoch=\$7/);
+  assert.equal(provider.calls[0].values.includes("2026-08-14T01:00:10.000Z"), true);
 });
 
 test("PostgreSQL row dates are normalized to ISO strings", async () => {
