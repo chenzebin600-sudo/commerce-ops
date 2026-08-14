@@ -125,6 +125,36 @@ function previewInput(overrides = {}) {
   };
 }
 
+test("authorized shop list accepts the relay's deployed Chinese field names", async () => {
+  const context = await fixture({
+    shopee: fakeShopee({
+      shops: [{
+        "店编": "1618749121",
+        "店名": "泰国家具店",
+        "国家": "泰国",
+        shop_id: "1618749121",
+        "有令牌": true,
+        "access可用": true,
+      }, {
+        "店编": "BS0902",
+        "店名": "失效店铺",
+        "国家": "马来",
+        shop_id: "1618749122",
+        "有令牌": false,
+        "access可用": false,
+      }],
+    }),
+  });
+  try {
+    assert.deepEqual(await context.service.listShops({}), [{
+      shopId: "1618749121",
+      country: "TH",
+      name: "泰国家具店",
+      healthy: true,
+    }]);
+  } finally { await context.close(); }
+});
+
 test("preview validates single-country shop scope and rejects conflicting tier overrides", async () => {
   const context = await fixture({ shopee: fakeShopee({ shops: [shop("1", "TH"), shop("2", "TH"), shop("3", "SG")] }) });
   try {
