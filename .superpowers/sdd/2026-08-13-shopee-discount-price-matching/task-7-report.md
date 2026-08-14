@@ -45,5 +45,12 @@
 ## Breaker review fix round 2
 
 - A due job reclaimed slightly before the notification delivery lease expires now performs an owner/epoch-fenced durable deferral of that same unique job to `deliveryLeaseUntil`. It remains `PENDING`; it is not terminally failed or duplicated. At expiry the next claim atomically converts the uncertain send to `FAILED` plus `coordination_state='UNKNOWN'`, and the due job records the manual-coordination outcome.
-- Forward migrations 031/039 now deterministically convert notification rows that were already `SENDING` before delivery leases existed into honest `FAILED/UNKNOWN` coordination records, including bounded migration-source evidence. They can no longer remain permanently `IN_FLIGHT` because of a NULL lease.
+- Legacy rows that were already `SENDING` before delivery leases existed are converted by the later forward-only migrations 032/040 described below; the already-published 031/039 migrations remain byte-for-byte unchanged.
 - Round 2 focused scheduler/notification/PostgreSQL and upgrade suite: 41 passed, 0 failed. Affected Foundation/repository/scheduler/data-access suite: 38 passed, 0 failed. All `tests/shopee-discount*.test.mjs`: 221 passed, 0 failed. No live network request was made.
+
+## Breaker review fix round 3
+
+- Restored the published SQLite 031 and PostgreSQL 039 migration files byte-for-byte to commit `c16e5a8`; their SHA-256 values remain `45264a65ffa79c8da989637a188079f3446595b8fef574cf1ece9faba73e7f53` and `2b2333509e4a6c7363426147bbeb331826d0b0f61d0adb9fc53b93eedfdd2ff4` respectively.
+- Added forward-only SQLite 032 and PostgreSQL 040 migrations. They turn legacy `SENDING` notifications with a NULL delivery lease into honest `FAILED/UNKNOWN` manual-coordination records with deterministic migration evidence.
+- Upgrade coverage starts from a database whose migration ledger already records the original 031, verifies that only 032 runs, verifies the legacy row repair, and verifies a second migration run is a no-op. PostgreSQL contract coverage pins the published 039 checksum and verifies 040 ordering and application without re-executing 039. Fresh-database coverage remains in the full migration suite.
+- Round 3 focused scheduler/notification/PostgreSQL and upgrade suite: 41 passed, 0 failed. Affected Foundation/repository/scheduler/data-access suite: 38 passed, 0 failed. All `tests/shopee-discount*.test.mjs`: 221 passed, 0 failed. No live network request was made.

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { ShopeeDiscountNotifications, buildDingTalkSummary } from "../lib/shopee-discount/notifications.mjs";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
+import { SchedulerDatabase } from "../lib/mabang-scheduler/db.mjs";
 
 function notificationRepository() {
   const rows = new Map();
@@ -185,9 +186,16 @@ test("SQLite notification delivery state and dedupe survive a database restart",
   }
 });
 
-test("031 upgrade converts a pre-existing 030 SENDING row to honest UNKNOWN coordination", async () => {
+test("032 upgrades a ledger that already recorded original 031 and is idempotent", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shopee-discount-upgrade-"));
-  const db = new (await import("node:sqlite")).DatabaseSync(path.join(root, "upgrade.sqlite"));
+  const databasePath = path.join(root, "upgrade.sqlite");
+  const migrationDir = path.join(root, "migrations");
+  await fs.mkdir(migrationDir);
+  const old031 = await fs.readFile(path.resolve("migrations/031_shopee_discount_notification_coordination.sql"), "utf8");
+  const migration032 = await fs.readFile(path.resolve("migrations/032_shopee_discount_notification_legacy_sending.sql"), "utf8");
+  await fs.writeFile(path.join(migrationDir, "031_shopee_discount_notification_coordination.sql"), old031);
+  await fs.writeFile(path.join(migrationDir, "032_shopee_discount_notification_legacy_sending.sql"), migration032);
+  const db = new (await import("node:sqlite")).DatabaseSync(databasePath);
   try {
     db.exec(`CREATE TABLE shopee_discount_plans(id TEXT PRIMARY KEY);
       CREATE TABLE shopee_discount_notifications (
@@ -196,16 +204,25 @@ test("031 upgrade converts a pre-existing 030 SENDING row to honest UNKNOWN coor
         retention_until TEXT, created_at TEXT NOT NULL, dedupe_key TEXT, channel TEXT NOT NULL DEFAULT 'SYSTEM',
         delivery_status TEXT NOT NULL DEFAULT 'PENDING', attempt_count INTEGER NOT NULL DEFAULT 0,
         last_error_code TEXT, delivered_at TEXT, updated_at TEXT
-      );
+      ); CREATE TABLE schema_migrations(version TEXT PRIMARY KEY,applied_at TEXT NOT NULL);
       INSERT INTO shopee_discount_notifications (
         id,notification_type,severity,title,message,created_at,dedupe_key,channel,delivery_status,attempt_count,updated_at
       ) VALUES ('legacy-send','RENEWAL_REMINDER','WARNING','title','safe','2026-08-14T00:00:00.000Z',
         'legacy:send','DINGTALK_GROUP','SENDING',1,'2026-08-14T00:00:01.000Z');`);
-    db.exec(await fs.readFile(path.resolve("migrations/031_shopee_discount_notification_coordination.sql"), "utf8"));
-    assert.deepEqual({ ...db.prepare(`SELECT delivery_status,coordination_state,last_error_code,coordination_evidence_json
+    db.exec(old031);
+    db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)")
+      .run("031_shopee_discount_notification_coordination.sql", "2026-08-14T00:00:02.000Z");
+    db.close();
+    const schedulerDb = new SchedulerDatabase({ databasePath, migrationsDir: migrationDir });
+    assert.deepEqual(schedulerDb.migrate(), ["032_shopee_discount_notification_legacy_sending.sql"]);
+    assert.deepEqual(schedulerDb.migrate(), []);
+    const upgraded = schedulerDb.db;
+    assert.deepEqual({ ...upgraded.prepare(`SELECT delivery_status,coordination_state,last_error_code,coordination_evidence_json
       FROM shopee_discount_notifications WHERE id='legacy-send'`).get() }, {
       delivery_status: "FAILED", coordination_state: "UNKNOWN", last_error_code: "DINGTALK_DELIVERY_UPGRADE_UNKNOWN",
-      coordination_evidence_json: '{"source":"migration-031","reason":"legacy-sending-outcome-unknown"}',
+      coordination_evidence_json: '{"source":"migration-032","reason":"legacy-sending-outcome-unknown"}',
     });
-  } finally { db.close(); await fs.rm(root, { recursive: true, force: true }); }
+    assert.equal(upgraded.prepare("SELECT COUNT(*) count FROM schema_migrations WHERE version=?").get("031_shopee_discount_notification_coordination.sql").count, 1);
+    schedulerDb.close();
+  } finally { try { db.close(); } catch {} await fs.rm(root, { recursive: true, force: true }); }
 });

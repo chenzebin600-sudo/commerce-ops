@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { ShopeeDiscountRepository } from "../lib/shopee-discount/repository.mjs";
 import { PostgresqlShopeeDiscountRepository } from "../lib/shopee-discount/postgresql-repository.mjs";
+import { loadPostgresqlMigrations, runPostgresqlMigrations } from "../lib/data/postgresql/migration-runner.mjs";
 
 const PUBLIC_METHODS = [
   "getStorageMode", "getSettings", "saveSettings", "createPlan", "getPlan", "listPlans",
@@ -106,18 +108,47 @@ test("PostgreSQL expired notification send is fenced into UNKNOWN coordination w
   assert.match(provider.calls[0].text, /coordination_state='UNKNOWN'/);
 });
 
-test("forward notification coordination migration keeps SQLite and PostgreSQL leases parallel", async () => {
-  const [sqlite, postgres] = await Promise.all([
+test("published 031/039 checksums stay fixed and forward 032/040 backfills legacy sends", async () => {
+  const [sqlite031, postgres039, sqlite032, postgres040] = await Promise.all([
     fs.readFile(path.resolve("migrations/031_shopee_discount_notification_coordination.sql"), "utf8"),
     fs.readFile(path.resolve("migrations/postgresql/039_shopee_discount_notification_coordination.sql"), "utf8"),
+    fs.readFile(path.resolve("migrations/032_shopee_discount_notification_legacy_sending.sql"), "utf8"),
+    fs.readFile(path.resolve("migrations/postgresql/040_shopee_discount_notification_legacy_sending.sql"), "utf8"),
   ]);
-  for (const sql of [sqlite, postgres]) {
+  assert.equal(crypto.createHash("sha256").update(sqlite031).digest("hex"), "45264a65ffa79c8da989637a188079f3446595b8fef574cf1ece9faba73e7f53");
+  assert.equal(crypto.createHash("sha256").update(postgres039).digest("hex"), "2b2333509e4a6c7363426147bbeb331826d0b0f61d0adb9fc53b93eedfdd2ff4");
+  for (const sql of [sqlite032, postgres040]) {
     assert.match(sql, /delivery_lease_until/);
     assert.match(sql, /coordination_state/);
     assert.match(sql, /UNKNOWN/);
     assert.match(sql, /delivery_status[^;]*FAILED/s);
     assert.match(sql, /WHERE[^;]*delivery_status[^;]*SENDING[^;]*delivery_lease_until[^;]*NULL/s);
   }
+  const root = await fs.mkdtemp(path.join(process.env.TEMP || process.cwd(), "pg-notification-migrations-"));
+  try {
+    await fs.writeFile(path.join(root, "039_shopee_discount_notification_coordination.sql"), postgres039);
+    await fs.writeFile(path.join(root, "040_shopee_discount_notification_legacy_sending.sql"), postgres040);
+    const migrations = await loadPostgresqlMigrations(root);
+    assert.deepEqual(migrations.map(({ version }) => version), [
+      "039_shopee_discount_notification_coordination", "040_shopee_discount_notification_legacy_sending",
+    ]);
+    const scripts = [];
+    const provider = {
+      async transaction(callback) { return callback(this); },
+      async query(sql) {
+        if (sql.includes("current_database")) return { rows: [{ database: "commerce", username: "app", schema: "app" }] };
+        if (sql.includes("SELECT version, checksum")) return { rows: [{ version: migrations[0].version, checksum: migrations[0].checksum }] };
+        return { rows: [{ locked: true }] };
+      },
+      async executeScript(sql) { scripts.push(sql); },
+      async execute() { return { rowCount: 1, rows: [] }; },
+    };
+    const result = await runPostgresqlMigrations({ provider, migrations, expectedDatabase: "commerce", expectedUser: "app", expectedSchema: "app" });
+    assert.deepEqual(result.existing, [migrations[0].version]);
+    assert.deepEqual(result.applied, [migrations[1].version]);
+    assert.equal(scripts.some((sql) => sql === postgres039), false);
+    assert.equal(scripts.some((sql) => sql === postgres040), true);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
 test("PostgreSQL due-job deferral is owner/epoch fenced and returns unique work to PENDING", async () => {
