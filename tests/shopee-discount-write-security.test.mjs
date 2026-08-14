@@ -61,6 +61,32 @@ test("execute authorization enforces normalized country, shop, and batch constra
   assert.doesNotThrow(() => assertShopeeWriteAuthorized(security, { action: "execute", identity: "shared_app_token", country: "MY", shopId: "2", batchSize: 10 }));
 });
 
+test("country-shop authorization removes the plan-size cap while preserving both scope checks", () => {
+  const security = resolveShopeeWriteSecurity({
+    env: trustedEnv({
+      SHOPEE_WRITE_AUTHORIZATION_DIMENSIONS: "country,shop",
+      SHOPEE_WRITE_MAX_BATCH_ITEMS: "",
+      SHOPEE_WRITE_COUNTRY_WHITELIST: "TH,PH,MY,SG,TW,VN,ID",
+      SHOPEE_WRITE_SHOP_WHITELIST: "1,2",
+    }),
+    listener: { host: "127.0.0.1", exposure: "private" },
+    relay: { url: "https://relay.internal.example" },
+  });
+  assert.equal(security.enabled, true);
+  assert.deepEqual(security.constraints, {
+    countries: ["TH", "PH", "MY", "SG", "TW", "VN", "ID"],
+    shops: ["1", "2"],
+    maxBatchItems: null,
+  });
+  assert.doesNotThrow(() => assertShopeeWriteAuthorized(security, {
+    action: "execute", identity: "shared_app_token", country: "ID", shopId: "2", batchSize: 10_000,
+  }));
+  for (const context of [
+    { action: "execute", identity: "shared_app_token", country: "US", shopId: "2", batchSize: 1 },
+    { action: "execute", identity: "shared_app_token", country: "ID", shopId: "3", batchSize: 1 },
+  ]) assert.throws(() => assertShopeeWriteAuthorized(security, context), { code: "SHOPEE_WRITE_TARGET_NOT_AUTHORIZED" });
+});
+
 test("plan execution authorization checks the switch and identity without consuming a shop batch cap", () => {
   const trusted = resolveShopeeWriteSecurity({ env: trustedEnv({ SHOPEE_WRITE_MAX_BATCH_ITEMS: "5" }),
     listener: { host: "127.0.0.1", exposure: "private" }, relay: { url: "https://relay.example" } });
