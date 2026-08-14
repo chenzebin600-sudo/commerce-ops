@@ -184,9 +184,19 @@ export interface DiscountScanJob {
   completedAt?: string | null;
 }
 
-export type DiscountRequestLane = "dashboard" | "preview" | "approve" | "execute" | "items" | "refresh" | "scan";
+export type DiscountRequestLane = "dashboard" | "operationalSnapshot" | "preview" | "approve" | "execute" | "items" | "scan";
 export interface DiscountRequestBinding { scopeKey?: string; planId?: string; merkleRoot?: string }
 export interface DiscountRequestTicket { lane: DiscountRequestLane; generation: number; bindingKey: string }
+
+export interface DiscountPageFlowState {
+  preview: DiscountPreview | null;
+  previewing: boolean;
+  approving: boolean;
+  executing: boolean;
+  itemLoading: boolean;
+  operatorName: string;
+  confirmationInput: string;
+}
 
 function requestBindingKey(binding: DiscountRequestBinding) {
   return JSON.stringify(Object.fromEntries(Object.entries(binding).sort(([left], [right]) => left.localeCompare(right))));
@@ -214,9 +224,77 @@ export class DiscountRequestGuard {
     for (const lane of ["approve", "execute", "items"] as const) this.invalidate(lane);
   }
 
+  invalidateAll() {
+    for (const lane of ["dashboard", "operationalSnapshot", "preview", "approve", "execute", "items", "scan"] as const) this.invalidate(lane);
+  }
+
   isCurrent(ticket: DiscountRequestTicket, binding: DiscountRequestBinding) {
     return this.generations.get(ticket.lane) === ticket.generation
       && ticket.bindingKey === requestBindingKey(binding);
+  }
+}
+
+export class DiscountPageFlowController {
+  private readonly state: DiscountPageFlowState;
+  readonly requestGuard: DiscountRequestGuard;
+  private disposed = false;
+
+  constructor(state: DiscountPageFlowState, requestGuard = new DiscountRequestGuard()) {
+    this.state = state;
+    this.requestGuard = requestGuard;
+  }
+
+  beginPreview(scopeKey: string) {
+    this.requestGuard.invalidatePlan();
+    this.state.preview = null;
+    this.state.operatorName = "";
+    this.state.confirmationInput = "";
+    this.state.approving = false;
+    this.state.executing = false;
+    this.state.itemLoading = false;
+    this.state.previewing = true;
+    return this.requestGuard.begin("preview", { scopeKey });
+  }
+
+  acceptPreview(ticket: DiscountRequestTicket, scopeKey: string, preview: DiscountPreview) {
+    if (!this.requestGuard.isCurrent(ticket, { scopeKey })) return false;
+    this.requestGuard.invalidatePlanDependents();
+    this.state.preview = preview;
+    this.state.operatorName = "";
+    this.state.confirmationInput = "";
+    return true;
+  }
+
+  finishPreview(ticket: DiscountRequestTicket, scopeKey: string) {
+    if (!this.requestGuard.isCurrent(ticket, { scopeKey })) return false;
+    this.state.previewing = false;
+    return true;
+  }
+
+  canApprove(baseAllowed: boolean) { return baseAllowed && !this.state.previewing; }
+  canExecute(baseAllowed: boolean) { return baseAllowed && !this.state.previewing; }
+
+  beginOperationalSnapshot() {
+    return this.requestGuard.begin("operationalSnapshot", {});
+  }
+
+  isOperationalSnapshotCurrent(ticket: DiscountRequestTicket) {
+    return !this.disposed && this.requestGuard.isCurrent(ticket, {});
+  }
+
+  commitOperationalSnapshot(ticket: DiscountRequestTicket, apply: () => void) {
+    if (!this.isOperationalSnapshotCurrent(ticket)) return false;
+    apply();
+    return true;
+  }
+
+  invalidateRequests() {
+    this.requestGuard.invalidateAll();
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.invalidateRequests();
   }
 }
 

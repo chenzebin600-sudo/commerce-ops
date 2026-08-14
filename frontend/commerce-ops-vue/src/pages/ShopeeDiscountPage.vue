@@ -7,7 +7,7 @@ import { ElMessage } from "element-plus";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   approveDiscountPreview, createDiscountPreview, executeDiscountPreview, loadDiscountActivities,
-  discountPreviewInputKey, DiscountRequestGuard,
+  discountPreviewInputKey, DiscountPageFlowController, DiscountRequestGuard,
   loadDiscountIssues, loadDiscountPreviewItems, loadDiscountRuns, loadDiscountShops, loadDiscountStatus,
   requestDiscountScan, type ActivityTierSelection, type DiscountActivity, type DiscountIssue,
   type DiscountPreview, type DiscountPreviewItem, type DiscountRun, type DiscountShop, type DiscountStatus,
@@ -55,6 +55,15 @@ const issues = ref<DiscountIssue[]>([]);
 const activeTab = ref("preview");
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 const requestGuard = new DiscountRequestGuard();
+const pageFlow = new DiscountPageFlowController({
+  get preview() { return preview.value; }, set preview(value) { preview.value = value; },
+  get previewing() { return previewing.value; }, set previewing(value) { previewing.value = value; },
+  get approving() { return approving.value; }, set approving(value) { approving.value = value; },
+  get executing() { return executing.value; }, set executing(value) { executing.value = value; },
+  get itemLoading() { return itemLoading.value; }, set itemLoading(value) { itemLoading.value = value; },
+  get operatorName() { return operatorName.value; }, set operatorName(value) { operatorName.value = value; },
+  get confirmationInput() { return confirmationInput.value; }, set confirmationInput(value) { confirmationInput.value = value; },
+}, requestGuard);
 
 const countries = computed(() => [...new Set(shops.value.map((shop) => shop.country))].sort());
 const countryShops = computed(() => shops.value.filter((shop) => shop.country === country.value));
@@ -91,9 +100,9 @@ const previewRequestKey = computed(() => previewRequest.value
   ? discountPreviewInputKey(previewRequest.value)
   : `INVALID_RENEWAL:${renewalStart.value}`);
 const canPreview = computed(() => scopeValid.value && renewalStartValid.value && !batchErrors.value.length && !previewing.value);
-const canApprove = computed(() => Boolean(preview.value?.state === "PREVIEWED" && preview.value.itemCount > 0 && gateOpen.value
-  && operatorName.value.trim() && confirmationInput.value === preview.value.confirmationText && !approving.value));
-const canExecute = computed(() => Boolean(preview.value?.state === "APPROVED" && gateOpen.value && !executing.value));
+const canApprove = computed(() => pageFlow.canApprove(Boolean(preview.value?.state === "PREVIEWED" && preview.value.itemCount > 0 && gateOpen.value
+  && operatorName.value.trim() && confirmationInput.value === preview.value.confirmationText && !approving.value)));
+const canExecute = computed(() => pageFlow.canExecute(Boolean(preview.value?.state === "APPROVED" && gateOpen.value && !executing.value)));
 const currentRun = computed(() => preview.value ? runs.value.find((run) => run.planId === preview.value?.id) || null : null);
 const executionPercent = computed(() => {
   const run = currentRun.value;
@@ -117,8 +126,7 @@ function defaultRenewalStart() {
 }
 
 function resetPlan() {
-  requestGuard.invalidatePlan();
-  requestGuard.invalidate("scan");
+  pageFlow.invalidateRequests();
   preview.value = null;
   previewItems.value = [];
   nextCursor.value = null;
@@ -129,6 +137,7 @@ function resetPlan() {
   executing.value = false;
   itemLoading.value = false;
   scanning.value = false;
+  loading.value = false;
   activeTab.value = "preview";
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = null;
@@ -234,7 +243,8 @@ function readBatchFile(event: Event) {
 }
 
 async function loadDashboard() {
-  const ticket = requestGuard.begin("dashboard", {});
+  const dashboardTicket = requestGuard.begin("dashboard", {});
+  const snapshotTicket = pageFlow.beginOperationalSnapshot();
   loading.value = true;
   errorMessage.value = "";
   try {
@@ -242,42 +252,41 @@ async function loadDashboard() {
       loadDiscountStatus(), loadDiscountShops(), loadDiscountRuns({ limit: 50 }),
       loadDiscountActivities({ limit: 50 }), loadDiscountIssues({ limit: 50 }),
     ]);
-    if (!requestGuard.isCurrent(ticket, {})) return;
-    status.value = nextStatus;
-    shops.value = nextShops;
-    runs.value = nextRuns;
-    activities.value = nextActivities;
-    issues.value = nextIssues;
-    if (!country.value) country.value = countries.value[0] || "";
+    pageFlow.commitOperationalSnapshot(snapshotTicket, () => {
+      runs.value = nextRuns;
+      activities.value = nextActivities;
+      issues.value = nextIssues;
+    });
+    if (requestGuard.isCurrent(dashboardTicket, {})) {
+      status.value = nextStatus;
+      shops.value = nextShops;
+      if (!country.value) country.value = countries.value[0] || "";
+    }
   } catch (error) {
-    if (requestGuard.isCurrent(ticket, {})) errorMessage.value = error instanceof Error ? error.message : "折扣控价数据加载失败";
-  } finally { if (requestGuard.isCurrent(ticket, {})) loading.value = false; }
+    if (requestGuard.isCurrent(dashboardTicket, {}) && pageFlow.isOperationalSnapshotCurrent(snapshotTicket)) {
+      errorMessage.value = error instanceof Error ? error.message : "折扣控价数据加载失败";
+    }
+  } finally { if (requestGuard.isCurrent(dashboardTicket, {})) loading.value = false; }
 }
 
 async function generatePreview() {
   const request = previewRequest.value;
   if (!canPreview.value || !request) return;
   const binding = scopeBinding();
-  const ticket = requestGuard.begin("preview", binding);
-  previewing.value = true;
+  const ticket = pageFlow.beginPreview(binding.scopeKey);
+  previewItems.value = [];
+  nextCursor.value = null;
   errorMessage.value = "";
   try {
     const next = await createDiscountPreview(request);
-    if (!requestGuard.isCurrent(ticket, scopeBinding())) return;
-    requestGuard.invalidatePlanDependents();
-    approving.value = false;
-    executing.value = false;
-    itemLoading.value = false;
-    preview.value = next;
-    previewItems.value = [];
-    nextCursor.value = null;
+    if (!pageFlow.acceptPreview(ticket, scopeBinding().scopeKey, next)) return;
     await loadMoreItems();
     if (!requestGuard.isCurrent(ticket, scopeBinding())) return;
     activeTab.value = "preview";
     ElMessage.success("价格预览已生成，尚未执行任何 Shopee 写入");
   } catch (error) {
     if (requestGuard.isCurrent(ticket, scopeBinding())) errorMessage.value = error instanceof Error ? error.message : "生成预览失败";
-  } finally { if (requestGuard.isCurrent(ticket, scopeBinding())) previewing.value = false; }
+  } finally { pageFlow.finishPreview(ticket, scopeBinding().scopeKey); }
 }
 
 async function loadMoreItems() {
@@ -338,7 +347,10 @@ async function executePlan() {
     const job = await executeDiscountPreview({ planId: plan.id, merkleRoot: plan.merkleRoot });
     const current = planBinding();
     if (!current || !requestGuard.isCurrent(ticket, current)) return;
-    runs.value = [job, ...runs.value.filter((entry) => entry.id !== job.id)];
+    const snapshotTicket = pageFlow.beginOperationalSnapshot();
+    pageFlow.commitOperationalSnapshot(snapshotTicket, () => {
+      runs.value = [job, ...runs.value.filter((entry) => entry.id !== job.id)];
+    });
     activeTab.value = "execution";
     startPolling();
     ElMessage.success("已提交人工确认后的执行任务");
@@ -352,15 +364,16 @@ async function executePlan() {
 }
 
 async function refreshOperationalData() {
-  const ticket = requestGuard.begin("refresh", {});
+  const ticket = pageFlow.beginOperationalSnapshot();
   try {
     const [nextRuns, nextActivities, nextIssues] = await Promise.all([
       loadDiscountRuns({ limit: 50 }), loadDiscountActivities({ limit: 50 }), loadDiscountIssues({ limit: 50 }),
     ]);
-    if (!requestGuard.isCurrent(ticket, {})) return;
-    [runs.value, activities.value, issues.value] = [nextRuns, nextActivities, nextIssues];
+    pageFlow.commitOperationalSnapshot(ticket, () => {
+      [runs.value, activities.value, issues.value] = [nextRuns, nextActivities, nextIssues];
+    });
   } catch (error) {
-    if (requestGuard.isCurrent(ticket, {})) ElMessage.error(error instanceof Error ? error.message : "刷新执行状态失败");
+    if (pageFlow.isOperationalSnapshotCurrent(ticket)) ElMessage.error(error instanceof Error ? error.message : "刷新执行状态失败");
   }
 }
 
@@ -389,7 +402,11 @@ async function scanNow() {
 }
 
 onMounted(loadDashboard);
-onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
+onBeforeUnmount(() => {
+  pageFlow.dispose();
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+});
 </script>
 
 <template>

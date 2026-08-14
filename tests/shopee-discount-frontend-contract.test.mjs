@@ -165,8 +165,8 @@ test("request guard invalidates execute and item reads and gives latest refresh 
   assert.equal(guard.isCurrent(executeTicket, binding), false);
   assert.equal(guard.isCurrent(itemTicket, binding), false);
 
-  const firstRefresh = guard.begin("refresh", {});
-  const secondRefresh = guard.begin("refresh", {});
+  const firstRefresh = guard.begin("operationalSnapshot", {});
+  const secondRefresh = guard.begin("operationalSnapshot", {});
   assert.equal(guard.isCurrent(firstRefresh, {}), false);
   assert.equal(guard.isCurrent(secondRefresh, {}), true);
 });
@@ -189,16 +189,101 @@ test("an accepted replacement preview invalidates old-plan work without invalida
   assert.equal(guard.isCurrent(itemTicket, oldPlan), false);
 });
 
+test("replacement preview pending window revokes the old plan and requires fresh human confirmation", async () => {
+  const { DiscountPageFlowController } = await import(clientUrl.href);
+  const oldPlan = { id: "plan-a", merkleRoot: "root-a", state: "APPROVED", confirmationText: "确认 1 个变体", itemCount: 1 };
+  const nextPlan = { id: "plan-b", merkleRoot: "root-b", state: "PREVIEWED", confirmationText: "确认 1 个变体", itemCount: 1 };
+  const state = {
+    preview: oldPlan, previewing: false, approving: false, executing: false, itemLoading: false,
+    operatorName: "运营甲", confirmationInput: oldPlan.confirmationText,
+  };
+  const flow = new DiscountPageFlowController(state);
+  const response = deferred();
+  const ticket = flow.beginPreview("scope-a");
+  const pending = response.promise
+    .then((plan) => flow.acceptPreview(ticket, "scope-a", plan))
+    .finally(() => flow.finishPreview(ticket, "scope-a"));
+
+  assert.equal(state.preview, null);
+  assert.equal(state.previewing, true);
+  assert.equal(state.operatorName, "");
+  assert.equal(state.confirmationInput, "");
+  assert.equal(flow.canApprove(true), false);
+  assert.equal(flow.canExecute(true), false);
+
+  response.resolve(nextPlan);
+  await pending;
+  assert.equal(state.preview, nextPlan);
+  assert.equal(state.previewing, false);
+  assert.equal(state.operatorName, "");
+  assert.equal(state.confirmationInput, "");
+});
+
+test("dashboard execution polling and manual refresh share one latest operational snapshot owner and dispose fences late work", async () => {
+  const { DiscountPageFlowController } = await import(clientUrl.href);
+  const state = { preview: null, previewing: false, approving: false, executing: false, itemLoading: false, operatorName: "", confirmationInput: "" };
+  const flow = new DiscountPageFlowController(state);
+  let snapshot = null;
+  let error = "";
+  let loading = true;
+  const runSnapshot = async (response) => {
+    const ticket = flow.beginOperationalSnapshot();
+    try {
+      const value = await response;
+      flow.commitOperationalSnapshot(ticket, () => { snapshot = value; });
+    } catch (caught) {
+      if (flow.isOperationalSnapshotCurrent(ticket)) error = caught.message;
+    } finally {
+      if (flow.isOperationalSnapshotCurrent(ticket)) loading = false;
+    }
+  };
+
+  const oldDashboard = deferred();
+  const newerRefresh = deferred();
+  const dashboardFlow = runSnapshot(oldDashboard.promise);
+  const refreshFlow = runSnapshot(newerRefresh.promise);
+  newerRefresh.resolve("refresh-new");
+  await refreshFlow;
+  oldDashboard.resolve("dashboard-old");
+  await dashboardFlow;
+  assert.equal(snapshot, "refresh-new");
+
+  const oldPoll = deferred();
+  const newerExecution = deferred();
+  const pollFlow = runSnapshot(oldPoll.promise);
+  const executionFlow = runSnapshot(newerExecution.promise);
+  newerExecution.resolve("execution-new");
+  await executionFlow;
+  oldPoll.resolve("poll-old");
+  await pollFlow;
+  assert.equal(snapshot, "execution-new");
+
+  loading = true;
+  const stoppedPoll = deferred();
+  const stoppedFlow = runSnapshot(stoppedPoll.promise);
+  flow.dispose();
+  stoppedPoll.resolve("poll-after-unmount");
+  await stoppedFlow;
+  assert.equal(snapshot, "execution-new");
+  assert.equal(error, "");
+  assert.equal(loading, true);
+});
+
 test("page uses backend field names, one request fingerprint and accessible fail-closed controls", () => {
   const page = read("frontend/commerce-ops-vue/src/pages/ShopeeDiscountPage.vue");
   const router = read("frontend/commerce-ops-vue/src/router/index.ts");
   const sidebar = read("frontend/commerce-ops-vue/src/components/OpsSidebar.vue");
   assert.match(router, /path: "\/shopee-discount"/);
   assert.match(sidebar, /path: "\/shopee-discount", label: "折扣控价"/);
-  for (const text of ["discountPreviewInputKey", "DiscountRequestGuard", ".name", ".endsAt", ".occurredAt", "输入完整确认语句", "异常与 UNKNOWN 协调", "续期提醒"]) assert.ok(page.includes(text), `missing ${text}`);
+  for (const text of ["discountPreviewInputKey", "DiscountPageFlowController", ".name", ".endsAt", ".occurredAt", "输入完整确认语句", "异常与 UNKNOWN 协调", "续期提醒"]) assert.ok(page.includes(text), `missing ${text}`);
   assert.match(page, /watch\(previewRequestKey, resetPlan\)/);
-  assert.match(page, /requestGuard\.invalidatePlanDependents\(\)/);
-  for (const lane of ["preview", "approve", "execute", "items", "refresh"]) assert.ok(page.includes(`requestGuard.begin(\"${lane}\"`), `missing stale guard for ${lane}`);
+  assert.match(page, /pageFlow\.beginPreview\(binding\.scopeKey\)/);
+  assert.match(page, /pageFlow\.canApprove/);
+  assert.match(page, /pageFlow\.canExecute/);
+  assert.equal(page.match(/pageFlow\.beginOperationalSnapshot\(\)/g)?.length, 3);
+  assert.equal(page.match(/pageFlow\.commitOperationalSnapshot/g)?.length, 3);
+  assert.match(page, /pageFlow\.dispose\(\)/);
+  for (const lane of ["approve", "execute", "items"]) assert.ok(page.includes(`requestGuard.begin(\"${lane}\"`), `missing stale guard for ${lane}`);
   assert.match(page, /:disabled="!canApprove"/);
   assert.match(page, /:disabled="!canExecute"/);
   assert.match(page, /aria-live="polite"/);
