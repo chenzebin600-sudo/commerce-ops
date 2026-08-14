@@ -116,3 +116,16 @@ No live Shopee or other live network endpoint was used. Executor and service int
 - GREEN focused executor + reconciliation: 64 passed, 0 failed.
 - All `tests/shopee-discount*.test.mjs`: 193 passed, 0 failed.
 - No live network or Shopee endpoint was used.
+
+## Task 6A review round 1 (2026-08-14)
+
+- An `AUTH_BLOCKED` recovery scan now places the shop in the same run-local `blockedShops` map after either `{ authorized:false }` or a thrown `SHOPEE_AUTH_ERROR`. Any already-durable `PENDING` sibling in that shop is checkpointed `AUTH_BLOCKED` without creating an intent or dispatching a write; other shops continue.
+- The shared reporter remains keyed by job/shop/request, so the recovery result and any repeated observation in the run produce exactly one bounded `HIGH` issue.
+
+### Review-round TDD and verification
+
+- RED: both false and thrown mixed-state cases read authorization twice (`[1,1,2]` rather than `[1,2]`), proving the existing `PENDING` sibling reached item dispatch after the recovery check.
+- GREEN focused executor + reconciliation: 66 passed, 0 failed.
+- All `tests/shopee-discount*.test.mjs`: 195 passed, 0 failed.
+- Scoped diff check: clean (line-ending conversion warnings only).
+- No live network or Shopee endpoint was used.

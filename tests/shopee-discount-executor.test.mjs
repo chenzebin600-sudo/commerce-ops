@@ -757,6 +757,46 @@ test("AUTH_BLOCKED resume reports authorized false once and continues a reauthor
   } finally { await context.close(); }
 });
 
+for (const authCheck of ["false", "throw"]) {
+  test(`AUTH_BLOCKED resume ${authCheck} pauses mixed-state shop before its PENDING item`, async () => {
+    const context = await fixture({ approvalItems: [
+      approvalItem(),
+      approvalItem({ item_id: "101", model_id: "1001", sku: "SKU-1B" }),
+      approvalItem({ shop_id: "2", item_id: "200", model_id: "2000", sku: "SKU-2" }),
+    ] });
+    try {
+      context.repository.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+      context.workerContext.readers.getShopAuthorization = async () => ({ authorized: false });
+      const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+      const first = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+      assert.equal(first.counts.AUTH_BLOCKED, 3);
+      context.access.provider.connection.prepare(`UPDATE shopee_discount_execution_items SET status='PENDING',reason_code=NULL
+        WHERE job_id=? AND plan_item_id IN ('plan-item-1','plan-item-2')`).run(context.job.id);
+      context.clock.advance(2_000);
+      context.workerContext.workerId = "worker-2";
+      context.workerContext.requestId = `request-mixed-${authCheck}`;
+      const authorizationReads = [];
+      context.workerContext.readers.getShopAuthorization = async ({ shopId }) => {
+        authorizationReads.push(shopId);
+        if (shopId === "2") return { authorized: true };
+        if (authCheck === "throw") throw Object.assign(new Error("still unauthorized"), { code: "SHOPEE_AUTH_ERROR" });
+        return { authorized: false };
+      };
+      const second = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+      assert.equal(second.counts.AUTH_BLOCKED, 2);
+      assert.equal(second.counts.SUCCEEDED, 1);
+      assert.deepEqual(authorizationReads, ["1", "2"]);
+      assert.deepEqual(context.calls.map(({ input }) => input.shopId), ["2"]);
+      assert.equal(context.access.provider.connection.prepare("SELECT COUNT(*) count FROM shopee_discount_dispatch_intents WHERE plan_item_id='plan-item-1'").get().count, 0);
+      const issues = context.access.provider.connection.prepare(`SELECT evidence_json FROM shopee_discount_events
+        WHERE plan_id=? AND event_type='EXECUTION_ISSUE'`).all(context.domainPlan.id)
+        .map(({ evidence_json: evidenceJson }) => JSON.parse(evidenceJson))
+        .filter((evidence) => evidence.requestId === `request-mixed-${authCheck}`);
+      assert.deepEqual(issues, [{ priority: "HIGH", shopId: "1", requestId: `request-mixed-${authCheck}` }]);
+    } finally { await context.close(); }
+  });
+}
+
 test("shop authorization failure creates a high-priority issue and does not stop another shop", async () => {
   const context = await fixture({
     approvalItems: [
