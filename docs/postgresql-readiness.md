@@ -2,7 +2,7 @@
 
 ## Scope and snapshot
 
-This E2 report prepares a future migration; it does not install PostgreSQL, create PostgreSQL tables, connect a driver, dual-write, or modify formal SQLite data. Base row-count evidence was captured from the configured formal database on 2026-07-16 after `PRAGMA integrity_check = ok`. The additive schema inventory was reconciled on 2026-08-14 through SQLite migration `032_shopee_discount_notification_legacy_sending.sql` and PostgreSQL migration `040_shopee_discount_notification_legacy_sending.sql`. No live PostgreSQL DDL execution is claimed. Row counts are planning evidence rather than a live operational dashboard.
+This E2 report prepares a future migration; it does not install PostgreSQL, create PostgreSQL tables, connect a driver, dual-write, or modify formal SQLite data. Base row-count evidence was captured from the configured formal database on 2026-07-16 after `PRAGMA integrity_check = ok`. The additive schema inventory was reconciled on 2026-08-14 through SQLite migration `033_shopee_discount_baseline_lookup.sql` and PostgreSQL migration `041_shopee_discount_baseline_lookup.sql`. No live PostgreSQL DDL execution is claimed. Row counts are planning evidence rather than a live operational dashboard.
 
 ## Current tables
 
@@ -108,7 +108,7 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 
 ### Shopee Discount additive inventory
 
-当前清单截至 PostgreSQL `040_shopee_discount_notification_legacy_sending.sql`。生产预览的逐店/逐分片持久化、启动只读探测和容量完整性协议均复用下列表结构，不产生新的 PostgreSQL migration；本报告仍不声称执行过 live DDL。
+当前清单截至 SQLite `033_shopee_discount_baseline_lookup.sql` 与 PostgreSQL `041_shopee_discount_baseline_lookup.sql`。041 仅为真实存在的事件表增加正规化 baseline scope 列和可索引查询；本报告仍不声称执行过 live DDL。
 
 The following tables were added after the row-count snapshot. Their schemas and migration contracts were verified locally; production row counts have not been sampled and must not be inferred as zero.
 
@@ -123,10 +123,9 @@ The following tables were added after the row-count snapshot. Their schemas and 
 | `shopee_discount_jobs` | 027 | 027 | leased/fenced execution jobs |
 | `shopee_discount_dispatch_intents` | 027 + 029 | 027 + 037 | durable intent-before-send; active `UNKNOWN`/`DISPATCHED` targets cannot be replayed |
 | `shopee_discount_execution_items` | 028 | 036 | per-variant partial outcome; no whole-shop rollback |
-| `shopee_discount_events` | 027 | 027 | redacted immutable audit evidence |
+| `shopee_discount_events` | 027 + 033 | 027 + 041 | redacted immutable audit evidence；baseline scope 使用正规化列和复合 partial index |
 | `shopee_discount_due_jobs` | 027 | 027 | persistent daily/manual/renewal/reminder work with lease fencing |
 | `shopee_discount_notifications` | 027 + 030–032 | 027 + 038–040 | deduplicated delivery and fail-closed coordination of ambiguous sends |
-| `shopee_discount_warehouse_baselines` | 027 | 027 | watermark and anomaly baseline evidence |
 
 ## Type conversion details
 
@@ -193,7 +192,7 @@ Runtime-only dialect operations are now located under `lib/data/sqlite`; `script
 ## Migration sequence
 
 1. Freeze schema changes and create a verified SQLite backup plus file manifest.
-2. Reconcile the full SQLite migration ledger through `032_shopee_discount_notification_legacy_sending.sql` with the additive PostgreSQL ledger through `040_shopee_discount_notification_legacy_sending.sql`, preserving keys, checks, indexes, delete behavior, fencing, `UNKNOWN`, and notification coordination semantics.
+2. Reconcile the full SQLite migration ledger through `033_shopee_discount_baseline_lookup.sql` with the additive PostgreSQL ledger through `041_shopee_discount_baseline_lookup.sql`, preserving keys, checks, indexes, delete behavior, fencing, `UNKNOWN`, notification coordination, and indexed baseline scope semantics.
 3. Create PostgreSQL adapters behind the existing Provider/Repository contracts; keep SQLite as the active provider.
 4. Import reference/config tables: accounts and DingTalk configs, preserving encrypted bytes.
 5. Import task/run/event history, then export/file and lifecycle relationships in FK order.

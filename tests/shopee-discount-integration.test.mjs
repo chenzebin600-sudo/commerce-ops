@@ -144,6 +144,19 @@ test("PostgreSQL capacity mode proves observed totals and cursor progress", asyn
     await assert.rejects(runCapacityCheck({ mode: "postgresql", databaseUrl: "postgres://configured", postgresSource: source,
       shopCount: 2, linksPerShop: 2, variantsPerShop: 2, pageSize: 1 }), { code: "SHOPEE_DISCOUNT_CAPACITY_INCOMPLETE" }, name);
   }
+
+  const intermediateShort = {
+    async shops() { return { items: [{ id: "1" }], nextCursor: null, total: 1 }; },
+    async variants() { return { items: [{ id: "v1" }], nextCursor: null, total: 1 }; },
+    async links(_shop, cursor) {
+      if (cursor == null) return { items: [{ id: "l1" }], nextCursor: "a", total: 4 };
+      if (cursor === "a") return { items: [{ id: "l2" }, { id: "l3" }], nextCursor: "b", total: 4 };
+      return { items: [{ id: "l4" }], nextCursor: null, total: 4 };
+    },
+  };
+  await assert.rejects(runCapacityCheck({ mode: "postgresql", databaseUrl: "postgres://configured",
+    postgresSource: intermediateShort, shopCount: 1, linksPerShop: 4, variantsPerShop: 1, pageSize: 2 }),
+  { code: "SHOPEE_DISCOUNT_CAPACITY_INCOMPLETE" });
 });
 
 test("root scheduler startup remains disabled until every preview and reminder gate is configured", () => {
@@ -352,13 +365,13 @@ test("SQLite integration survives restart without replaying an UNKNOWN write", a
   }
 });
 
-test("SQLite migrations are fresh-install, 027-upgrade, and reopen idempotent through notification coordination", async () => {
+test("SQLite migrations are fresh-install, 027-upgrade, and reopen idempotent through indexed baseline lookup", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shopee-discount-migrations-"));
   const initialMigrations = path.join(root, "migrations-through-027");
   const databasePath = path.join(root, "commerce.sqlite");
   await fs.mkdir(initialMigrations);
   const migrationNames = (await fs.readdir(path.resolve("migrations"))).filter((name) => name.endsWith(".sql"));
-  for (const name of migrationNames.filter((candidate) => !/^(?:028|029|030|031|032)_shopee_discount/.test(candidate))) {
+  for (const name of migrationNames.filter((candidate) => !/^(?:028|029|030|031|032|033)_shopee_discount/.test(candidate))) {
     await fs.copyFile(path.resolve("migrations", name), path.join(initialMigrations, name));
   }
   try {
@@ -377,9 +390,17 @@ test("SQLite migrations are fresh-install, 027-upgrade, and reopen idempotent th
       "030_shopee_discount_notification_delivery.sql",
       "031_shopee_discount_notification_coordination.sql",
       "032_shopee_discount_notification_legacy_sending.sql",
+      "033_shopee_discount_baseline_lookup.sql",
     ]);
     const columns = access.provider.connection.prepare("PRAGMA table_info('shopee_discount_notifications')").all().map(({ name }) => name);
     assert.equal(columns.includes("coordination_state"), true);
+    const eventColumns = access.provider.connection.prepare("PRAGMA table_info('shopee_discount_events')").all().map(({ name }) => name);
+    assert.equal(eventColumns.includes("baseline_shop_id"), true);
+    const queryPlan = access.provider.connection.prepare(`EXPLAIN QUERY PLAN SELECT evidence_json FROM shopee_discount_events
+      WHERE event_type='WAREHOUSE_BASELINE' AND baseline_country=? AND baseline_category=?
+      AND baseline_shop_id IS ? AND baseline_tier=? ORDER BY occurred_at DESC,id DESC LIMIT 1`)
+      .all("TH", "HOME", "1", "DAILY").map(({ detail }) => detail).join(" ");
+    assert.match(queryPlan, /idx_shopee_discount_events_baseline_scope/);
     access.close();
 
     access = openCommerceDataAccess({ rootDir: path.resolve("."), databasePath, migrationsDir: path.resolve("migrations") });

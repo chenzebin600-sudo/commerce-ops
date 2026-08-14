@@ -13,7 +13,7 @@ const PUBLIC_METHODS = [
   "renewJobLease", "checkpointJob", "createDispatchIntent", "completeDispatchIntent",
   "markDispatchUnknown", "getDispatchIntent", "listDispatchIntents", "recordIntentOutcome", "reconcileIntent",
   "appendEvent", "createDueJob", "claimDueJobs", "renewDueJobLease", "deferDueJob", "completeDueJob", "completeJob", "bindActivityPlatformId",
-  "bindFoundationPlan", "updatePreviewActivity", "finalizePreviewMetadata", "getPlanShopIds", "listPlanShards", "listPlanShardsPage", "listPlanItems", "getPlanItem", "getPlanApproval",
+  "bindFoundationPlan", "updatePreviewActivity", "finalizePreviewMetadata", "claimPreviewOwnership", "getPlanShopIds", "listPlanShards", "listPlanShardsPage", "listPlanItems", "getPlanItem", "getPlanApproval",
   "countPlanItemsByShop", "countPlanShops", "listExecutionJobs", "listPlanActivities", "listPlanActivitiesPage", "getPlanActivity", "prepareExecutionItems", "listExecutionItems",
   "listExecutionItemsPage", "listDispatchIntentsPage", "countExecutionItemsByStatus",
   "setExecutionItemStatus", "listRunsScoped", "listActivitiesScoped", "listIssuesScoped",
@@ -257,6 +257,7 @@ test("PostgreSQL plan creation serializes each shop guard and binds hostile valu
   const provider = new RecordingProvider([
     { rows: [{ locked: null }], rowCount: 1 },
     { rows: [], rowCount: 0 },
+    { rows: [], rowCount: 0 },
     { rows: [row()], rowCount: 1 },
     { rows: [], rowCount: 1 },
   ]);
@@ -267,8 +268,8 @@ test("PostgreSQL plan creation serializes each shop guard and binds hostile valu
   });
   assert.equal(provider.transactions, 1);
   assert.match(provider.calls[0].text, /pg_advisory_xact_lock|FOR UPDATE/i);
-  assert.match(provider.calls[1].text, /target_starts_at\s*<\s*\$2/i);
-  assert.match(provider.calls[1].text, /target_ends_at\s*>\s*\$3/i);
+  assert.match(provider.calls[2].text, /target_starts_at\s*<\s*\$2/i);
+  assert.match(provider.calls[2].text, /target_ends_at\s*>\s*\$3/i);
   assert.equal(provider.calls.every(({ text }) => !text.includes("shop-'quoted")), true);
   assert.equal(provider.calls.some(({ values }) => values.includes("shop-'quoted")), true);
 });

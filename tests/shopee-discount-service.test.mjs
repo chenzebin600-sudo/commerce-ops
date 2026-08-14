@@ -856,6 +856,7 @@ test("production preview persists deterministic shards while retaining at most o
     assert.equal(Math.max(...resident.map(({ shopVariants }) => shopVariants)), 6);
     assert.equal(Math.max(...resident.map(({ shardBuffer }) => shardBuffer)), 4);
     assert.equal(resident.every(({ countryVariants }) => countryVariants == null), true);
+    assert.equal(resident.every(({ activitySelectionShopCount }) => activitySelectionShopCount === 2), true);
     const page = await context.access.repositories.shopeeDiscount.listPlanItems(preview.id, { pageSize: 100 });
     assert.deepEqual(page.items.map((item) => item.shopId), ["1", "1", "1", "1", "1", "1", "2", "2", "2", "2", "2", "2"]);
   } finally { await context.close(); }
@@ -874,4 +875,55 @@ test("production preview persists deterministic shards while retaining at most o
     ] }), { requestId: "legacy-equivalence" });
     assert.equal(preview.merkleRoot, productionRoot);
   } finally { await legacy.close(); }
+});
+
+test("concurrent production previews with one request converge while conflicting payload is rejected", async () => {
+  const shopee = fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] } });
+  const context = await fixture({ shopee });
+  context.access.repositories.shopeeDiscount.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+  try {
+    const input = previewInput();
+    const settled = await Promise.allSettled([
+      context.service.createPreview(input, { actorId: "operator", requestId: "same-request" }),
+      context.service.createPreview(input, { actorId: "operator", requestId: "same-request" }),
+    ]);
+    assert.deepEqual(settled.map(({ status }) => status), ["fulfilled", "fulfilled"],
+      JSON.stringify(settled.map((entry) => entry.status === "rejected" ? { code: entry.reason?.code, details: entry.reason?.details } : null)));
+    const [left, right] = settled.map(({ value }) => value);
+    assert.equal(left.id, right.id);
+    assert.equal(left.merkleRoot, right.merkleRoot);
+    assert.equal((await context.access.repositories.shopeeDiscount.getPlan(left.id)).state, "PREVIEWED");
+    await assert.rejects(context.service.createPreview(previewInput({ defaultTier: "EVENT" }),
+      { actorId: "operator", requestId: "same-request" }), { code: "SHOPEE_DISCOUNT_PREVIEW_SAGA_CONFLICT" });
+  } finally {
+    await new Promise((resolve) => setImmediate(resolve));
+    await context.close();
+  }
+});
+
+test("expired production preview owner resumes and verifies already persisted shards", async () => {
+  const shopee = fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] } });
+  const context = await fixture({ shopee });
+  context.access.repositories.shopeeDiscount.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+  const requestContext = { actorId: "operator", requestId: "crash-resume-request" };
+  try {
+    const first = await context.service.createPreview(previewInput(), requestContext);
+    const stored = await context.access.repositories.shopeeDiscount.getPlan(first.id);
+    const shardCount = context.access.provider.connection.prepare("SELECT COUNT(*) count FROM shopee_discount_plan_shards WHERE plan_id=?")
+      .get(first.id).count;
+    const staleSummary = { ...stored.summary, previewOwnerToken: "crashed-owner",
+      previewOwnerLeaseUntil: new Date(NOW.getTime() - 1).toISOString() };
+    context.access.provider.connection.prepare(`UPDATE shopee_discount_plans SET state='PREVIEWING',merkle_root=NULL,
+      item_count=0,shard_count=0,sealed_at=NULL,state_version=state_version+1,summary_json=? WHERE id=?`)
+      .run(JSON.stringify(staleSummary), first.id);
+
+    const resumed = await context.service.createPreview(previewInput(), requestContext);
+    assert.equal(resumed.id, first.id);
+    assert.equal(resumed.merkleRoot, first.merkleRoot);
+    assert.equal(context.access.provider.connection.prepare("SELECT COUNT(*) count FROM shopee_discount_plan_shards WHERE plan_id=?")
+      .get(first.id).count, shardCount);
+    assert.equal((await context.access.repositories.shopeeDiscount.getPlan(first.id)).state, "PREVIEWED");
+  } finally { await context.close(); }
 });

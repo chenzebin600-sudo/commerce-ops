@@ -94,6 +94,6 @@ SQLite 仅允许 1 店、最多 10 变体试点；超过该范围必须使用 Po
 
 ## 8. 数据库迁移与回滚
 
-SQLite fresh、从 027 升级到 032、重复启动幂等均由自动化测试覆盖。PostgreSQL 本地 migration contract 覆盖 027、035–040；流式预览复用现有 plan/activity/shard/item/event 字段，不新增迁移。在没有受控 PostgreSQL 实例时，只能报告“未执行 live DDL”。
+SQLite fresh、从 027 升级到 033、重复启动幂等均由自动化测试覆盖。PostgreSQL 本地 migration contract 覆盖 027、035–041；033/041 为 baseline 事件补充正规化 scope 列和复合索引，不修改旧迁移。在没有受控 PostgreSQL 实例时，只能报告“未执行 live DDL”。
 
 迁移前备份数据库和文件清单并验证恢复。回滚时先停所有写 worker 和 scheduler，等待在途任务结束，保留 dispatch intent、事件和 `UNKNOWN` 证据；切回旧版本前确认旧代码能够读取当前 additive schema。不得删除活动、计划、intent 或审计记录来“恢复”。若 PostgreSQL 切回 SQLite，只允许在试点范围内写，其余保持只读。

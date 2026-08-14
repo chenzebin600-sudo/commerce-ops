@@ -90,6 +90,7 @@ test("shared migration set contains the additive bridge for every missing C modu
     "038_shopee_discount_notification_delivery",
     "039_shopee_discount_notification_coordination",
     "040_shopee_discount_notification_legacy_sending",
+    "041_shopee_discount_baseline_lookup",
   ]);
   const byVersion = new Map(migrations.map((migration) => [migration.version, migration.sql]));
   const additive = byVersion.get("033_shared_development_modules");
@@ -135,6 +136,7 @@ test("shared migration set contains the additive bridge for every missing C modu
   assert.match(byVersion.get("038_shopee_discount_notification_delivery"), /uq_shopee_discount_notifications_dedupe/);
   assert.match(byVersion.get("039_shopee_discount_notification_coordination"), /delivery_lease_until/);
   assert.match(byVersion.get("040_shopee_discount_notification_legacy_sending"), /DINGTALK_DELIVERY_UPGRADE_UNKNOWN/);
+  assert.match(byVersion.get("041_shopee_discount_baseline_lookup"), /idx_shopee_discount_events_baseline_scope/);
 });
 
 test("migration runner locks, verifies identity, and records each migration", async () => {

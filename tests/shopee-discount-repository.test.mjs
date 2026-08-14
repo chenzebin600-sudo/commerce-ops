@@ -175,6 +175,10 @@ test("plan shards are transactional, contiguous, and immutable after sealing", a
     const repository = context.repository;
     assert.equal((await repository.createPlan(plan())).state, "PREVIEWING");
     await repository.appendPlanShard({ planId: "plan-1", shardIndex: 0, shardHash: "shard-0", items: [item(0)] });
+    const replay = await repository.appendPlanShard({ planId: "plan-1", shardIndex: 0, shardHash: "shard-0", items: [item(0)] });
+    assert.equal(replay.itemCount, 1);
+    await assert.rejects(repository.appendPlanShard({ planId: "plan-1", shardIndex: 0, shardHash: "changed", items: [item(0)] }),
+      { code: "SHOPEE_DISCOUNT_PREVIEW_SAGA_CONFLICT" });
     await repository.appendPlanShard({ planId: "plan-1", shardIndex: 2, shardHash: "shard-2", items: [item(2)] });
     await assert.rejects(
       repository.sealPlan({ planId: "plan-1", merkleRoot: "root", itemCount: 2, shardCount: 2, expectedVersion: 1 }),

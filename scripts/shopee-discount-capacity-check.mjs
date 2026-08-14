@@ -94,14 +94,16 @@ export async function runCapacityCheck({
     let count = 0;
     const seenCursors = new Set();
     for (;;) {
-      const page = await fetchPage(cursor, Math.min(batch, expected - count));
+      const requestedLimit = Math.min(batch, expected - count);
+      const page = await fetchPage(cursor, requestedLimit);
       if (!page || !Array.isArray(page.items) || !Number.isSafeInteger(Number(page.total)) || Number(page.total) !== expected) {
         throw capacityError("SHOPEE_DISCOUNT_CAPACITY_INCOMPLETE", `${kind} source did not prove its declared total`);
       }
       observe(page.items);
       pages[kind] += 1;
       count += page.items.length;
-      if (!page.items.length || count > expected || (count === expected && page.nextCursor != null)) {
+      if (!page.items.length || count > expected || (page.nextCursor != null && page.items.length !== requestedLimit)
+        || (count === expected && page.nextCursor != null)) {
         throw capacityError("SHOPEE_DISCOUNT_CAPACITY_INCOMPLETE", `${kind} source did not make bounded progress`);
       }
       await onItems?.(page.items);
