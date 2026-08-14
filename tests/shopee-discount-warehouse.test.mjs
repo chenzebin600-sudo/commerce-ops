@@ -59,6 +59,58 @@ function client(responses, calls = [], options = {}) {
   });
 }
 
+test("warehouse client allows the documented slow relay query window by default", () => {
+  const service = new WarehouseControlPriceClient({
+    fetchImpl: async () => jsonResponse({ ok: true }),
+    baseUrl: "http://10.110.80.95:8788",
+    getKey: () => "super-secret-api-key",
+  });
+
+  assert.equal(service.timeoutMs, 60_000);
+  assert.equal(service.pageSize, 2_000);
+});
+
+test("warehouse prices use the selected site's minor-unit scale", async () => {
+  const service = client([jsonResponse(relayPage({ rows: [sourceRow({
+    "库存SKU": "ID-SKU",
+    "国家": "ID",
+    "大品类": "家具",
+    "日常控价": 489000,
+    "活动价": 484000,
+    "大促价": 474000,
+  })] }))]);
+
+  const result = await service.scanPrices({
+    country: "ID", category: "家具", skus: ["ID-SKU"], requestId: "req-id-minor-units",
+  });
+
+  assert.equal(result.status, "READY", JSON.stringify(result));
+  assert.deepEqual(
+    { daily: result.rows[0].dailyMinor, event: result.rows[0].eventMinor, mega: result.rows[0].megaMinor },
+    { daily: "489000", event: "484000", mega: "474000" },
+  );
+});
+
+test("approved warehouse control classifications are not mistaken for lifecycle statuses", async () => {
+  const scan = await client([jsonResponse(relayPage({ rows: [sourceRow({ "控价状态": "引流款" })] }))])
+    .scanPrices({ country: "SG", category: "FURNITURE", skus: ["00Ab-C_+"], requestId: "req-control-class" });
+  const validated = validateWarehouseSnapshot(scan, null, policy(), { now: NOW });
+
+  assert.equal(validated.status, "READY", JSON.stringify(validated));
+  assert.equal(validated.rows[0].status, "引流款");
+});
+
+test("malformed unrelated warehouse rows do not block requested SKU validation", async () => {
+  const requested = sourceRow({ "库存SKU": "REQUESTED" });
+  const unrelated = sourceRow({ "库存SKU": "UNRELATED" });
+  delete unrelated["活动价批准时间"];
+  const result = await client([jsonResponse(relayPage({ rows: [unrelated, requested] }))], [], { pageSize: 10 })
+    .scanPrices({ country: "SG", category: "FURNITURE", skus: ["REQUESTED"], requestId: "req-ignore-unrelated" });
+
+  assert.equal(result.status, "READY", JSON.stringify(result));
+  assert.deepEqual(result.rows.map(({ sku }) => sku), ["REQUESTED"]);
+});
+
 function snapshot(rows, overrides = {}) {
   const { evidence: evidenceOverrides = {}, ...snapshotOverrides } = overrides;
   return {
@@ -118,8 +170,8 @@ test("client sends fixed verification and scan endpoints with the request id and
   const calls = [];
   const service = client([
     jsonResponse({ ok: true }),
-    jsonResponse(page({ rows: [sourceRow()], cursor: "c-2", hasMore: true, totalCount: 2 })),
-    jsonResponse(page({ rows: [sourceRow({ "库存SKU": "  001-Z  " })], totalCount: 2 })),
+    jsonResponse(page({ rows: [sourceRow()] })),
+    jsonResponse(page({ rows: [sourceRow({ "库存SKU": "  001-Z  " })] })),
   ], calls, { pageSize: 1 });
 
   assert.equal((await service.verifyKey({ requestId: "req-1" })).status, "READY");
@@ -133,10 +185,10 @@ test("client sends fixed verification and scan endpoints with the request id and
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[1].url, "http://10.110.80.95:8788/api/data/query");
   assert.deepEqual(JSON.parse(calls[1].options.body), {
-    产品: "控价", 参数: { 平台: "SHOPEE", 国家: "SG", 大品类: "FURNITURE" }, 页大小: 1,
+    产品: "控价", 参数: { 平台: "SHOPEE", 国家: "SG", 大品类: "FURNITURE", SKU: "00Ab-C_+" }, 页大小: 1,
   });
   assert.deepEqual(JSON.parse(calls[2].options.body), {
-    产品: "控价", 参数: { 平台: "SHOPEE", 国家: "SG", 大品类: "FURNITURE" }, 页大小: 1, 游标: "c-2",
+    产品: "控价", 参数: { 平台: "SHOPEE", 国家: "SG", 大品类: "FURNITURE", SKU: "001-Z" }, 页大小: 1,
   });
   for (const call of calls) {
     assert.equal(call.options.headers["X-Data-Key"], "super-secret-api-key");
@@ -156,8 +208,7 @@ test("client accepts only HTTPS or the exact documented private HTTP relay", () 
 });
 
 test("relay response uses top-level source freshness as the only normalized watermark", async () => {
-  const row = sourceRow();
-  delete row["数据水位"];
+  const row = sourceRow({ "数据水位": "2026-07-08T00:00:00.000Z" });
   const result = await client([jsonResponse(relayPage({ rows: [row] }))]).scanPrices({
     country: "SG", category: "FURNITURE", skus: ["00Ab-C_+"], requestId: "req-source-watermark",
   });
@@ -179,18 +230,21 @@ test("relay read retries one 429 after the configured bounded delay", async () =
   assert.deepEqual(delays, [0]);
 });
 
-test("multi-SKU relay snapshot is fetched once per request and filtered for later chunks", async () => {
+test("multi-SKU reads use exact SKU queries and reuse an exact request-scoped result", async () => {
   const calls = [];
-  const service = client([jsonResponse(relayPage({ rows: [
-    sourceRow({ "库存SKU": "A" }), sourceRow({ "库存SKU": "B" }), sourceRow({ "库存SKU": "C" }),
-  ] }))], calls, { pageSize: 10 });
+  const service = client([
+    jsonResponse(relayPage({ rows: [sourceRow({ "库存SKU": "A" })] })),
+    jsonResponse(relayPage({ rows: [sourceRow({ "库存SKU": "B" })] })),
+    jsonResponse(relayPage({ rows: [sourceRow({ "库存SKU": "C" })] })),
+  ], calls, { pageSize: 10 });
 
   const first = await service.scanPrices({ country: "SG", category: "FURNITURE", skus: ["A", "B"], requestId: "req-preview-cache" });
   const second = await service.scanPrices({ country: "SG", category: "FURNITURE", skus: ["B", "C"], requestId: "req-preview-cache" });
 
   assert.deepEqual(first.rows.map(({ sku }) => sku), ["A", "B"]);
   assert.deepEqual(second.rows.map(({ sku }) => sku), ["B", "C"]);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls.map((call) => JSON.parse(call.options.body).参数.SKU), ["A", "B", "C"]);
 });
 
 test("client returns an unavailable block for request, timeout, non-2xx, and invalid JSON without exposing its key", async () => {

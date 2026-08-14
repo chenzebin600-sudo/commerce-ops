@@ -237,6 +237,26 @@ test("production empty preview is cancelled and does not block a same-shop renew
   } finally { await context.close(); }
 });
 
+test("Shopee MODEL_NORMAL variants are treated as active listing variants", async () => {
+  const context = await fixture({ shopee: fakeShopee({
+    itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU", "10000", "9500", 7, { model_status: "MODEL_NORMAL" })] },
+    discountsByShop: { "1": [] },
+  }) });
+  try {
+    const preview = await context.service.createPreview(previewInput({
+      workflow: "NEXT_RENEWAL",
+      renewal: { requestedStartAt: "2026-08-15T00:00:00.000Z", durationDays: 30 },
+    }), { requestId: "official-model-normal" });
+    assert.equal(preview.state, "PREVIEWED");
+    assert.equal(preview.itemCount, 1);
+    const page = await context.service.listPreviewItems(preview.id, { pageSize: 10 }, {});
+    assert.deepEqual(page.items.map(({ modelId, sku, payload }) => ({ modelId, sku, stock: payload.stock })), [
+      { modelId: "100", sku: "SKU", stock: 7 },
+    ]);
+  } finally { await context.close(); }
+});
+
 test("preview includes zero stock, shares warehouse SKU prices, falls back per variant, and isolates abnormal variants", async () => {
   const shopee = fakeShopee({
     itemsByShop: { "1": [
