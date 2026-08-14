@@ -197,6 +197,26 @@ test("plan shards are transactional, contiguous, and immutable after sealing", a
   }
 });
 
+test("an expired preview draft releases its target window for a replacement plan", async () => {
+  const context = await fixture();
+  try {
+    const repository = context.repository;
+    await repository.createPlan(plan("expired-draft"));
+    await appendAndSeal(repository, "expired-draft", "expired-root");
+
+    const replacement = await repository.createPlan(plan("replacement", {
+      createdAt: "2026-08-14T01:00:00.000Z",
+      expiresAt: "2026-08-14T01:10:00.000Z",
+    }));
+
+    assert.equal(replacement.state, "PREVIEWING");
+    assert.equal((await repository.getPlan("expired-draft")).state, "EXPIRED");
+    assert.equal(context.db.prepare("SELECT status FROM shopee_discount_activities WHERE plan_id=?").get("expired-draft").status, "ENDED");
+  } finally {
+    await context.close();
+  }
+});
+
 test("streaming preview finalization preserves immutable settings and request bindings", async () => {
   const context = await fixture();
   try {
