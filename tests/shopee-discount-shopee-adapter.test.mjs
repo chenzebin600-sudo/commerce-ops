@@ -324,13 +324,13 @@ test("Shopee write adapter binds the three official POST schemas and converts mi
 
   const headers = { "x-operation-uuid": OPERATION_UUID, "x-request-id": REQUEST_ID };
   assert.deepEqual(calls, [
-    { relayPath: "/api/shopee/call", relayMethod: "POST", headers, body: { shop_id: "1768286475", api_path: "/api/v2/discount/add_discount", method: "POST", params: { discount_name: "PM-SG-DAILY-2023-11-15-A1B2", start_time: 1700003600, end_time: 1700608400 } } },
-    { relayPath: "/api/shopee/call", relayMethod: "POST", headers, body: { shop_id: "1768286475", api_path: "/api/v2/discount/add_discount_item", method: "POST", params: { discount_id: "665123666665499", item_list: [
-      { item_id: "1776783", item_promotion_price: "11.00", item_promotion_stock: 22, purchase_limit: 2 },
-      { item_id: "1776784", model_list: [{ model_id: "1776782", model_promotion_price: "11.01", model_promotion_stock: 22 }], purchase_limit: 0 },
+    { relayPath: "/api/shopee/call", relayMethod: "POST", headers, body: { shop_id: "1768286475", api_path: "/api/v2/discount/add_discount", method: "POST", params: {}, body: { discount_name: "PM-SG-DAILY-2023-11-15-A1B2", start_time: 1700003600, end_time: 1700608400 } } },
+    { relayPath: "/api/shopee/call", relayMethod: "POST", headers, body: { shop_id: "1768286475", api_path: "/api/v2/discount/add_discount_item", method: "POST", params: {}, body: { discount_id: 665123666665499, item_list: [
+      { item_id: 1776783, item_promotion_price: 11, item_promotion_stock: 22, purchase_limit: 2 },
+      { item_id: 1776784, model_list: [{ model_id: 1776782, model_promotion_price: 11.01, model_promotion_stock: 22 }], purchase_limit: 0 },
     ] } } },
-    { relayPath: "/api/shopee/call", relayMethod: "POST", headers, body: { shop_id: "1768286475", api_path: "/api/v2/discount/update_discount_item", method: "POST", params: { discount_id: "665123666665499", item_list: [
-      { item_id: "1776783", item_promotion_price: "96.00", purchase_limit: 1 },
+    { relayPath: "/api/shopee/call", relayMethod: "POST", headers, body: { shop_id: "1768286475", api_path: "/api/v2/discount/update_discount_item", method: "POST", params: {}, body: { discount_id: 665123666665499, item_list: [
+      { item_id: 1776783, item_promotion_price: 96, purchase_limit: 1 },
     ] } } },
   ]);
 });
