@@ -1,4 +1,4 @@
-import { apiJson } from "@/services/api";
+import { apiJson } from "./api.ts";
 
 const BASE = "/api/shopee-discount";
 const ROUTES = Object.freeze({
@@ -13,18 +13,26 @@ const ROUTES = Object.freeze({
 
 export type DiscountTier = "DAILY" | "EVENT" | "MEGA";
 export type DiscountWorkflow = "CURRENT_CORRECTION" | "NEXT_RENEWAL";
+export type DiscountPlanState = "PREVIEWING" | "PREVIEWED" | "APPROVED" | "EXECUTING" | "PARTIAL_SUCCESS" | "SUCCEEDED" | "FAILED" | "BLOCKED" | "EXPIRED" | "CANCELLED";
+export type DiscountRunState = "PENDING" | "RUNNING" | "PARTIAL_SUCCESS" | "SUCCEEDED" | "FAILED" | "BLOCKED";
 
 export interface DiscountWriteGate {
-  enabled?: boolean;
-  mode?: string;
-  ready?: boolean;
-  reasonCode?: string | null;
-  constraints?: { countries?: string[]; shops?: string[]; maxBatchItems?: number };
-  [key: string]: unknown;
+  enabled: boolean;
+  mode: "trusted_single_role" | "separate_execute_identity" | null;
+  privilegedApprovalRequired: boolean;
+  reasonCode: string;
+  switchProtected: boolean;
+  managedAttestationPresent: boolean;
+  listenerPrivate: boolean;
+  trustedProxy: boolean;
+  whitelistConfigured: boolean;
+  batchCapConfigured: boolean;
+  transportSecure: boolean;
+  independentExecuteIdentity: boolean;
 }
 
 export interface DiscountStatus {
-  storageMode: { mode?: string; productionScale?: boolean } | string;
+  storageMode: { dialect: "sqlite" | "postgres"; productionScale: boolean; pilotLimits: { shops: number; variants: number } | null };
   writeSecurity: DiscountWriteGate;
   enabled: boolean;
   warehouseConfigured: boolean;
@@ -32,7 +40,7 @@ export interface DiscountStatus {
 
 export interface DiscountShop {
   shopId: string;
-  shopName: string;
+  name: string;
   country: string;
   healthy: boolean;
 }
@@ -67,14 +75,22 @@ export interface DiscountSummary {
 
 export interface DiscountPreview {
   id: string;
+  foundationPlanId?: string | null;
   country: string;
-  state: string;
+  state: DiscountPlanState;
   merkleRoot: string;
   policyHash: string;
   itemCount: number;
+  shardCount?: number;
+  stateVersion?: number;
   targetStartsAt?: string | null;
   targetEndsAt?: string | null;
+  sourceSnapshotHash?: string;
   expiresAt?: string | null;
+  sealedAt?: string | null;
+  approvedAt?: string | null;
+  createdBy?: string;
+  retentionUntil?: string | null;
   confirmationText: string;
   reasonCode?: string | null;
   summary: DiscountSummary;
@@ -111,11 +127,19 @@ export interface DiscountPage<T> { items: T[]; nextCursor: string | number | nul
 export interface DiscountRun {
   id: string;
   planId: string;
+  foundationTaskId?: string | null;
   jobType: string;
-  status: string;
+  status: DiscountRunState;
+  ownerId?: string | null;
+  epoch?: number;
+  leaseUntil?: string | null;
+  cursor?: Record<string, unknown>;
+  input?: Record<string, unknown>;
   counters?: Record<string, number>;
   result?: Record<string, unknown>;
   lastErrorCode?: string | null;
+  createdBy?: string;
+  startedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
   finishedAt?: string | null;
@@ -127,8 +151,8 @@ export interface DiscountActivity {
   shopId: string;
   activityType: string;
   platformActivityId?: string | null;
-  targetStartsAt?: string | null;
-  targetEndsAt?: string | null;
+  startsAt?: string | null;
+  endsAt?: string | null;
   status: string;
   metadata?: Record<string, unknown>;
 }
@@ -136,18 +160,32 @@ export interface DiscountActivity {
 export interface DiscountIssue {
   id: string;
   planId?: string | null;
+  jobId?: string | null;
   eventType?: string;
-  reasonCode?: string | null;
   code?: string | null;
   evidence?: Record<string, unknown>;
-  createdAt?: string;
+  occurredAt?: string | null;
 }
 
 export interface DiscountScanJob {
   id: string;
   jobType: string;
+  dedupeKey: string;
   dueAt: string;
   status: string;
+  ownerId?: string | null;
+  epoch?: number;
+  leaseUntil?: string | null;
+  payload?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  lastErrorCode?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  completedAt?: string | null;
+}
+
+export function discountPreviewInputKey(input: CreateDiscountPreviewInput) {
+  return JSON.stringify(input);
 }
 
 function query(values: Record<string, string | number | null | undefined>) {

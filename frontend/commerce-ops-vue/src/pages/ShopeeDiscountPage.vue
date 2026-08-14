@@ -7,10 +7,11 @@ import { ElMessage } from "element-plus";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   approveDiscountPreview, createDiscountPreview, executeDiscountPreview, loadDiscountActivities,
+  discountPreviewInputKey,
   loadDiscountIssues, loadDiscountPreviewItems, loadDiscountRuns, loadDiscountShops, loadDiscountStatus,
   requestDiscountScan, type ActivityTierSelection, type DiscountActivity, type DiscountIssue,
   type DiscountPreview, type DiscountPreviewItem, type DiscountRun, type DiscountShop, type DiscountStatus,
-  type DiscountTier, type DiscountWorkflow, type LinkTierOverride, type TierOverride,
+  type CreateDiscountPreviewInput, type DiscountTier, type DiscountWorkflow, type LinkTierOverride, type TierOverride,
 } from "@/services/shopee-discount";
 
 const tiers: Array<{ value: DiscountTier; label: string }> = [
@@ -35,7 +36,7 @@ const useDefaultShops = ref(true);
 const workflow = ref<DiscountWorkflow>("CURRENT_CORRECTION");
 const defaultTier = ref<DiscountTier>("DAILY");
 const category = ref("家具");
-const renewalStart = ref(defaultRenewalStart());
+const renewalStart = ref<string | null>(defaultRenewalStart());
 const shopOverrides = ref<TierOverride[]>([]);
 const linkOverrides = ref<LinkTierOverride[]>([]);
 const activitySelection = ref<ActivityTierSelection[]>([]);
@@ -67,7 +68,28 @@ const gateReason = computed(() => {
   return "写入闸门已通过，提交后仍需人工确认";
 });
 const scopeValid = computed(() => Boolean(country.value && category.value.trim() && effectiveShopIds.value.length));
-const canPreview = computed(() => scopeValid.value && !batchErrors.value.length && !previewing.value);
+const renewalStartValid = computed(() => workflow.value !== "NEXT_RENEWAL"
+  || (typeof renewalStart.value === "string" && renewalStart.value.trim().length > 0 && Number.isFinite(new Date(renewalStart.value).getTime())));
+const previewRequest = computed<CreateDiscountPreviewInput | null>(() => {
+  const requestedStartAt = renewalStart.value;
+  if (!renewalStartValid.value || (workflow.value === "NEXT_RENEWAL" && typeof requestedStartAt !== "string")) return null;
+  return {
+    country: country.value,
+    shopIds: useDefaultShops.value ? [] : [...selectedShopIds.value],
+    useDefaultShops: useDefaultShops.value,
+    workflow: workflow.value,
+    defaultTier: defaultTier.value,
+    shopOverrides: shopOverrides.value.map((entry) => ({ ...entry })),
+    linkOverrides: linkOverrides.value.map((entry) => ({ ...entry })),
+    activitySelection: workflow.value === "CURRENT_CORRECTION" ? activitySelection.value.map((entry) => ({ ...entry })) : [],
+    category: category.value.trim(),
+    ...(workflow.value === "NEXT_RENEWAL" ? { renewal: { requestedStartAt: new Date(requestedStartAt as string).toISOString(), durationDays: 30 } } : {}),
+  };
+});
+const previewRequestKey = computed(() => previewRequest.value
+  ? discountPreviewInputKey(previewRequest.value)
+  : `INVALID_RENEWAL:${renewalStart.value}`);
+const canPreview = computed(() => scopeValid.value && renewalStartValid.value && !batchErrors.value.length && !previewing.value);
 const canApprove = computed(() => Boolean(preview.value?.state === "PREVIEWED" && preview.value.itemCount > 0 && gateOpen.value
   && operatorName.value.trim() && confirmationInput.value === preview.value.confirmationText && !approving.value));
 const canExecute = computed(() => Boolean(preview.value?.state === "APPROVED" && gateOpen.value && !executing.value));
@@ -82,8 +104,8 @@ const executionPercent = computed(() => {
 });
 const unknownCount = computed(() => runs.value.reduce((sum, run) => sum + Number(run.counters?.UNKNOWN || 0), 0));
 const renewalReminders = computed(() => activities.value.filter((entry) => {
-  if (!entry.targetEndsAt || !["ACTIVE", "PLANNED", "PENDING"].includes(entry.status)) return false;
-  return new Date(entry.targetEndsAt).getTime() <= Date.now() + 24 * 60 * 60 * 1000;
+  if (!entry.endsAt || !["ACTIVE", "PLANNED", "PENDING"].includes(entry.status)) return false;
+  return new Date(entry.endsAt).getTime() <= Date.now() + 24 * 60 * 60 * 1000;
 }));
 
 function defaultRenewalStart() {
@@ -99,6 +121,7 @@ function resetPlan() {
   nextCursor.value = null;
   operatorName.value = "";
   confirmationInput.value = "";
+  activeTab.value = "preview";
 }
 
 watch(country, () => {
@@ -107,12 +130,11 @@ watch(country, () => {
   linkOverrides.value = [];
   activitySelection.value = [];
   batchErrors.value = [];
-  resetPlan();
 });
-watch([workflow, defaultTier, category, useDefaultShops, selectedShopIds, shopOverrides, linkOverrides, activitySelection], resetPlan, { deep: true });
+watch(previewRequestKey, resetPlan);
 
 function shopName(shopId: string) {
-  return shops.value.find((shop) => shop.shopId === shopId)?.shopName || shopId;
+  return shops.value.find((shop) => shop.shopId === shopId)?.name || shopId;
 }
 
 function tierLabel(tier?: string) {
@@ -216,22 +238,12 @@ async function loadDashboard() {
 }
 
 async function generatePreview() {
-  if (!canPreview.value) return;
+  const request = previewRequest.value;
+  if (!canPreview.value || !request) return;
   previewing.value = true;
   errorMessage.value = "";
   try {
-    const next = await createDiscountPreview({
-      country: country.value,
-      shopIds: useDefaultShops.value ? [] : [...selectedShopIds.value],
-      useDefaultShops: useDefaultShops.value,
-      workflow: workflow.value,
-      defaultTier: defaultTier.value,
-      shopOverrides: shopOverrides.value.map((entry) => ({ ...entry })),
-      linkOverrides: linkOverrides.value.map((entry) => ({ ...entry })),
-      activitySelection: workflow.value === "CURRENT_CORRECTION" ? activitySelection.value.map((entry) => ({ ...entry })) : [],
-      category: category.value.trim(),
-      ...(workflow.value === "NEXT_RENEWAL" ? { renewal: { requestedStartAt: new Date(renewalStart.value).toISOString(), durationDays: 30 } } : {}),
-    });
+    const next = await createDiscountPreview(request);
     preview.value = next;
     previewItems.value = [];
     nextCursor.value = null;
@@ -342,11 +354,11 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
         <label class="field"><span>大品类</span><el-input v-model="category" aria-label="输入大品类" placeholder="例如：家具" /></label>
         <label class="field"><span>选择价格档位</span><el-select v-model="defaultTier" aria-label="选择价格档位"><el-option v-for="entry in tiers" :key="entry.value" :label="entry.label" :value="entry.value" /></el-select></label>
         <label class="field"><span>选择工作流</span><el-select v-model="workflow" aria-label="选择工作流"><el-option v-for="entry in workflows" :key="entry.value" :label="entry.label" :value="entry.value" /></el-select><small>{{ selectedWorkflow?.hint }}</small></label>
-        <label v-if="workflow === 'NEXT_RENEWAL'" class="field"><span>下一期开始时间</span><el-date-picker v-model="renewalStart" type="datetime" value-format="YYYY-MM-DDTHH:mm" aria-label="选择下一期开始时间" /></label>
+        <label v-if="workflow === 'NEXT_RENEWAL'" class="field"><span>下一期开始时间</span><el-date-picker v-model="renewalStart" type="datetime" value-format="YYYY-MM-DDTHH:mm" aria-label="选择下一期开始时间" /><small v-if="!renewalStartValid" class="danger-text" role="alert">请选择有效的开始时间</small></label>
       </div>
       <div class="shop-scope">
         <el-checkbox v-model="useDefaultShops">默认覆盖全部在售商品</el-checkbox>
-        <label class="field grow"><span>选择店铺</span><el-select v-model="selectedShopIds" multiple collapse-tags :disabled="useDefaultShops" aria-label="选择店铺" placeholder="选择当前国家店铺"><el-option v-for="shop in countryShops" :key="shop.shopId" :label="`${shop.shopName} (${shop.shopId})`" :value="shop.shopId" /></el-select></label>
+        <label class="field grow"><span>选择店铺</span><el-select v-model="selectedShopIds" multiple collapse-tags :disabled="useDefaultShops" aria-label="选择店铺" placeholder="选择当前国家店铺"><el-option v-for="shop in countryShops" :key="shop.shopId" :label="`${shop.name} (${shop.shopId})`" :value="shop.shopId" /></el-select></label>
         <span class="scope-count">{{ effectiveShopIds.length }} 家店铺</span>
       </div>
     </section>
@@ -356,7 +368,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
         <header><div><h3>店铺覆盖</h3><p>仅影响本期方案，下一期重新选择。</p></div><el-button text type="primary" :icon="Plus" @click="addShopOverride">添加</el-button></header>
         <div v-if="shopOverrides.length" class="edit-list">
           <div v-for="(entry, index) in shopOverrides" :key="`${entry.shopId}-${index}`" class="edit-row">
-            <el-select v-model="entry.shopId" aria-label="店铺覆盖店铺"><el-option v-for="shop in countryShops.filter((item) => effectiveShopIds.includes(item.shopId))" :key="shop.shopId" :label="shop.shopName" :value="shop.shopId" /></el-select>
+            <el-select v-model="entry.shopId" aria-label="店铺覆盖店铺"><el-option v-for="shop in countryShops.filter((item) => effectiveShopIds.includes(item.shopId))" :key="shop.shopId" :label="shop.name" :value="shop.shopId" /></el-select>
             <el-select v-model="entry.priceTier" aria-label="店铺覆盖价格档位"><el-option v-for="tier in tiers" :key="tier.value" :label="tier.label" :value="tier.value" /></el-select>
             <el-button text type="danger" :icon="Trash2" aria-label="删除店铺覆盖" @click="shopOverrides.splice(index, 1); resetPlan()" />
           </div>
@@ -367,7 +379,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
         <header><div><h3>链接覆盖</h3><p>按 Shop ID 与 Item ID 指定活动价或大促价。</p></div><el-button text type="primary" :icon="Plus" @click="addLinkOverride">添加</el-button></header>
         <div v-if="linkOverrides.length" class="edit-list">
           <div v-for="(entry, index) in linkOverrides" :key="`${entry.shopId}-${entry.itemId}-${index}`" class="edit-row link-row">
-            <el-select v-model="entry.shopId" aria-label="链接覆盖店铺"><el-option v-for="shop in countryShops.filter((item) => effectiveShopIds.includes(item.shopId))" :key="shop.shopId" :label="shop.shopName" :value="shop.shopId" /></el-select>
+            <el-select v-model="entry.shopId" aria-label="链接覆盖店铺"><el-option v-for="shop in countryShops.filter((item) => effectiveShopIds.includes(item.shopId))" :key="shop.shopId" :label="shop.name" :value="shop.shopId" /></el-select>
             <el-input v-model="entry.itemId" aria-label="链接 Item ID" placeholder="Item ID" @change="resetPlan" />
             <el-select v-model="entry.priceTier" aria-label="链接覆盖价格档位"><el-option v-for="tier in tiers" :key="tier.value" :label="tier.label" :value="tier.value" /></el-select>
             <el-button text type="danger" :icon="Trash2" aria-label="删除链接覆盖" @click="linkOverrides.splice(index, 1); resetPlan()" />
@@ -379,7 +391,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
         <header><div><h3>当前 Discount 活动</h3><p>明确指定要修正的活动，不按名称猜测活动类型。</p></div><el-button text type="primary" :icon="Plus" @click="addActivitySelection">添加</el-button></header>
         <div v-if="activitySelection.length" class="edit-list">
           <div v-for="(entry, index) in activitySelection" :key="`${entry.shopId}-${entry.discountId}-${index}`" class="edit-row link-row">
-            <el-select v-model="entry.shopId" aria-label="活动所属店铺"><el-option v-for="shop in countryShops.filter((item) => effectiveShopIds.includes(item.shopId))" :key="shop.shopId" :label="shop.shopName" :value="shop.shopId" /></el-select>
+            <el-select v-model="entry.shopId" aria-label="活动所属店铺"><el-option v-for="shop in countryShops.filter((item) => effectiveShopIds.includes(item.shopId))" :key="shop.shopId" :label="shop.name" :value="shop.shopId" /></el-select>
             <el-input v-model="entry.discountId" aria-label="Discount 活动 ID" placeholder="Discount ID" @change="resetPlan" />
             <el-select v-model="entry.priceTier" aria-label="活动价格档位"><el-option v-for="tier in tiers" :key="tier.value" :label="tier.label" :value="tier.value" /></el-select>
             <el-button text type="danger" :icon="Trash2" aria-label="删除活动选择" @click="activitySelection.splice(index, 1); resetPlan()" />
@@ -448,9 +460,9 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
           <template #label><span class="tab-label"><AlertTriangle :size="15" />异常与 UNKNOWN 协调 <el-badge v-if="unknownCount" :value="unknownCount" /></span></template>
           <el-alert v-if="unknownCount" title="UNKNOWN 表示平台请求结果无法确认。请先按待办回查，不要重复提交。" type="warning" :closable="false" show-icon />
           <el-table :data="issues" class="discount-table" empty-text="暂无需要协调的异常">
-            <el-table-column label="时间" width="170"><template #default="scope">{{ formatDate(scope.row.createdAt) }}</template></el-table-column>
+            <el-table-column label="时间" width="170"><template #default="scope">{{ formatDate(scope.row.occurredAt) }}</template></el-table-column>
             <el-table-column prop="planId" label="方案" min-width="180" />
-            <el-table-column label="问题代码" min-width="220"><template #default="scope"><strong>{{ scope.row.reasonCode || scope.row.code || 'UNKNOWN' }}</strong></template></el-table-column>
+            <el-table-column label="问题代码" min-width="220"><template #default="scope"><strong>{{ scope.row.code || 'UNKNOWN' }}</strong></template></el-table-column>
             <el-table-column label="证据摘要" min-width="260"><template #default="scope"><span class="evidence">{{ JSON.stringify(scope.row.evidence || {}) }}</span></template></el-table-column>
           </el-table>
         </el-tab-pane>
@@ -462,7 +474,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
             <el-table-column label="店铺" min-width="180"><template #default="scope">{{ shopName(scope.row.shopId) }}</template></el-table-column>
             <el-table-column prop="activityType" label="活动类型" width="160" />
             <el-table-column prop="platformActivityId" label="Discount ID" width="150" />
-            <el-table-column label="结束时间" min-width="180"><template #default="scope">{{ formatDate(scope.row.targetEndsAt) }}</template></el-table-column>
+            <el-table-column label="结束时间" min-width="180"><template #default="scope">{{ formatDate(scope.row.endsAt) }}</template></el-table-column>
             <el-table-column prop="status" label="状态" width="120" />
           </el-table>
         </el-tab-pane>
