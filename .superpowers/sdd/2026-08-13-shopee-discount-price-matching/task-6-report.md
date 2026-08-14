@@ -129,3 +129,16 @@ No live Shopee or other live network endpoint was used. Executor and service int
 - All `tests/shopee-discount*.test.mjs`: 195 passed, 0 failed.
 - Scoped diff check: clean (line-ending conversion warnings only).
 - No live network or Shopee endpoint was used.
+
+## Task 6A review round 2 (2026-08-14)
+
+- The `NEXT_RENEWAL` activity loop now checks the shared run-local `blockedShops` map immediately after reading the persisted activity's shop ID and before loading pending pages or performing any preflight, marker lookup, ensure/create, authorization read or write.
+- A shop paused by an `AUTH_BLOCKED` resume result therefore retains its durable resumable item states without creating an activity/item intent or issuing a write. Other shops still execute their renewal create/add flow.
+
+### Review-round TDD and verification
+
+- RED: both `{ authorized:false }` and thrown-auth adversarial renewal cases observed two authorization reads for the paused shop instead of one, proving the activity loop re-entered preflight.
+- GREEN focused executor + reconciliation: 68 passed, 0 failed.
+- All `tests/shopee-discount*.test.mjs`: 197 passed, 0 failed.
+- Scoped diff check: clean (line-ending conversion warnings only).
+- No live network or Shopee endpoint was used.
