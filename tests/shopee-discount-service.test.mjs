@@ -1115,6 +1115,18 @@ test("current correction scan reads live Discounts and produces a draft without 
   } finally { await context.close(); }
 });
 
+test("warehouse verification asks the operator to save a key before calling the relay", async () => {
+  let calls = 0;
+  const context = await fixture({ serviceOptions: { verifyWarehouseKey: async () => { calls += 1; return false; } } });
+  try {
+    await assert.rejects(context.service.verifySettings({ identity: { actorId: "admin-1" } }), {
+      code: "SHOPEE_DISCOUNT_WAREHOUSE_KEY_REQUIRED",
+      message: "请先填写并保存数仓 Key",
+    });
+    assert.equal(calls, 0);
+  } finally { await context.close(); }
+});
+
 test("settings stay redacted, verify fail-closed, and Shopee links resolve to bounded validation echoes", async () => {
   const context = await fixture({
     shopee: fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU-ONE", "10000", "9500"), model("101", "SKU-ONE", "10000", "9500")] } }),

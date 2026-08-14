@@ -122,7 +122,7 @@ import { ShopeeHealthService } from "./lib/shopee-health/service.mjs";
 import { createShopeeHealthApi } from "./lib/shopee-health/api.mjs";
 import { ShopeeReadAdapter } from "./lib/shopee-discount/shopee-read-adapter.mjs";
 import { ShopeeWriteAdapter } from "./lib/shopee-discount/shopee-write-adapter.mjs";
-import { WarehouseControlPriceClient } from "./lib/shopee-discount/warehouse-client.mjs";
+import { createUnavailableWarehouseControlPriceClient, isAllowedWarehouseBaseUrl, WarehouseControlPriceClient } from "./lib/shopee-discount/warehouse-client.mjs";
 import { resolveShopeeWriteSecurity } from "./lib/shopee-discount/write-security.mjs";
 import { ShopeeDiscountService } from "./lib/shopee-discount/service.mjs";
 import { createShopeeDiscountApi } from "./lib/shopee-discount/api.mjs";
@@ -403,7 +403,7 @@ const resolveShopeeDiscountManagedSecret = async (reference) => {
   }
   return runtimeEnv[environmentName] || null;
 };
-const shopeeDiscountWarehouse = /^https:\/\//.test(String(runtimeEnv.SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL || ""))
+const shopeeDiscountWarehouse = isAllowedWarehouseBaseUrl(String(runtimeEnv.SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL || ""))
   ? new WarehouseControlPriceClient({
       fetchImpl: globalThis.fetch,
       baseUrl: runtimeEnv.SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL,
@@ -412,7 +412,7 @@ const shopeeDiscountWarehouse = /^https:\/\//.test(String(runtimeEnv.SHOPEE_DISC
         return resolveWarehouseSettingsKey(settings, { decryptCiphertext: decryptSecret, resolveManagedReference: resolveShopeeDiscountManagedSecret });
       },
     })
-  : { async scanPrices() { return { status: "BLOCKED", code: "WAREHOUSE_UNAVAILABLE", rows: [], warnings: [], evidence: {} }; } };
+  : createUnavailableWarehouseControlPriceClient();
 const shopeeDiscountSecurity = () => resolveShopeeWriteSecurity({
   env: runtimeEnv,
   listener: {

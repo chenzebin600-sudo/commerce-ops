@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { WarehouseControlPriceClient } from "../lib/shopee-discount/warehouse-client.mjs";
+import { createUnavailableWarehouseControlPriceClient, isAllowedWarehouseBaseUrl, WarehouseControlPriceClient } from "../lib/shopee-discount/warehouse-client.mjs";
 import { validateWarehouseSnapshot } from "../lib/shopee-discount/warehouse-validator.mjs";
 
 const WATERMARK = "2026-07-09T00:00:00.000Z";
@@ -29,6 +29,10 @@ function page({ rows = [sourceRow()], cursor = null, hasMore = false, watermark 
   return { rows, nextCursor: cursor, hasMore, watermark, totalCount };
 }
 
+function relayPage({ rows = [sourceRow()], cursor = null, hasMore = false, watermark = WATERMARK } = {}) {
+  return { ok: true, 产品: "控价", 行数: rows.length, 源最新: watermark, 游标: cursor, 还有更多: hasMore, rows };
+}
+
 function jsonResponse(body, { status = 200 } = {}) {
   return new Response(JSON.stringify(body), { status });
 }
@@ -45,7 +49,7 @@ function fetchSequence(responses, calls = []) {
 function client(responses, calls = [], options = {}) {
   return new WarehouseControlPriceClient({
     fetchImpl: fetchSequence([...responses], calls),
-    baseUrl: "https://warehouse.example/internal",
+    baseUrl: "http://10.110.80.95:8788",
     getKey: () => "super-secret-api-key",
     timeoutMs: 500,
     pageSize: 2,
@@ -89,6 +93,18 @@ function normalizedRow(overrides = {}) {
   };
 }
 
+test("missing warehouse endpoint reports a specific configuration error during key verification", async () => {
+  const service = createUnavailableWarehouseControlPriceClient();
+
+  await assert.rejects(service.verifyKey({ requestId: "req-unconfigured" }), {
+    code: "SHOPEE_DISCOUNT_WAREHOUSE_ENDPOINT_UNCONFIGURED",
+    message: "未配置数仓控价接口地址",
+  });
+  assert.deepEqual(await service.scanPrices(), {
+    status: "BLOCKED", code: "WAREHOUSE_UNAVAILABLE", rows: [], warnings: [], evidence: {},
+  });
+});
+
 function policy(overrides = {}) {
   return {
     tier: "DAILY",
@@ -104,7 +120,7 @@ test("client sends fixed verification and scan endpoints with the request id and
     jsonResponse({ ok: true }),
     jsonResponse(page({ rows: [sourceRow()], cursor: "c-2", hasMore: true, totalCount: 2 })),
     jsonResponse(page({ rows: [sourceRow({ "库存SKU": "  001-Z  " })], totalCount: 2 })),
-  ], calls);
+  ], calls, { pageSize: 1 });
 
   assert.equal((await service.verifyKey({ requestId: "req-1" })).status, "READY");
   const result = await service.scanPrices({
@@ -113,14 +129,68 @@ test("client sends fixed verification and scan endpoints with the request id and
 
   assert.equal(result.status, "READY");
   assert.equal(result.rows.length, 2);
-  assert.equal(calls[0].url, "https://warehouse.example/internal/control-prices/verify-key");
-  assert.equal(calls[1].url, "https://warehouse.example/internal/control-prices/scan?platform=SHOPEE&country=SG&category=FURNITURE&skus=00Ab-C_%2B%2C001-Z&watermark=2026-07-09T00%3A00%3A00.000Z&limit=2");
-  assert.match(calls[2].url, /cursor=c-2/);
+  assert.equal(calls[0].url, "http://10.110.80.95:8788/api/data/me");
+  assert.equal(calls[0].options.method, "GET");
+  assert.equal(calls[1].url, "http://10.110.80.95:8788/api/data/query");
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    产品: "控价", 参数: { 平台: "SHOPEE", 国家: "SG", 大品类: "FURNITURE" }, 页大小: 1,
+  });
+  assert.deepEqual(JSON.parse(calls[2].options.body), {
+    产品: "控价", 参数: { 平台: "SHOPEE", 国家: "SG", 大品类: "FURNITURE" }, 页大小: 1, 游标: "c-2",
+  });
   for (const call of calls) {
-    assert.equal(call.options.headers["x-api-key"], "super-secret-api-key");
+    assert.equal(call.options.headers["X-Data-Key"], "super-secret-api-key");
     assert.ok(["req-1", "req-2"].includes(call.options.headers["x-request-id"]));
-    assert.equal(call.options.body, undefined);
   }
+  assert.equal(calls[0].options.body, undefined);
+  assert.equal(calls[1].options.headers["content-type"], "application/json; charset=utf-8");
+});
+
+test("client accepts only HTTPS or the exact documented private HTTP relay", () => {
+  assert.equal(isAllowedWarehouseBaseUrl("https://warehouse.example/path"), true);
+  assert.equal(isAllowedWarehouseBaseUrl("http://10.110.80.95:8788"), true);
+  for (const rejected of ["http://10.110.80.95:8789", "http://warehouse.internal", "http://10.110.80.95:8788/extra"] ) {
+    assert.equal(isAllowedWarehouseBaseUrl(rejected), false);
+    assert.throws(() => client([], [], { baseUrl: rejected }), /approved HTTPS or private relay URL/);
+  }
+});
+
+test("relay response uses top-level source freshness as the only normalized watermark", async () => {
+  const row = sourceRow();
+  delete row["数据水位"];
+  const result = await client([jsonResponse(relayPage({ rows: [row] }))]).scanPrices({
+    country: "SG", category: "FURNITURE", skus: ["00Ab-C_+"], requestId: "req-source-watermark",
+  });
+  assert.equal(result.status, "READY");
+  assert.equal(result.evidence.watermark, WATERMARK);
+  assert.equal(result.rows[0].watermark, WATERMARK);
+});
+
+test("relay read retries one 429 after the configured bounded delay", async () => {
+  const calls = [];
+  const delays = [];
+  const service = client([
+    jsonResponse({ error: "busy" }, { status: 429 }),
+    jsonResponse({ role: "运营", products: ["控价"] }),
+  ], calls, { retryDelaysMs: [0], sleep: async (delay) => { delays.push(delay); } });
+
+  assert.equal((await service.verifyKey({ requestId: "req-rate-limit" })).status, "READY");
+  assert.equal(calls.length, 2);
+  assert.deepEqual(delays, [0]);
+});
+
+test("multi-SKU relay snapshot is fetched once per request and filtered for later chunks", async () => {
+  const calls = [];
+  const service = client([jsonResponse(relayPage({ rows: [
+    sourceRow({ "库存SKU": "A" }), sourceRow({ "库存SKU": "B" }), sourceRow({ "库存SKU": "C" }),
+  ] }))], calls, { pageSize: 10 });
+
+  const first = await service.scanPrices({ country: "SG", category: "FURNITURE", skus: ["A", "B"], requestId: "req-preview-cache" });
+  const second = await service.scanPrices({ country: "SG", category: "FURNITURE", skus: ["B", "C"], requestId: "req-preview-cache" });
+
+  assert.deepEqual(first.rows.map(({ sku }) => sku), ["A", "B"]);
+  assert.deepEqual(second.rows.map(({ sku }) => sku), ["B", "C"]);
+  assert.equal(calls.length, 1);
 });
 
 test("client returns an unavailable block for request, timeout, non-2xx, and invalid JSON without exposing its key", async () => {
@@ -232,7 +302,7 @@ test("a changing page watermark blocks the scan before it can be treated as miss
   const result = await client([
     jsonResponse(page({ cursor: "2", hasMore: true, totalCount: 2 })),
     jsonResponse(page({ rows: [sourceRow({ "库存SKU": "001-Z", "数据水位": "2026-07-10T00:00:00.000Z" })], watermark: "2026-07-10T00:00:00.000Z", totalCount: 2 })),
-  ]).scanPrices({ country: "SG", skus: ["00Ab-C_+", "001-Z"], requestId: "req-watermark" });
+  ], [], { pageSize: 1 }).scanPrices({ country: "SG", skus: ["00Ab-C_+", "001-Z"], requestId: "req-watermark" });
   assert.equal(result.code, "WAREHOUSE_WATERMARK_CHANGED");
 });
 

@@ -183,6 +183,12 @@ test("root scheduler startup remains disabled until every preview and reminder g
     assert.equal(resolveShopeeDiscountSchedulerStartup({ ...complete, [missing]: "" }).enabled, false, missing);
   }
   assert.equal(resolveShopeeDiscountSchedulerStartup({ ...complete, SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL: "http://warehouse" }).enabled, false);
+  assert.equal(resolveShopeeDiscountSchedulerStartup({
+    ...complete, SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL: "http://10.110.80.95:8788",
+  }).warehouseBaseUrl, "http://10.110.80.95:8788");
+  assert.equal(resolveShopeeDiscountSchedulerStartup({
+    ...complete, SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL: "http://10.110.80.95:8789",
+  }).enabled, false);
   assert.deepEqual(resolveShopeeDiscountSchedulerStartup(complete), {
     enabled: true,
     reasonCode: "SHOPEE_DISCOUNT_SCHEDULER_READY",
