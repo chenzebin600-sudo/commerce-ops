@@ -124,6 +124,7 @@ import { ShopeeReadAdapter } from "./lib/shopee-discount/shopee-read-adapter.mjs
 import { ShopeeWriteAdapter } from "./lib/shopee-discount/shopee-write-adapter.mjs";
 import { createUnavailableWarehouseControlPriceClient, isAllowedWarehouseBaseUrl, WarehouseControlPriceClient } from "./lib/shopee-discount/warehouse-client.mjs";
 import { resolveShopeeWriteSecurity } from "./lib/shopee-discount/write-security.mjs";
+import { resolveShopeeDiscountSiteCapabilities } from "./lib/shopee-discount/site-capabilities.mjs";
 import { ShopeeDiscountService } from "./lib/shopee-discount/service.mjs";
 import { createShopeeDiscountApi } from "./lib/shopee-discount/api.mjs";
 import { createManualExecutionRuntime, createProductionReaders, relayNonTransmissionEvidence, resolveWarehouseSettingsKey } from "./lib/shopee-discount/production-runtime.mjs";
@@ -472,16 +473,7 @@ const shopeeDiscountService = new ShopeeDiscountService({
   executeApprovedPlan: executeShopeeDiscountManually,
   enforceSettings: true,
   approvalTtlMs: Number(runtimeEnv.SHOPEE_DISCOUNT_APPROVAL_TTL_MS || 10 * 60_000),
-  siteCapabilities: {
-    [String(runtimeEnv.SHOPEE_DISCOUNT_COUNTRY || "TH").toUpperCase()]: {
-      currency: runtimeEnv.SHOPEE_DISCOUNT_CURRENCY
-        || (String(runtimeEnv.SHOPEE_DISCOUNT_COUNTRY || "TH").toUpperCase() === "TH" ? "THB" : ""),
-      scale: Number(runtimeEnv.SHOPEE_DISCOUNT_PRICE_SCALE || 2),
-      minMinor: runtimeEnv.SHOPEE_DISCOUNT_MIN_PRICE_MINOR || "1",
-      maxMinor: runtimeEnv.SHOPEE_DISCOUNT_MAX_PRICE_MINOR || "999999999",
-      stepMinor: runtimeEnv.SHOPEE_DISCOUNT_PRICE_STEP_MINOR || "1",
-    },
-  },
+  siteCapabilities: resolveShopeeDiscountSiteCapabilities(runtimeEnv),
 });
 const handleShopeeDiscountApi = createShopeeDiscountApi({ service: shopeeDiscountService });
 const exportFileService = createExportFileService({
