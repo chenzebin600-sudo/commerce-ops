@@ -29,6 +29,7 @@ tmp/
 logs/
 .codex-work/
 .worktrees/
+.superpowers/
 deliverables/
 outputs/
 .mabang-exports/
