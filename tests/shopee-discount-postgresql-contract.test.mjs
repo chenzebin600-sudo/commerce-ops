@@ -10,13 +10,14 @@ const PUBLIC_METHODS = [
   "appendPlanShard", "sealPlan", "approvePlan", "markPlanState", "createJob", "getJob", "claimJob",
   "renewJobLease", "checkpointJob", "createDispatchIntent", "completeDispatchIntent",
   "markDispatchUnknown", "getDispatchIntent", "listDispatchIntents", "recordIntentOutcome", "reconcileIntent",
-  "appendEvent", "createDueJob", "claimDueJobs", "completeDueJob", "completeJob", "bindActivityPlatformId",
+  "appendEvent", "createDueJob", "claimDueJobs", "renewDueJobLease", "completeDueJob", "completeJob", "bindActivityPlatformId",
   "bindFoundationPlan", "getPlanShopIds", "listPlanShards", "listPlanShardsPage", "listPlanItems", "getPlanItem", "getPlanApproval",
   "countPlanItemsByShop", "countPlanShops", "listExecutionJobs", "listPlanActivities", "listPlanActivitiesPage", "getPlanActivity", "prepareExecutionItems", "listExecutionItems",
   "listExecutionItemsPage", "listDispatchIntentsPage", "countExecutionItemsByStatus",
   "setExecutionItemStatus", "listRunsScoped", "listActivitiesScoped", "listIssuesScoped",
   "getStoredSystemActivity", "getLatestWarehouseBaseline", "saveWarehouseBaseline",
   "getApprovalSagaPhase", "recordApprovalSagaPhase",
+  "createNotification", "getNotificationByDedupeKey", "claimNotificationDelivery", "markNotificationDelivery",
 ];
 
 class RecordingProvider {
@@ -60,6 +61,33 @@ test("PostgreSQL adapter exposes the complete SQLite interface and production ca
   assert.deepEqual(await new PostgresqlShopeeDiscountRepository({ provider: new RecordingProvider() }).getStorageMode(), {
     dialect: "postgres", productionScale: true, pilotLimits: null,
   });
+});
+
+test("PostgreSQL notification delivery uses persistent dedupe and compare-and-set claiming", async () => {
+  const notification = {
+    id: "notification-1", plan_id: null, dedupe_key: "reminder:one", notification_type: "RENEWAL_REMINDER",
+    severity: "INFO", title: "Shopee Discount INFO", message: "Safe operational summary", channel: "DINGTALK_GROUP",
+    delivery_status: "PENDING", attempt_count: 0, last_error_code: null, metadata_json: {}, read_at: null,
+    delivered_at: null, retention_until: null, created_at: new Date("2026-08-14T00:00:00.000Z"), updated_at: new Date("2026-08-14T00:00:00.000Z"),
+  };
+  const provider = new RecordingProvider([
+    { rows: [notification], rowCount: 1 },
+    { rows: [{ ...notification, delivery_status: "SENDING", attempt_count: 1 }], rowCount: 1 },
+    { rows: [{ ...notification, delivery_status: "DELIVERED", attempt_count: 1, delivered_at: new Date("2026-08-14T00:01:00.000Z") }], rowCount: 1 },
+  ]);
+  const repository = new PostgresqlShopeeDiscountRepository({ provider, now: () => new Date("2026-08-14T00:00:00.000Z") });
+  await repository.createNotification({ id: "notification-1", dedupeKey: "reminder:one", planId: null,
+    notificationType: "RENEWAL_REMINDER", severity: "INFO", title: "Shopee Discount INFO",
+    message: "Safe operational summary", channel: "DINGTALK_GROUP", metadata: {} });
+  await repository.claimNotificationDelivery({ notificationId: "notification-1", expectedAttemptCount: 0 });
+  await repository.markNotificationDelivery({ notificationId: "notification-1", patch: {
+    status: "DELIVERED", attemptCount: 1, deliveredAt: "2026-08-14T00:01:00.000Z",
+  } });
+  assert.match(provider.calls[0].text, /dedupe_key/);
+  assert.match(provider.calls[1].text, /attempt_count=\$3/);
+  assert.match(provider.calls[1].text, /delivery_status=ANY/);
+  assert.match(provider.calls[2].text, /delivery_status='SENDING'/);
+  assert.equal(provider.calls.every((call) => !call.text.includes("reminder:one")), true);
 });
 
 test("PostgreSQL row dates are normalized to ISO strings", async () => {

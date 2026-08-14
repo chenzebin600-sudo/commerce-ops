@@ -670,6 +670,9 @@ test("trusted shop scope protects preview/read models and manual scans validate 
     await assert.rejects(context.service.listPreviewItems(preview.id, {}, denied), { code: "SHOPEE_DISCOUNT_SHOP_NOT_AUTHORIZED" });
     assert.equal((await context.service.listActivities({}, denied)).length, 0);
     assert.equal((await context.service.listIssues({}, denied)).length, 0);
+    const manualOne = await context.service.requestManualScan({ country: "TH", shopIds: ["1"] }, { authorizedShopIds: ["1"] });
+    const manualTwo = await context.service.requestManualScan({ country: "TH", shopIds: ["1"] }, { authorizedShopIds: ["1"] });
+    assert.notEqual(manualOne.dedupeKey, manualTwo.dedupeKey);
     await assert.rejects(context.service.requestManualScan({ country: "TH", shopIds: ["1", "1"] }, { authorizedShopIds: ["1"] }), { code: "SHOPEE_DISCOUNT_OVERRIDE_CONFLICT" });
     await assert.rejects(context.service.requestManualScan({ country: "TH", shopIds: ["2"] }, { authorizedShopIds: ["2"] }), { code: "SHOPEE_DISCOUNT_SHOP_NOT_AUTHORIZED" });
     await assert.rejects(context.service.requestManualScan({ country: "TH", shopIds: ["3"] }, { authorizedShopIds: ["3"] }), { code: "SHOPEE_DISCOUNT_SHOP_COUNTRY_MISMATCH" });

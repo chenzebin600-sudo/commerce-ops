@@ -23,6 +23,14 @@ import { SalesAssortmentService } from "./lib/sales-assortment/sales-assortment-
 import { SalesAssortmentAiService } from "./lib/sales-assortment/sales-assortment-ai-service.mjs";
 import { ShopeeHealthClient } from "./lib/shopee-health/client.mjs";
 import { ShopeeHealthService } from "./lib/shopee-health/service.mjs";
+import { FoundationService } from "./lib/foundation/foundation-service.mjs";
+import { decryptSecret } from "./lib/mabang-scheduler/crypto.mjs";
+import { sendDingtalkMessage } from "./lib/mabang-scheduler/dingtalk.mjs";
+import { ShopeeReadAdapter } from "./lib/shopee-discount/shopee-read-adapter.mjs";
+import { WarehouseControlPriceClient } from "./lib/shopee-discount/warehouse-client.mjs";
+import { ShopeeDiscountService } from "./lib/shopee-discount/service.mjs";
+import { ShopeeDiscountScheduler } from "./lib/shopee-discount/scheduler.mjs";
+import { ShopeeDiscountNotifications } from "./lib/shopee-discount/notifications.mjs";
 import {
   buildSalesAssortmentDailyReport,
   salesReportDateFor,
@@ -126,6 +134,129 @@ const shopeeHealthService = new ShopeeHealthService({
   robotRepository: db,
 });
 
+const shopeeDiscountSchedulerEnabled = String(runtimeEnv.SHOPEE_DISCOUNT_SCHEDULER_ENABLED || "").trim().toLowerCase() === "true";
+const shopeeDiscountShopIds = String(runtimeEnv.SHOPEE_DISCOUNT_SCHEDULER_SHOP_IDS || "")
+  .split(",").map((value) => value.trim()).filter((value) => /^[1-9]\d*$/.test(value));
+const shopeeDiscountCountry = String(runtimeEnv.SHOPEE_DISCOUNT_COUNTRY || "TH").trim().toUpperCase();
+const shopeeDiscountCategory = String(runtimeEnv.SHOPEE_DISCOUNT_CATEGORY || "家具").trim();
+const shopeeDiscountTier = String(runtimeEnv.SHOPEE_DISCOUNT_DEFAULT_TIER || "DAILY").trim().toUpperCase();
+const foundationService = new FoundationService({ repository: dataAccess.repositories.foundation });
+const discountReadAdapter = new ShopeeReadAdapter({
+  transport: async (request) => {
+    const settings = await dataAccess.repositories.shopeeHealth.getSettings({ includeSecret: true });
+    if (!settings?.encryptedTokenKey) return { status: 503, body: { error: "SHOPEE_TOKEN_NOT_CONFIGURED" } };
+    try {
+      const body = await shopeeHealthService.client.request(request.relayPath, decryptSecret(settings.encryptedTokenKey), {
+        method: request.relayMethod,
+        ...(request.body ? { headers: { "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(request.body) } : {}),
+      });
+      return { status: 200, body };
+    } catch (cause) {
+      return { status: Number(cause?.status) || 503, body: { error: String(cause?.code || "SHOPEE_RELAY_FAILED") } };
+    }
+  },
+  retryPolicy: { maxAttempts: 3, delaysMs: [5_000, 15_000] },
+});
+const discountWarehouse = /^https:\/\//.test(String(runtimeEnv.SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL || ""))
+  ? new WarehouseControlPriceClient({
+      fetchImpl: globalThis.fetch,
+      baseUrl: runtimeEnv.SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL,
+      getKey: async () => {
+        const settings = await dataAccess.repositories.shopeeDiscount.getSettings();
+        return settings?.encryptedWarehouseKeyCiphertext ? decryptSecret(settings.encryptedWarehouseKeyCiphertext) : null;
+      },
+    })
+  : { async scanPrices() { return { status: "BLOCKED", code: "WAREHOUSE_UNAVAILABLE", rows: [], warnings: [], evidence: {} }; } };
+const discountService = new ShopeeDiscountService({
+  repository: dataAccess.repositories.shopeeDiscount,
+  foundation: foundationService,
+  shopee: discountReadAdapter,
+  warehouse: discountWarehouse,
+  writeSecurity: () => ({ enabled: false, mode: "closed", reasonCode: "SCHEDULER_PREVIEW_ONLY" }),
+  siteCapabilities: {
+    [shopeeDiscountCountry]: {
+      currency: runtimeEnv.SHOPEE_DISCOUNT_CURRENCY || (shopeeDiscountCountry === "TH" ? "THB" : ""),
+      scale: Number(runtimeEnv.SHOPEE_DISCOUNT_PRICE_SCALE || 2),
+      minMinor: runtimeEnv.SHOPEE_DISCOUNT_MIN_PRICE_MINOR || "1",
+      maxMinor: runtimeEnv.SHOPEE_DISCOUNT_MAX_PRICE_MINOR || "999999999",
+      stepMinor: runtimeEnv.SHOPEE_DISCOUNT_PRICE_STEP_MINOR || "1",
+    },
+  },
+});
+
+let discountNotifications = null;
+const discountDingtalkConfigId = String(runtimeEnv.SHOPEE_DISCOUNT_DINGTALK_CONFIG_ID || "").trim();
+const discountEntryBaseUrl = String(runtimeEnv.SHOPEE_DISCOUNT_ENTRY_BASE_URL || "").trim();
+if (discountDingtalkConfigId && discountEntryBaseUrl) {
+  const robot = await db.getDingtalkConfig(discountDingtalkConfigId, { includeSecret: true });
+  if (!robot?.enabled) throw new Error("Configured Shopee Discount DingTalk group is unavailable");
+  discountNotifications = new ShopeeDiscountNotifications({
+    repository: dataAccess.repositories.shopeeDiscount,
+    groupId: discountDingtalkConfigId,
+    entryBaseUrl: discountEntryBaseUrl,
+    transport: async ({ payload }) => sendDingtalkMessage({
+      webhookUrl: decryptSecret(robot.encryptedWebhookUrl),
+      secret: robot.encryptedSecret ? decryptSecret(robot.encryptedSecret) : "",
+      title: payload.markdown.title,
+      markdown: payload.markdown.text,
+    }),
+  });
+}
+
+let discountScheduler;
+discountScheduler = new ShopeeDiscountScheduler({
+  repository: dataAccess.repositories.shopeeDiscount,
+  foundation: foundationService,
+  notifications: discountNotifications,
+  externalTaskPolicy,
+  ownerId: `${scheduler.ownerId}:shopee-discount`,
+  acquireSharedLease: () => db.acquireLease(
+    "mabang_scheduler", scheduler.ownerId, new Date(), Math.max(30_000, scheduler.pollIntervalMs * 3),
+  ),
+  dailyScope: shopeeDiscountSchedulerEnabled && shopeeDiscountShopIds.length
+    ? { country: shopeeDiscountCountry, shopIds: shopeeDiscountShopIds }
+    : null,
+  pollIntervalMs: Number(runtimeEnv.SHOPEE_DISCOUNT_POLL_INTERVAL_MS || 60_000),
+  onError: (cause) => console.error(`Shopee Discount scheduler tick failed: ${cause?.code || cause?.message || "unknown"}`),
+  scan: async ({ country, shopIds, timeZone }) => {
+    let scheduled = 0;
+    for (const shopId of shopIds) {
+      const activities = await discountService.listActivities({ shopId, status: "ACTIVE", limit: 1000 });
+      const current = activities.find((activity) => activity.endsAt || activity.targetEndsAt);
+      if (!current) continue;
+      await discountScheduler.scheduleRenewal({
+        country, shopId, category: shopeeDiscountCategory,
+        currentEndsAt: current.endsAt || current.targetEndsAt,
+        currentTier: current.metadata?.priceTier || "DAILY",
+        priceTier: shopeeDiscountTier,
+        timeZone,
+        variantCount: Number(current.metadata?.variantCount || 0),
+        throughputPerHour: Number(runtimeEnv.SHOPEE_DISCOUNT_CAPACITY_PER_HOUR || 1000),
+        safetyFactor: Number(runtimeEnv.SHOPEE_DISCOUNT_CAPACITY_SAFETY_FACTOR || 1.5),
+        minimumDraftLeadHours: Number(runtimeEnv.SHOPEE_DISCOUNT_MIN_DRAFT_LEAD_HOURS || 24),
+        maximumDraftLeadDays: Number(runtimeEnv.SHOPEE_DISCOUNT_MAX_DRAFT_LEAD_DAYS || 30),
+      });
+      scheduled += 1;
+    }
+    return { scheduled };
+  },
+  createRenewalDraft: async (payload) => discountService.createPreview({
+    country: payload.country,
+    shopIds: [payload.shopId],
+    useDefaultShops: false,
+    workflow: "NEXT_RENEWAL",
+    defaultTier: payload.priceTier || "DAILY",
+    category: payload.category || shopeeDiscountCategory,
+    shopOverrides: [],
+    linkOverrides: [],
+    activitySelection: [],
+    renewal: { requestedStartAt: payload.targetStartsAt, durationDays: 30 },
+  }, { actorId: "shopee-discount-scheduler", requestId: `scheduler-${Date.now()}` }),
+  // Execution remains fail-closed here. Operators queue approved execution through the API;
+  // Task 6's executor is invoked only by a deployment-specific worker context with all write gates.
+  executeApprovedPlan: null,
+});
+
 let shopeeHealthTimer = null;
 if (!externalTaskPolicy.status().enabled) {
   console.log("External task runners disabled by configuration.");
@@ -133,6 +264,7 @@ if (!externalTaskPolicy.status().enabled) {
   externalTaskPolicy.setState("active");
   await shopeeHealthService.runScheduledIfDue();
   shopeeHealthTimer = setInterval(() => shopeeHealthService.runScheduledIfDue(), 60_000);
+  if (shopeeDiscountSchedulerEnabled) await discountScheduler.start();
   console.log(`Mabang scheduler started. Poll interval: ${scheduler.pollIntervalMs}ms`);
   console.log("Shopee health scheduler started. Daily timezone: Asia/Shanghai");
 } else {
@@ -142,6 +274,7 @@ if (!externalTaskPolicy.status().enabled) {
 
 async function shutdown() {
   if (shopeeHealthTimer) clearInterval(shopeeHealthTimer);
+  await discountScheduler.stop();
   await scheduler.stop();
   await dataAccess.close();
   process.exit(0);
