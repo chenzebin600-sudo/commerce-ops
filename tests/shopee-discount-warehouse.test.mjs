@@ -46,6 +46,20 @@ function fetchSequence(responses, calls = []) {
   };
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function until(predicate, message) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.fail(message);
+}
+
 function client(responses, calls = [], options = {}) {
   return new WarehouseControlPriceClient({
     fetchImpl: fetchSequence([...responses], calls),
@@ -68,6 +82,79 @@ test("warehouse client allows the documented slow relay query window by default"
 
   assert.equal(service.timeoutMs, 60_000);
   assert.equal(service.pageSize, 2_000);
+});
+
+test("concurrent identical scans share one in-flight relay query and keep caller evidence", async () => {
+  const gate = deferred();
+  let calls = 0;
+  const service = new WarehouseControlPriceClient({
+    fetchImpl: async () => { calls += 1; await gate.promise; return jsonResponse(relayPage()); },
+    baseUrl: "http://10.110.80.95:8788", getKey: () => "super-secret-api-key", retryDelaysMs: [],
+  });
+  const input = { country: "SG", category: "FURNITURE", skus: ["00Ab-C_+"] };
+  const first = service.scanPrices({ ...input, requestId: "same-scan-1" });
+  const second = service.scanPrices({ ...input, requestId: "same-scan-2" });
+  try {
+    await until(() => calls > 0, "relay query did not start");
+    assert.equal(calls, 1);
+  } finally { gate.resolve(); }
+  const [left, right] = await Promise.all([first, second]);
+  assert.equal(left.status, "READY");
+  assert.equal(right.status, "READY");
+  assert.equal(left.evidence.requestId, "same-scan-1");
+  assert.equal(right.evidence.requestId, "same-scan-2");
+});
+
+test("different concurrent scans serialize their relay queries", async () => {
+  const gates = [deferred(), deferred()];
+  let calls = 0;
+  let active = 0;
+  let maximumActive = 0;
+  const service = new WarehouseControlPriceClient({
+    fetchImpl: async () => {
+      const index = calls; calls += 1; active += 1; maximumActive = Math.max(maximumActive, active);
+      await gates[index].promise; active -= 1;
+      return jsonResponse(relayPage({ rows: [sourceRow({ "库存SKU": index === 0 ? "A" : "B" })] }));
+    },
+    baseUrl: "http://10.110.80.95:8788", getKey: () => "super-secret-api-key", retryDelaysMs: [],
+  });
+  const first = service.scanPrices({ country: "SG", category: "FURNITURE", skus: ["A"], requestId: "different-1" });
+  const second = service.scanPrices({ country: "SG", category: "FURNITURE", skus: ["B"], requestId: "different-2" });
+  try {
+    await until(() => calls > 0, "first relay query did not start");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(calls, 1);
+    assert.equal(maximumActive, 1);
+    gates[0].resolve();
+    await until(() => calls === 2, "second relay query did not start after release");
+  } finally { gates[0].resolve(); gates[1].resolve(); }
+  const results = await Promise.all([first, second]);
+  assert.deepEqual(results.map(({ status }) => status), ["READY", "READY"]);
+  assert.equal(maximumActive, 1);
+});
+
+test("failed shared scans are not cached and a later retry reads the relay", async () => {
+  const gate = deferred();
+  let calls = 0;
+  const service = new WarehouseControlPriceClient({
+    fetchImpl: async () => {
+      const index = calls; calls += 1;
+      if (index === 0) { await gate.promise; return jsonResponse({ error: "busy" }, { status: 503 }); }
+      return jsonResponse(relayPage());
+    },
+    baseUrl: "http://10.110.80.95:8788", getKey: () => "super-secret-api-key", retryDelaysMs: [],
+  });
+  const input = { country: "SG", category: "FURNITURE", skus: ["00Ab-C_+"] };
+  const first = service.scanPrices({ ...input, requestId: "failed-shared-1" });
+  const second = service.scanPrices({ ...input, requestId: "failed-shared-2" });
+  try {
+    await until(() => calls > 0, "shared failing query did not start");
+    assert.equal(calls, 1);
+  } finally { gate.resolve(); }
+  assert.deepEqual((await Promise.all([first, second])).map(({ code }) => code), ["WAREHOUSE_UNAVAILABLE", "WAREHOUSE_UNAVAILABLE"]);
+  const retry = await service.scanPrices({ ...input, requestId: "failed-shared-retry" });
+  assert.equal(retry.status, "READY");
+  assert.equal(calls, 2);
 });
 
 test("warehouse prices use the selected site's minor-unit scale", async () => {

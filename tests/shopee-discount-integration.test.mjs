@@ -232,6 +232,7 @@ test("frontend manual scan traverses the real API and scheduler into a Foundatio
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "shopee-discount-client-e2e-"));
   const access = openCommerceDataAccess({ rootDir: path.resolve("."), databasePath: path.join(root, "commerce.sqlite"),
     migrationsDir: path.resolve("migrations") });
+  access.repositories.shopeeDiscount.now = () => new Date(NOW);
   const { service, foundation } = createService(access);
   const handler = createShopeeDiscountApi({ service, maxBodyBytes: 1024 });
   const originalFetch = globalThis.fetch;
