@@ -184,6 +184,59 @@ test("current preview rejects a selected Discount that is absent or outside its 
   }
 });
 
+test("legacy empty preview is rejected before it can occupy a target window", async () => {
+  const context = await fixture({
+    shopee: fakeShopee({ itemsByShop: { "1": [] }, discountsByShop: { "1": [] } }),
+  });
+  try {
+    await assert.rejects(
+      context.service.createPreview(previewInput({ activitySelection: [] }), { requestId: "empty-legacy-preview" }),
+      (error) => {
+        assert.equal(error.code, "SHOPEE_DISCOUNT_NO_ACTIVE_VARIANTS");
+        assert.match(error.message, /新建或续期折扣活动/);
+        return true;
+      },
+    );
+    assert.deepEqual(await context.access.repositories.shopeeDiscount.listPlans(), []);
+  } finally { await context.close(); }
+});
+
+test("production empty preview is cancelled and does not block a same-shop renewal", async () => {
+  const shopee = fakeShopee({
+    itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] },
+    discountsByShop: { "1": [] },
+  });
+  const listActiveItems = shopee.listActiveItems.bind(shopee);
+  let exposeListings = false;
+  shopee.listActiveItems = async (input) => exposeListings
+    ? listActiveItems(input)
+    : { data: { item: [], has_next_page: false, next_offset: 0 }, requestId: "empty-items-request", attempts: 1 };
+  const context = await fixture({ shopee });
+  context.access.repositories.shopeeDiscount.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+  try {
+    await assert.rejects(
+      context.service.createPreview(previewInput({ activitySelection: [] }), { actorId: "operator", requestId: "empty-production-preview" }),
+      { code: "SHOPEE_DISCOUNT_NO_ACTIVE_VARIANTS" },
+    );
+    const [emptyPlan] = await context.access.repositories.shopeeDiscount.listPlans();
+    assert.equal(emptyPlan.state, "CANCELLED");
+    assert.equal(emptyPlan.itemCount, 0);
+    await assert.rejects(
+      context.service.createPreview(previewInput({ activitySelection: [] }), { actorId: "operator", requestId: "empty-production-preview" }),
+      { code: "SHOPEE_DISCOUNT_NO_ACTIVE_VARIANTS" },
+    );
+
+    exposeListings = true;
+    const renewal = await context.service.createPreview(previewInput({
+      workflow: "NEXT_RENEWAL",
+      renewal: { requestedStartAt: "2026-08-15T00:00:00.000Z", durationDays: 30 },
+    }), { actorId: "operator", requestId: "replacement-renewal-preview" });
+    assert.equal(renewal.state, "PREVIEWED");
+    assert.equal(renewal.itemCount, 1);
+  } finally { await context.close(); }
+});
+
 test("preview includes zero stock, shares warehouse SKU prices, falls back per variant, and isolates abnormal variants", async () => {
   const shopee = fakeShopee({
     itemsByShop: { "1": [
@@ -415,7 +468,10 @@ test("SQLite executes an approved renewal across two shops and eleven variants",
 });
 
 test("a committed scheduler preview replays to the same domain and Foundation plan after due-job crash", async () => {
-  const context = await fixture();
+  const context = await fixture({ shopee: fakeShopee({
+    itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] },
+  }) });
   try {
     const input = previewInput({
       workflow: "NEXT_RENEWAL",
@@ -815,7 +871,11 @@ test("warehouse watermark is pinned across different price tiers", async () => {
 });
 
 test("trusted shop scope protects preview/read models and manual scans validate duplicates, health and country", async () => {
-  const shopee = fakeShopee({ shops: [shop("1", "TH"), shop("2", "TH", { healthy: false }), shop("3", "SG")] });
+  const shopee = fakeShopee({
+    shops: [shop("1", "TH"), shop("2", "TH", { healthy: false }), shop("3", "SG")],
+    itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] },
+  });
   const context = await fixture({ shopee });
   try {
     const preview = await context.service.createPreview(previewInput(), {});
