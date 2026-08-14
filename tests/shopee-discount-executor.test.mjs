@@ -698,22 +698,29 @@ for (const readbackFailure of ["SHOPEE_BUSINESS_ERROR", "SHOPEE_AUTH_ERROR"]) {
   });
 }
 
-test("post-write item auth readbacks stay UNKNOWN and emit one safe issue per shop run", async () => {
+test("post-write item auth readback keeps uncertainty, pauses that shop, and permits another shop", async () => {
   const context = await fixture({ approvalItems: [
     approvalItem(),
-    approvalItem({ item_id: "101", model_id: "1001", sku: "SKU-2" }),
+    approvalItem({ item_id: "101", model_id: "1001", sku: "SKU-1B" }),
+    approvalItem({ shop_id: "2", item_id: "200", model_id: "2000", sku: "SKU-2" }),
   ] });
   try {
-    context.workerContext.readers.readbackIntent = async () => {
-      throw Object.assign(new Error("reauthorization required"), { code: "SHOPEE_AUTH_ERROR" });
+    context.repository.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+    context.workerContext.readers.readbackIntent = async ({ item }) => {
+      if (item.shopId === "1") throw Object.assign(new Error("reauthorization required"), { code: "SHOPEE_AUTH_ERROR" });
+      return {
+        activityId: "900", platformObjectId: "900", membership: true,
+        itemId: item.itemId, modelId: item.modelId, priceMinor: item.targetPriceMinor,
+      };
     };
     const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
     const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
     assert.equal(summary.counts.UNKNOWN, 2);
     assert.equal(summary.counts.AUTH_BLOCKED, 0);
-    assert.equal(context.calls.length, 2);
+    assert.equal(summary.counts.SUCCEEDED, 1);
+    assert.deepEqual(context.calls.map(({ input }) => input.shopId), ["1", "2"]);
     const intents = context.access.provider.connection.prepare("SELECT status FROM shopee_discount_dispatch_intents WHERE job_id=?").all(context.job.id);
-    assert.deepEqual(intents.map(({ status }) => status), ["UNKNOWN", "UNKNOWN"]);
+    assert.deepEqual(intents.map(({ status }) => status).sort(), ["SUCCEEDED", "UNKNOWN"]);
     const issues = context.access.provider.connection.prepare(`SELECT reason_code,evidence_json FROM shopee_discount_events
       WHERE plan_id=? AND event_type='EXECUTION_ISSUE'`).all(context.domainPlan.id);
     assert.equal(issues.length, 1);
@@ -721,6 +728,32 @@ test("post-write item auth readbacks stay UNKNOWN and emit one safe issue per sh
     assert.deepEqual(JSON.parse(issues[0].evidence_json), {
       priority: "HIGH", shopId: "1", requestId: "request-1",
     });
+  } finally { await context.close(); }
+});
+
+test("AUTH_BLOCKED resume reports authorized false once and continues a reauthorized shop", async () => {
+  const context = await fixture({ approvalItems: [
+    approvalItem(),
+    approvalItem({ shop_id: "2", item_id: "200", model_id: "2000", sku: "SKU-2" }),
+  ] });
+  try {
+    context.repository.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+    let resume = false;
+    context.workerContext.readers.getShopAuthorization = async ({ shopId }) => ({ authorized: resume && shopId === "2" });
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    const first = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(first.counts.AUTH_BLOCKED, 2);
+    resume = true;
+    context.workerContext.requestId = "request-2";
+    const second = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(second.counts.AUTH_BLOCKED, 1);
+    assert.equal(second.counts.SUCCEEDED, 1);
+    assert.deepEqual(context.calls.map(({ input }) => input.shopId), ["2"]);
+    const issues = context.access.provider.connection.prepare(`SELECT evidence_json FROM shopee_discount_events
+      WHERE plan_id=? AND event_type='EXECUTION_ISSUE'`).all(context.domainPlan.id)
+      .map(({ evidence_json: evidenceJson }) => JSON.parse(evidenceJson))
+      .filter((evidence) => evidence.requestId === "request-2");
+    assert.deepEqual(issues, [{ priority: "HIGH", shopId: "1", requestId: "request-2" }]);
   } finally { await context.close(); }
 });
 
@@ -1169,3 +1202,39 @@ for (const workflow of ["CURRENT_CORRECTION", "NEXT_RENEWAL"]) {
     } finally { await context.close(); }
   });
 }
+
+test("item recovery auth uncertainty pauses its shop without suppressing another shop", async () => {
+  const context = await fixture({ approvalItems: [
+    approvalItem(),
+    approvalItem({ item_id: "101", model_id: "1001", sku: "SKU-1B" }),
+    approvalItem({ shop_id: "2", item_id: "200", model_id: "2000", sku: "SKU-2" }),
+  ] });
+  try {
+    context.repository.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+    context.workerContext.afterIntentPersisted = () => {
+      throw Object.assign(new Error("crash before transport"), { code: "SIMULATED_CRASH" });
+    };
+    const { runApprovedPlan } = await import("../lib/shopee-discount/executor.mjs");
+    await assert.rejects(runApprovedPlan(context.domainPlan.id, context.workerContext), { code: "SIMULATED_CRASH" });
+    context.clock.advance(2_000);
+    context.workerContext.workerId = "worker-2";
+    context.workerContext.afterIntentPersisted = null;
+    context.workerContext.readers.readbackIntent = async ({ item }) => {
+      if (!item || item.shopId === "1") {
+        throw Object.assign(new Error("authorization expired during recovery"), { code: "SHOPEE_AUTH_ERROR" });
+      }
+      return {
+        activityId: "900", platformObjectId: "900", membership: true,
+        itemId: item.itemId, modelId: item.modelId, priceMinor: item.targetPriceMinor,
+      };
+    };
+    const summary = await runApprovedPlan(context.domainPlan.id, context.workerContext);
+    assert.equal(summary.counts.UNKNOWN, 2);
+    assert.equal(summary.counts.SUCCEEDED, 1);
+    assert.deepEqual(context.calls.map(({ input }) => input.shopId), ["2"]);
+    const intents = context.access.provider.connection.prepare("SELECT plan_item_id,status FROM shopee_discount_dispatch_intents WHERE job_id=?").all(context.job.id);
+    assert.deepEqual(intents.map(({ plan_item_id: itemId, status }) => [itemId, status]).sort(), [
+      ["plan-item-0", "UNKNOWN"], ["plan-item-2", "SUCCEEDED"],
+    ]);
+  } finally { await context.close(); }
+});

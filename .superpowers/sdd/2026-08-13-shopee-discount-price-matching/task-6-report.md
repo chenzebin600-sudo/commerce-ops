@@ -103,3 +103,16 @@ No live Shopee or other live network endpoint was used. Executor and service int
 - Executor suite: 56 passed, 0 failed.
 - All `tests/shopee-discount*.test.mjs`: 191 passed, 0 failed.
 - No live network or Shopee endpoint was used.
+
+## Task 6A authorization pause semantics (2026-08-14)
+
+- An item POST followed by `SHOPEE_AUTH_ERROR` during readback keeps the sent item's intent and execution item `UNKNOWN`, then pauses further writes for that shop for the remainder of the run. Pending same-shop items are checkpointed `UNKNOWN` without an intent; a different shop continues normally.
+- Restart recovery applies the same rule: an item intent whose recovery readback hits authorization uncertainty remains `UNKNOWN`, pauses that shop for the current run, and does not suppress other shops. Existing create/activity recovery already uses the equivalent shop-level `blockedActivities` path.
+- Rechecking an `AUTH_BLOCKED` item now reports both thrown authorization errors and a definite `{ authorized: false }` result through the shared job/shop/run reporter. The affected shop stays paused, a reauthorized shop proceeds, and evidence remains the bounded `HIGH` priority/shop/request tuple.
+
+### Task 6A TDD and verification
+
+- RED: the new three-test slice observed an extra same-shop POST (`[1,1,2]` rather than `[1,2]`), no issue for the resumed `{ authorized:false }` result, and three `UNKNOWN` items because recovery did not pause the affected shop.
+- GREEN focused executor + reconciliation: 64 passed, 0 failed.
+- All `tests/shopee-discount*.test.mjs`: 193 passed, 0 failed.
+- No live network or Shopee endpoint was used.
