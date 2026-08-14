@@ -29,7 +29,11 @@ import { sendDingtalkMessage } from "./lib/mabang-scheduler/dingtalk.mjs";
 import { ShopeeReadAdapter } from "./lib/shopee-discount/shopee-read-adapter.mjs";
 import { WarehouseControlPriceClient } from "./lib/shopee-discount/warehouse-client.mjs";
 import { ShopeeDiscountService } from "./lib/shopee-discount/service.mjs";
-import { ShopeeDiscountScheduler } from "./lib/shopee-discount/scheduler.mjs";
+import {
+  ShopeeDiscountScheduler,
+  durableActivityVariantCount,
+  schedulerRequestId,
+} from "./lib/shopee-discount/scheduler.mjs";
 import { ShopeeDiscountNotifications } from "./lib/shopee-discount/notifications.mjs";
 import {
   buildSalesAssortmentDailyReport,
@@ -137,6 +141,18 @@ const shopeeHealthService = new ShopeeHealthService({
 const shopeeDiscountSchedulerEnabled = String(runtimeEnv.SHOPEE_DISCOUNT_SCHEDULER_ENABLED || "").trim().toLowerCase() === "true";
 const shopeeDiscountShopIds = String(runtimeEnv.SHOPEE_DISCOUNT_SCHEDULER_SHOP_IDS || "")
   .split(",").map((value) => value.trim()).filter((value) => /^[1-9]\d*$/.test(value));
+let shopeeDiscountShopTimeZones = {};
+if (shopeeDiscountSchedulerEnabled) {
+  try {
+    shopeeDiscountShopTimeZones = JSON.parse(String(runtimeEnv.SHOPEE_DISCOUNT_SHOP_TIMEZONES_JSON || "{}"));
+  } catch {
+    throw new Error("SHOPEE_DISCOUNT_SHOP_TIMEZONES_JSON must be a JSON object");
+  }
+  if (!shopeeDiscountShopTimeZones || typeof shopeeDiscountShopTimeZones !== "object" || Array.isArray(shopeeDiscountShopTimeZones)
+    || shopeeDiscountShopIds.some((shopId) => typeof shopeeDiscountShopTimeZones[shopId] !== "string" || !shopeeDiscountShopTimeZones[shopId].trim())) {
+    throw new Error("Every Shopee Discount scheduler shop requires an IANA timezone");
+  }
+}
 const shopeeDiscountCountry = String(runtimeEnv.SHOPEE_DISCOUNT_COUNTRY || "TH").trim().toUpperCase();
 const shopeeDiscountCategory = String(runtimeEnv.SHOPEE_DISCOUNT_CATEGORY || "家具").trim();
 const shopeeDiscountTier = String(runtimeEnv.SHOPEE_DISCOUNT_DEFAULT_TIER || "DAILY").trim().toUpperCase();
@@ -214,13 +230,17 @@ discountScheduler = new ShopeeDiscountScheduler({
     "mabang_scheduler", scheduler.ownerId, new Date(), Math.max(30_000, scheduler.pollIntervalMs * 3),
   ),
   dailyScope: shopeeDiscountSchedulerEnabled && shopeeDiscountShopIds.length
-    ? { country: shopeeDiscountCountry, shopIds: shopeeDiscountShopIds }
+    ? { country: shopeeDiscountCountry, shops: shopeeDiscountShopIds.map((shopId) => ({
+        shopId, timeZone: shopeeDiscountShopTimeZones[shopId].trim(),
+      })) }
     : null,
   pollIntervalMs: Number(runtimeEnv.SHOPEE_DISCOUNT_POLL_INTERVAL_MS || 60_000),
   onError: (cause) => console.error(`Shopee Discount scheduler tick failed: ${cause?.code || cause?.message || "unknown"}`),
   scan: async ({ country, shopIds, timeZone }) => {
     let scheduled = 0;
     for (const shopId of shopIds) {
+      const shopTimeZone = String(shopeeDiscountShopTimeZones[shopId] || timeZone || "").trim();
+      if (!shopTimeZone) throw new Error(`Shopee Discount shop ${shopId} has no configured IANA timezone`);
       const activities = await discountService.listActivities({ shopId, status: "ACTIVE", limit: 1000 });
       const current = activities.find((activity) => activity.endsAt || activity.targetEndsAt);
       if (!current) continue;
@@ -229,8 +249,8 @@ discountScheduler = new ShopeeDiscountScheduler({
         currentEndsAt: current.endsAt || current.targetEndsAt,
         currentTier: current.metadata?.priceTier || "DAILY",
         priceTier: shopeeDiscountTier,
-        timeZone,
-        variantCount: Number(current.metadata?.variantCount || 0),
+        timeZone: shopTimeZone,
+        variantCount: await durableActivityVariantCount(dataAccess.repositories.shopeeDiscount, current),
         throughputPerHour: Number(runtimeEnv.SHOPEE_DISCOUNT_CAPACITY_PER_HOUR || 1000),
         safetyFactor: Number(runtimeEnv.SHOPEE_DISCOUNT_CAPACITY_SAFETY_FACTOR || 1.5),
         minimumDraftLeadHours: Number(runtimeEnv.SHOPEE_DISCOUNT_MIN_DRAFT_LEAD_HOURS || 24),
@@ -251,7 +271,7 @@ discountScheduler = new ShopeeDiscountScheduler({
     linkOverrides: [],
     activitySelection: [],
     renewal: { requestedStartAt: payload.targetStartsAt, durationDays: 30 },
-  }, { actorId: "shopee-discount-scheduler", requestId: `scheduler-${Date.now()}` }),
+  }, { actorId: "shopee-discount-scheduler", requestId: schedulerRequestId(payload.dueJobId) }),
   // Execution remains fail-closed here. Operators queue approved execution through the API;
   // Task 6's executor is invoked only by a deployment-specific worker context with all write gates.
   executeApprovedPlan: null,

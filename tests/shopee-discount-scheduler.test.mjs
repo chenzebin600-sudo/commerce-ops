@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import test from "node:test";
 
 import {
   ShopeeDiscountScheduler,
   computeRenewalSchedule,
+  durableActivityVariantCount,
   localDateTimeToUtc,
   reminderDueJobs,
+  schedulerRequestId,
 } from "../lib/shopee-discount/scheduler.mjs";
 
 function duplicateError() {
@@ -42,7 +45,7 @@ function activePolicy() {
   return { status: () => ({ enabled: true, state: "active" }), assertAllowed() { return true; } };
 }
 
-test("daily scan is durable once per shop-local day while manual scans remain independent", async () => {
+test("daily scan dedupes each shop-local day across changing scopes while manual scans remain independent", async () => {
   const now = new Date("2026-08-14T01:00:00.000Z");
   const repository = memoryRepository(now);
   const scans = [];
@@ -51,15 +54,20 @@ test("daily scan is durable once per shop-local day while manual scans remain in
     scan: async (payload) => scans.push(payload),
   });
 
-  await scheduler.enqueueDailyScan({ country: "TH", shopIds: ["1"] });
-  await scheduler.enqueueDailyScan({ country: "TH", shopIds: ["1"] });
+  await scheduler.enqueueDailyScan({ country: "TH", shops: [{ shopId: "1", timeZone: "Asia/Bangkok" }] });
+  await scheduler.enqueueDailyScan({ country: "TH", shops: [
+    { shopId: "1", timeZone: "Asia/Bangkok" }, { shopId: "2", timeZone: "Asia/Singapore" },
+  ] });
   await repository.createDueJob({ jobType: "MANUAL_SCAN", dedupeKey: "manual:one", dueAt: now, payload: { country: "TH", shopIds: ["1"] } });
   await repository.createDueJob({ jobType: "MANUAL_SCAN", dedupeKey: "manual:two", dueAt: now, payload: { country: "TH", shopIds: ["1"] } });
   await scheduler.tick({ enqueueDaily: false });
 
-  assert.equal([...repository.dueJobs.values()].filter((job) => job.jobType === "DAILY_SCAN").length, 1);
-  assert.deepEqual(scans.map((entry) => entry.triggerType), ["daily", "manual", "manual"]);
-  assert.equal(repository.renewals >= 6, true);
+  assert.equal([...repository.dueJobs.values()].filter((job) => job.jobType === "DAILY_SCAN").length, 2);
+  assert.deepEqual(scans.map((entry) => [entry.triggerType, entry.shopIds, entry.timeZone]), [
+    ["daily", ["1"], "Asia/Bangkok"], ["daily", ["2"], "Asia/Singapore"],
+    ["manual", ["1"], undefined], ["manual", ["1"], undefined],
+  ]);
+  assert.equal(repository.renewals >= 8, true);
 });
 
 test("restart catches up durable due work and inactive lease fails closed", async () => {
@@ -103,6 +111,22 @@ test("capacity SLO generates early enough and rejects impossible schedules", () 
   }), { code: "SHOPEE_DISCOUNT_CAPACITY_SLO_IMPOSSIBLE" });
 });
 
+test("capacity SLO reads the authoritative durable activity plan count and rejects missing counts", async () => {
+  const repository = {
+    async countPlanItemsByShop(planId) {
+      assert.equal(planId, "plan-source");
+      return [{ shopId: "1", itemCount: 10_000 }];
+    },
+  };
+  assert.equal(await durableActivityVariantCount(repository, { planId: "plan-source", shopId: "1" }), 10_000);
+  await assert.rejects(durableActivityVariantCount(repository, { planId: "plan-source", shopId: "2" }), {
+    code: "SHOPEE_DISCOUNT_CAPACITY_COUNT_UNAVAILABLE",
+  });
+  const rootSource = await fs.readFile(new URL("../scheduler.mjs", import.meta.url), "utf8");
+  assert.match(rootSource, /variantCount:\s*await durableActivityVariantCount/);
+  assert.doesNotMatch(rootSource, /metadata\?\.variantCount\s*\|\|\s*0/);
+});
+
 test("local wall-clock conversion stores unique UTC instants and rejects DST gaps/overlaps", () => {
   assert.equal(localDateTimeToUtc("2026-08-20T08:00:00", "Asia/Shanghai"), "2026-08-20T00:00:00.000Z");
   assert.throws(() => localDateTimeToUtc("2026-03-08T02:30:00", "America/New_York"), { code: "SHOPEE_DISCOUNT_TIMEZONE_INVALID_LOCAL_TIME" });
@@ -116,6 +140,22 @@ test("local wall-clock conversion stores unique UTC instants and rejects DST gap
   assert.equal(new Set(jobs.map((job) => job.dedupeKey)).size, 3);
 });
 
+test("each shop carries its own persisted IANA timezone and invalid zones fail before enqueue", async () => {
+  const now = new Date("2026-08-14T01:00:00.000Z");
+  const repository = memoryRepository(now);
+  const scheduler = new ShopeeDiscountScheduler({ repository, externalTaskPolicy: activePolicy(), ownerId: "worker", now: () => now });
+  await scheduler.enqueueDailyScan({ country: "US", shops: [
+    { shopId: "1", timeZone: "America/New_York" }, { shopId: "2", timeZone: "America/Los_Angeles" },
+  ] });
+  assert.deepEqual([...repository.dueJobs.values()].map((job) => job.payload.timeZone).sort(), ["America/Los_Angeles", "America/New_York"]);
+  await assert.rejects(scheduler.enqueueDailyScan({ country: "US", shops: [{ shopId: "3", timeZone: "Invalid/Zone" }] }), {
+    code: "SHOPEE_DISCOUNT_TIMEZONE_INVALID",
+  });
+  const rootSource = await fs.readFile(new URL("../scheduler.mjs", import.meta.url), "utf8");
+  assert.match(rootSource, /SHOPEE_DISCOUNT_SHOP_TIMEZONES_JSON/);
+  assert.match(rootSource, /shops:\s*shopeeDiscountShopIds\.map/);
+});
+
 test("renewal draft creates one authoritative human Foundation task and never approves", async () => {
   const now = new Date("2026-08-14T01:00:00.000Z");
   const repository = memoryRepository(now);
@@ -123,7 +163,7 @@ test("renewal draft creates one authoritative human Foundation task and never ap
   const scheduler = new ShopeeDiscountScheduler({
     repository, externalTaskPolicy: activePolicy(), ownerId: "worker-1", now: () => now,
     createRenewalDraft: async () => ({ planId: "plan-1", merkleRoot: "root-1", itemCount: 10 }),
-    foundation: { tasks: { create: async (task) => { createdTasks.push(task); return { id: "foundation-task-1" }; } } },
+    foundation: { tasks: { create: async (task) => { createdTasks.push(task); return { id: "foundation-task-1", input: task.input }; } } },
   });
   await repository.createDueJob({ jobType: "RENEWAL_DRAFT", dedupeKey: "draft:shop-1", dueAt: now,
     payload: { country: "TH", shopId: "shop-1", targetStartsAt: "2026-08-20T00:00:00.000Z", targetEndsAt: "2026-09-19T00:00:00.000Z", timeZone: "Asia/Shanghai" } });
@@ -134,6 +174,38 @@ test("renewal draft creates one authoritative human Foundation task and never ap
   assert.equal(createdTasks[0].domain, "product");
   assert.equal("approve" in createdTasks[0], false);
   assert.equal([...repository.dueJobs.values()].filter((job) => job.jobType === "REMINDER").length, 3);
+});
+
+test("due-job replay uses one deterministic preview identity and validates the Foundation plan binding", async () => {
+  assert.equal(schedulerRequestId("due-job-1"), schedulerRequestId("due-job-1"));
+  assert.notEqual(schedulerRequestId("due-job-1"), schedulerRequestId("due-job-2"));
+  const rootSource = await fs.readFile(new URL("../scheduler.mjs", import.meta.url), "utf8");
+  assert.match(rootSource, /requestId:\s*schedulerRequestId\(payload\.dueJobId\)/);
+  assert.doesNotMatch(rootSource, /requestId:\s*`scheduler-\$\{Date\.now\(\)\}`/);
+
+  const now = new Date("2026-08-14T01:00:00.000Z");
+  const repository = memoryRepository(now);
+  const plans = new Map();
+  const tasks = new Map();
+  const scheduler = new ShopeeDiscountScheduler({ repository, externalTaskPolicy: activePolicy(), ownerId: "worker", now: () => now,
+    createRenewalDraft: async ({ dueJobId }) => {
+      const id = `plan:${schedulerRequestId(dueJobId)}`;
+      if (!plans.has(id)) plans.set(id, { planId: id, itemCount: 10 });
+      return plans.get(id);
+    },
+    foundation: { tasks: { create: async (input) => {
+      if (!tasks.has(input.domainRefId)) tasks.set(input.domainRefId, { id: "task-1", input: input.input });
+      return tasks.get(input.domainRefId);
+    } } },
+  });
+  const job = await repository.createDueJob({ id: "due-job-1", jobType: "RENEWAL_DRAFT", dedupeKey: "draft:one", dueAt: now,
+    payload: { country: "TH", shopId: "1", targetStartsAt: "2026-08-20T00:00:00.000Z", targetEndsAt: "2026-09-19T00:00:00.000Z" } });
+  await scheduler.tick({ enqueueDaily: false });
+  Object.assign(job, { status: "PENDING", ownerId: null });
+  await scheduler.tick({ enqueueDaily: false });
+  assert.equal(plans.size, 1);
+  assert.equal(tasks.size, 1);
+  assert.equal(tasks.get("due-job-1").input.planId, [...plans.values()][0].planId);
 });
 
 test("only explicitly approved execution work reaches the injected gated executor", async () => {

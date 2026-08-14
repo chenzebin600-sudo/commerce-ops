@@ -22,12 +22,18 @@ function notificationRepository() {
     async claimNotificationDelivery({ notificationId, expectedAttemptCount }) {
       const row = [...rows.values()].find((entry) => entry.id === notificationId);
       if (!row || row.attemptCount !== expectedAttemptCount || !["PENDING", "RETRY_WAIT"].includes(row.status)) return null;
-      Object.assign(row, { status: "SENDING", attemptCount: row.attemptCount + 1 });
+      Object.assign(row, { status: "SENDING", attemptCount: row.attemptCount + 1, deliveryLeaseUntil: "2026-08-14T01:01:00.000Z" });
       return row;
     },
     async markNotificationDelivery(input) {
       const row = [...rows.values()].find((entry) => entry.id === input.notificationId);
       Object.assign(row, input.patch);
+      return row;
+    },
+    async markNotificationUnknown({ notificationId, reasonCode }) {
+      const row = [...rows.values()].find((entry) => entry.id === notificationId);
+      if (!row || row.status !== "SENDING" || new Date(row.deliveryLeaseUntil) > new Date("2026-08-14T01:02:00.000Z")) return null;
+      Object.assign(row, { status: "FAILED", coordinationState: "UNKNOWN", lastErrorCode: reasonCode });
       return row;
     },
     async createDueJob(input) {
@@ -96,6 +102,24 @@ test("notification failure never changes the supplied scan, preview, or executio
   assert.strictEqual(outcome.businessResult, businessResult);
 });
 
+test("recovered SENDING delivery becomes explicit UNKNOWN coordination and is never blindly resent", async () => {
+  const repository = notificationRepository();
+  repository.rows.set("reminder:due-crash", {
+    id: "notification-crash", dedupeKey: "reminder:due-crash", notificationType: "RENEWAL_REMINDER",
+    status: "SENDING", coordinationState: null, attemptCount: 1, deliveryLeaseUntil: "2026-08-14T01:01:00.000Z",
+    metadata: { summaryInput: { planId: "plan-1", shopId: "1", severity: "WARNING", hoursBefore: 6, counts: {} } },
+  });
+  let sends = 0;
+  const notifications = new ShopeeDiscountNotifications({ repository, groupId: "ops", entryBaseUrl: "https://ops.internal.example",
+    transport: async () => { sends += 1; return { ok: true }; } });
+  await assert.rejects(notifications.sendReminder({ dueJobId: "due-crash", planId: "plan-1", shopId: "1", severity: "WARNING", hoursBefore: 6, counts: {} }), {
+    code: "SHOPEE_DISCOUNT_NOTIFICATION_COORDINATION_REQUIRED",
+  });
+  assert.equal(sends, 0);
+  assert.equal(repository.rows.get("reminder:due-crash").coordinationState, "UNKNOWN");
+  assert.equal(repository.rows.get("reminder:due-crash").lastErrorCode, "DINGTALK_DELIVERY_UNKNOWN");
+});
+
 test("summary builder rejects unsafe configuration and ignores arbitrary caller fields", () => {
   assert.throws(() => buildDingTalkSummary({ planId: "plan-1", severity: "INFO", counts: {} }, { entryBaseUrl: "https://evil.invalid", allowedEntryHost: "ops.internal.example" }), {
     code: "SHOPEE_DISCOUNT_NOTIFICATION_CONFIG_INVALID",
@@ -131,6 +155,20 @@ test("SQLite notification delivery state and dedupe survive a database restart",
       dedupeKey: "reminder:durable-1", planId: null, notificationType: "RENEWAL_REMINDER", severity: "INFO",
       title: "duplicate", message: "duplicate", channel: "DINGTALK_GROUP", metadata: {},
     }), /UNIQUE/);
+    const crashed = await access.repositories.shopeeDiscount.createNotification({
+      dedupeKey: "reminder:crashed", planId: null, notificationType: "RENEWAL_REMINDER", severity: "WARNING",
+      title: "Shopee Discount WARNING", message: "Safe operational summary", channel: "DINGTALK_GROUP", metadata: {},
+    });
+    await access.repositories.shopeeDiscount.claimNotificationDelivery({ notificationId: crashed.id, expectedAttemptCount: 0 });
+    access.provider.connection.prepare("UPDATE shopee_discount_notifications SET delivery_lease_until=? WHERE id=?")
+      .run("2000-01-01T00:00:00.000Z", crashed.id);
+    await access.repositories.shopeeDiscount.markNotificationUnknown({ notificationId: crashed.id, evidence: { recovery: true } });
+    access.close();
+    access = openCommerceDataAccess({ rootDir: path.resolve("."), databasePath, migrationsDir: path.resolve("migrations") });
+    const coordinated = await access.repositories.shopeeDiscount.getNotificationByDedupeKey("reminder:crashed");
+    assert.equal(coordinated.status, "FAILED");
+    assert.equal(coordinated.coordinationState, "UNKNOWN");
+    assert.deepEqual(coordinated.coordinationEvidence, { recovery: true });
   } finally {
     access.close();
     await fs.rm(root, { recursive: true, force: true });

@@ -30,5 +30,14 @@
 
 - `SHOPEE_DISCOUNT_SCHEDULER_ENABLED=true` explicitly enables the runner after the shared lease is held.
 - `SHOPEE_DISCOUNT_SCHEDULER_SHOP_IDS`, `SHOPEE_DISCOUNT_COUNTRY`, `SHOPEE_DISCOUNT_CATEGORY` and `SHOPEE_DISCOUNT_DEFAULT_TIER` define the default next-period draft scope.
+- `SHOPEE_DISCOUNT_SHOP_TIMEZONES_JSON` must map every configured shop ID to its own IANA timezone; missing, conflicting or invalid zones fail closed.
 - Capacity knobs are `SHOPEE_DISCOUNT_CAPACITY_PER_HOUR`, `SHOPEE_DISCOUNT_CAPACITY_SAFETY_FACTOR`, `SHOPEE_DISCOUNT_MIN_DRAFT_LEAD_HOURS` and `SHOPEE_DISCOUNT_MAX_DRAFT_LEAD_DAYS`.
 - DingTalk requires exactly one `SHOPEE_DISCOUNT_DINGTALK_CONFIG_ID` and an HTTPS `SHOPEE_DISCOUNT_ENTRY_BASE_URL`.
+
+## Breaker review fix round 1
+
+- Renewal replay now derives its request identity only from the durable `dueJobId`. Root composition no longer uses wall-clock time. Replayed Foundation tasks validate that their persisted `input.planId` exactly matches the deterministic draft plan.
+- Capacity lead now reads the positive per-shop item count from the durable source activity plan through `countPlanItemsByShop`; absent/zero/mismatched counts fail with `SHOPEE_DISCOUNT_CAPACITY_COUNT_UNAVAILABLE` instead of silently selecting the 24-hour minimum.
+- Forward migrations SQLite 031/PostgreSQL 039 add a delivery lease and explicit `coordination_state='UNKNOWN'`. A process loss after DingTalk claim is never blindly resent: after lease expiry it becomes terminal manual coordination with bounded evidence and the recovered due job fails visibly.
+- Daily scheduling now creates one durable child job per shop and local logical day. Changing scope from A to A+B reuses A and adds only B. Each child persists its own configured IANA timezone; manual renewal scans resolve the same per-shop map and fail closed if absent.
+- Fix-round focused scheduler/notification/PostgreSQL suite: 38 passed, 0 failed. Affected Foundation/repository/scheduler/data-access suite: 38 passed, 0 failed. All `tests/shopee-discount*.test.mjs`: 218 passed, 0 failed. No live network request was made.

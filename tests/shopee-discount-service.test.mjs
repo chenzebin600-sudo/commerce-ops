@@ -6,6 +6,7 @@ import test from "node:test";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
 import { FoundationService } from "../lib/foundation/foundation-service.mjs";
 import { ShopeeDiscountService } from "../lib/shopee-discount/service.mjs";
+import { schedulerRequestId } from "../lib/shopee-discount/scheduler.mjs";
 
 const NOW = new Date("2026-08-13T10:00:00.000Z");
 
@@ -300,6 +301,22 @@ test("a normal renewal preview can be approved, queued, and executed without liv
     const summary = await runApprovedPlan(preview.id, workerContext);
     assert.equal(summary.status, "SUCCEEDED");
     assert.deepEqual(writes.map(({ operation }) => operation), ["createDiscount", "addDiscountItems"]);
+  } finally { await context.close(); }
+});
+
+test("a committed scheduler preview replays to the same domain and Foundation plan after due-job crash", async () => {
+  const context = await fixture();
+  try {
+    const input = previewInput({
+      workflow: "NEXT_RENEWAL",
+      renewal: { requestedStartAt: "2026-08-15T00:00:00.000Z", durationDays: 30 },
+    });
+    const requestId = schedulerRequestId("due-renewal-crash-1");
+    const first = await context.service.createPreview(input, { actorId: "shopee-discount-scheduler", requestId });
+    const replayed = await context.service.createPreview(input, { actorId: "shopee-discount-scheduler", requestId });
+    assert.equal(replayed.id, first.id);
+    assert.equal(replayed.foundationPlanId, first.foundationPlanId);
+    assert.equal((await context.access.repositories.shopeeDiscount.listPlans()).length, 1);
   } finally { await context.close(); }
 });
 

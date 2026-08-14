@@ -17,7 +17,7 @@ const PUBLIC_METHODS = [
   "setExecutionItemStatus", "listRunsScoped", "listActivitiesScoped", "listIssuesScoped",
   "getStoredSystemActivity", "getLatestWarehouseBaseline", "saveWarehouseBaseline",
   "getApprovalSagaPhase", "recordApprovalSagaPhase",
-  "createNotification", "getNotificationByDedupeKey", "claimNotificationDelivery", "markNotificationDelivery",
+  "createNotification", "getNotificationByDedupeKey", "claimNotificationDelivery", "markNotificationDelivery", "markNotificationUnknown",
 ];
 
 class RecordingProvider {
@@ -84,10 +84,38 @@ test("PostgreSQL notification delivery uses persistent dedupe and compare-and-se
     status: "DELIVERED", attemptCount: 1, deliveredAt: "2026-08-14T00:01:00.000Z",
   } });
   assert.match(provider.calls[0].text, /dedupe_key/);
-  assert.match(provider.calls[1].text, /attempt_count=\$3/);
+  assert.match(provider.calls[1].text, /attempt_count=\$4/);
   assert.match(provider.calls[1].text, /delivery_status=ANY/);
   assert.match(provider.calls[2].text, /delivery_status='SENDING'/);
   assert.equal(provider.calls.every((call) => !call.text.includes("reminder:one")), true);
+});
+
+test("PostgreSQL expired notification send is fenced into UNKNOWN coordination without resend", async () => {
+  const provider = new RecordingProvider([{ rows: [{
+    id: "notification-unknown", dedupe_key: "reminder:unknown", notification_type: "RENEWAL_REMINDER",
+    severity: "WARNING", title: "Shopee Discount WARNING", message: "Safe operational summary",
+    channel: "DINGTALK_GROUP", delivery_status: "FAILED", attempt_count: 1,
+    coordination_state: "UNKNOWN", coordination_evidence_json: { recovery: true },
+    created_at: new Date("2026-08-14T00:00:00.000Z"), updated_at: new Date("2026-08-14T01:00:00.000Z"),
+  }], rowCount: 1 }]);
+  const repository = new PostgresqlShopeeDiscountRepository({ provider, now: () => new Date("2026-08-14T01:00:00.000Z") });
+  const row = await repository.markNotificationUnknown({ notificationId: "notification-unknown", evidence: { recovery: true } });
+  assert.equal(row.coordinationState, "UNKNOWN");
+  assert.deepEqual(row.coordinationEvidence, { recovery: true });
+  assert.match(provider.calls[0].text, /delivery_lease_until<=\$3/);
+  assert.match(provider.calls[0].text, /coordination_state='UNKNOWN'/);
+});
+
+test("forward notification coordination migration keeps SQLite and PostgreSQL leases parallel", async () => {
+  const [sqlite, postgres] = await Promise.all([
+    fs.readFile(path.resolve("migrations/031_shopee_discount_notification_coordination.sql"), "utf8"),
+    fs.readFile(path.resolve("migrations/postgresql/039_shopee_discount_notification_coordination.sql"), "utf8"),
+  ]);
+  for (const sql of [sqlite, postgres]) {
+    assert.match(sql, /delivery_lease_until/);
+    assert.match(sql, /coordination_state/);
+    assert.match(sql, /UNKNOWN/);
+  }
 });
 
 test("PostgreSQL row dates are normalized to ISO strings", async () => {
