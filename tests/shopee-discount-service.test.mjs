@@ -1059,7 +1059,7 @@ test("authenticated manual execution resumes an EXECUTING job after its lease ex
     await context.service.approvePreview({ planId: preview.id, merkleRoot: preview.merkleRoot, operatorName: "Alice", confirmationText: preview.confirmationText }, { actorId: "ops-1" });
     const actor = { actorId: "ops-1", identity: { actorId: "ops-1", roles: ["shopee_discount_execute"] } };
     await context.service.requestExecution({ planId: preview.id, merkleRoot: preview.merkleRoot }, actor);
-    clock = new Date(NOW.getTime() + 10_000);
+    clock = new Date(NOW.getTime() + 10 * 60_000);
     const running = (await context.access.repositories.shopeeDiscount.listExecutionJobs(preview.id))[0];
     assert.equal(running.status, "RUNNING");
     assert.ok(new Date(running.leaseUntil).getTime() <= clock.getTime());
@@ -1105,4 +1105,48 @@ test("Shopee product reference parser accepts only anchored canonical HTTPS link
   assert.equal(parseShopeeProductReference("prefix https://shopee.co.th/product-name-i.1.10 suffix"), null);
   assert.equal(parseShopeeProductReference("https://shopee.co.th.evil.example/product-name-i.1.10"), null);
   assert.equal(parseShopeeProductReference("http://shopee.co.th/product-name-i.1.10"), null);
+});
+
+test("batch override lookup scans each shop once and returns stable ordered echoes", async () => {
+  const shopee = fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] },
+    modelsByItem: { "10": [model("100", "SKU-ONE", "10000", "9500"), model("101", "SKU-ONE", "10000", "9500")] } });
+  let listingCalls = 0, modelCalls = 0;
+  const listActiveItems = shopee.listActiveItems.bind(shopee), getModelList = shopee.getModelList.bind(shopee);
+  shopee.listActiveItems = async (...args) => { listingCalls += 1; return listActiveItems(...args); };
+  shopee.getModelList = async (...args) => { modelCalls += 1; return getModelList(...args); };
+  const context = await fixture({ shopee });
+  try {
+    const result = await context.service.lookupOverrideBatch({ country: "TH", rows: [
+      { shopId: "1", query: "https://shopee.co.th/name-i.1.10", priceTier: "EVENT", note: "row one" },
+      { shopId: "1", query: "SKU-ONE", priceTier: "MEGA", note: "row two" },
+    ] }, { requestId: "batch-lookup" });
+    assert.equal(listingCalls, 1);
+    assert.equal(modelCalls, 1);
+    assert.deepEqual(result.rows.map(({ index, status, itemId, variantCount, finalTier }) => ({ index, status, itemId, variantCount, finalTier })), [
+      { index: 0, status: "READY", itemId: "10", variantCount: 2, finalTier: "EVENT" },
+      { index: 1, status: "READY", itemId: "10", variantCount: 2, finalTier: "MEGA" },
+    ]);
+  } finally { await context.close(); }
+});
+
+test("warehouse verification cannot certify a credential generation changed in flight", async () => {
+  let releaseVerification;
+  let verificationStarted;
+  const started = new Promise((resolve) => { verificationStarted = resolve; });
+  const blocked = new Promise((resolve) => { releaseVerification = resolve; });
+  const context = await fixture({ serviceOptions: {
+    protectWarehouseKey: async (value) => `encrypted:${value}`,
+    verifyWarehouseKey: async () => { verificationStarted(); await blocked; return true; },
+  } });
+  const identity = { actorId: "admin-1", roles: ["shopee_discount_execute"] };
+  try {
+    await context.service.updateSettings({ warehouseKey: "zndr_generation_A" }, { identity });
+    const verification = context.service.verifySettings({ identity });
+    await started;
+    await context.service.updateSettings({ warehouseKey: "zndr_generation_B" }, { identity });
+    releaseVerification();
+    await assert.rejects(verification, { code: "SHOPEE_DISCOUNT_SETTINGS_CHANGED_REVERIFY" });
+    const settings = await context.service.getSettings({ identity });
+    assert.equal(settings.warehouseKeyVerifiedAt, null);
+  } finally { await context.close(); }
 });

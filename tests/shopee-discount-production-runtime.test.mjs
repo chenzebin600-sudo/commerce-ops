@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createProductionReaders, relayNonTransmissionEvidence } from "../lib/shopee-discount/production-runtime.mjs";
+import { createProductionReaders, relayNonTransmissionEvidence, resolveWarehouseSettingsKey } from "../lib/shopee-discount/production-runtime.mjs";
 
 function shopeeFixture() {
   const details = {
@@ -73,4 +73,14 @@ test("relay non-transmission evidence is bound to the relay operation uuid", () 
     operationUuid: intent.operationUuid,
     relayRequestId: "relay-1",
   });
+});
+
+test("managed warehouse key references require a resolver and are never treated as plaintext keys", async () => {
+  const settings = { warehouseKeyReference: "vault://commerce/shopee-discount", encryptedWarehouseKeyCiphertext: null };
+  await assert.rejects(resolveWarehouseSettingsKey(settings, {}), { code: "SHOPEE_DISCOUNT_MANAGED_SECRET_RESOLVER_REQUIRED" });
+  let observedReference = null;
+  const key = await resolveWarehouseSettingsKey(settings, { resolveManagedReference: async (reference) => { observedReference = reference; return "zndr_resolved_secret"; } });
+  assert.equal(observedReference, settings.warehouseKeyReference);
+  assert.equal(key, "zndr_resolved_secret");
+  await assert.rejects(resolveWarehouseSettingsKey(settings, { resolveManagedReference: async (reference) => reference }), { code: "SHOPEE_DISCOUNT_WAREHOUSE_KEY_INVALID" });
 });

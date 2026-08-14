@@ -126,7 +126,7 @@ import { WarehouseControlPriceClient } from "./lib/shopee-discount/warehouse-cli
 import { resolveShopeeWriteSecurity } from "./lib/shopee-discount/write-security.mjs";
 import { ShopeeDiscountService } from "./lib/shopee-discount/service.mjs";
 import { createShopeeDiscountApi } from "./lib/shopee-discount/api.mjs";
-import { createManualExecutionRuntime, createProductionReaders, relayNonTransmissionEvidence } from "./lib/shopee-discount/production-runtime.mjs";
+import { createManualExecutionRuntime, createProductionReaders, relayNonTransmissionEvidence, resolveWarehouseSettingsKey } from "./lib/shopee-discount/production-runtime.mjs";
 import { foundationContentHash } from "./lib/foundation/foundation-contracts.mjs";
 import { ShopeeAdvertisingService } from "./lib/advertising/shopee-advertising-service.mjs";
 import { createShopeeAdvertisingApi } from "./lib/advertising/shopee-advertising-api.mjs";
@@ -390,13 +390,26 @@ const shopeeDiscountReadAdapter = new ShopeeReadAdapter({
   transport: shopeeDiscountRelayTransport,
   retryPolicy: { maxAttempts: 3, delaysMs: [5_000, 15_000] },
 });
+const shopeeDiscountManagedReferenceMap = (() => {
+  try {
+    const parsed = JSON.parse(runtimeEnv.SHOPEE_DISCOUNT_MANAGED_SECRET_REFERENCES || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch { return {}; }
+})();
+const resolveShopeeDiscountManagedSecret = async (reference) => {
+  const environmentName = shopeeDiscountManagedReferenceMap[reference];
+  if (typeof environmentName !== "string" || !/^SHOPEE_DISCOUNT_SECRET_[A-Z0-9_]+$/.test(environmentName)) {
+    throw Object.assign(new Error("Managed warehouse secret reference is not allowlisted"), { code: "SHOPEE_DISCOUNT_MANAGED_SECRET_REFERENCE_DENIED" });
+  }
+  return runtimeEnv[environmentName] || null;
+};
 const shopeeDiscountWarehouse = /^https:\/\//.test(String(runtimeEnv.SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL || ""))
   ? new WarehouseControlPriceClient({
       fetchImpl: globalThis.fetch,
       baseUrl: runtimeEnv.SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL,
       getKey: async () => {
         const settings = await dataAccess.repositories.shopeeDiscount.getSettings();
-        return settings?.encryptedWarehouseKeyCiphertext ? decryptSecret(settings.encryptedWarehouseKeyCiphertext) : null;
+        return resolveWarehouseSettingsKey(settings, { decryptCiphertext: decryptSecret, resolveManagedReference: resolveShopeeDiscountManagedSecret });
       },
     })
   : { async scanPrices() { return { status: "BLOCKED", code: "WAREHOUSE_UNAVAILABLE", rows: [], warnings: [], evidence: {} }; } };

@@ -8,7 +8,7 @@ import { PostgresqlShopeeDiscountRepository } from "../lib/shopee-discount/postg
 import { loadPostgresqlMigrations, runPostgresqlMigrations } from "../lib/data/postgresql/migration-runner.mjs";
 
 const PUBLIC_METHODS = [
-  "getStorageMode", "getSettings", "saveSettings", "invalidateActivePlans", "createPlan", "getPlan", "listPlans",
+  "getStorageMode", "getSettings", "saveSettings", "markSettingsVerified", "invalidateActivePlans", "createPlan", "getPlan", "listPlans",
   "appendPlanShard", "sealPlan", "approvePlan", "markPlanState", "createJob", "getJob", "claimJob",
   "renewJobLease", "checkpointJob", "createDispatchIntent", "completeDispatchIntent",
   "markDispatchUnknown", "getDispatchIntent", "listDispatchIntents", "recordIntentOutcome", "reconcileIntent",
@@ -272,6 +272,18 @@ test("PostgreSQL settings explicitly clear the inactive credential mode", async 
   const call = provider.calls[0];
   assert.match(call.text, /encrypted_warehouse_key_ciphertext=CASE WHEN \$1 THEN \$2/);
   assert.deepEqual(call.values.slice(0, 6), [true, null, true, "vault://discount/key", true, "managed reference"]);
+});
+
+test("PostgreSQL verification stamp is credential-generation compare-and-set", async () => {
+  const provider = new RecordingProvider([{ rows: [], rowCount: 0 }]);
+  const repository = new PostgresqlShopeeDiscountRepository({ provider, now: () => new Date("2026-08-13T12:00:00.000Z") });
+  const result = await repository.markSettingsVerified({
+    expected: { encryptedWarehouseKeyCiphertext: "cipher-A", warehouseKeyReference: null, warehouseKeyUpdatedAt: "2026-08-13T11:00:00.000Z" },
+    metadata: { warehouseKeyVerifiedAt: "2026-08-13T12:00:00.000Z", warehouseKeyVerifiedFingerprint: "a".repeat(64) },
+  }, { actorId: "admin" });
+  assert.equal(result, null);
+  assert.match(provider.calls[0].text, /encrypted_warehouse_key_ciphertext IS NOT DISTINCT FROM \$4/);
+  assert.deepEqual(provider.calls[0].values.slice(3), ["cipher-A", null, "2026-08-13T11:00:00.000Z"]);
 });
 
 test("PostgreSQL plan state changes reject lifecycle shortcuts before SQL", async () => {

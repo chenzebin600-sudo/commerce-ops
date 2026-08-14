@@ -4,13 +4,14 @@ import {
   ShieldAlert, Trash2,
 } from "@lucide/vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   approveDiscountPreview, createDiscountPreview, executeDiscountPreview, loadDiscountActivities,
   discountPreviewInputKey, DiscountPageFlowController, DiscountRequestGuard,
   loadDiscountIssues, loadDiscountPreviewItems, loadDiscountRuns, loadDiscountShops, loadDiscountStatus,
-  requestDiscountScan, lookupDiscountOverrides, reconcileDiscountIntent, loadDiscountSettings, saveDiscountSettings, verifyDiscountSettings,
-  type ActivityTierSelection, type DiscountActivity, type DiscountIssue, type DiscountOverrideLookupRow, type DiscountSettings,
+  requestDiscountScan, lookupDiscountOverrides, lookupDiscountOverrideBatch, reconcileDiscountIntent, loadDiscountSettings, saveDiscountSettings, verifyDiscountSettings,
+  loadDiscountPreview, loadDiscountUnknownIntents,
+  type ActivityTierSelection, type DiscountActivity, type DiscountIssue, type DiscountOverrideLookupRow, type DiscountSettings, type DiscountUnknownIntent,
   type DiscountPreview, type DiscountPreviewItem, type DiscountRun, type DiscountShop, type DiscountStatus,
   type CreateDiscountPreviewInput, type DiscountTier, type DiscountWorkflow, type LinkTierOverride, type TierOverride,
 } from "@/services/shopee-discount";
@@ -60,6 +61,7 @@ const confirmationInput = ref("");
 const runs = ref<DiscountRun[]>([]);
 const activities = ref<DiscountActivity[]>([]);
 const issues = ref<DiscountIssue[]>([]);
+const unknownIntents = ref<DiscountUnknownIntent[]>([]);
 const activeTab = ref("preview");
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 const requestGuard = new DiscountRequestGuard();
@@ -124,7 +126,7 @@ const executionPercent = computed(() => {
     .reduce((sum, [, value]) => sum + Number(value || 0), 0);
   return Math.min(100, Math.round(done / total * 100));
 });
-const unknownCount = computed(() => runs.value.reduce((sum, run) => sum + Number(run.counters?.UNKNOWN || 0), 0));
+const unknownCount = computed(() => unknownIntents.value.length);
 const renewalReminders = computed(() => activities.value.filter((entry) => {
   if (!entry.endsAt || !["ACTIVE", "PLANNED", "PENDING"].includes(entry.status)) return false;
   return new Date(entry.endsAt).getTime() <= Date.now() + 24 * 60 * 60 * 1000;
@@ -242,14 +244,15 @@ async function validateBatch() {
   if (errors.length) return;
   batchValidating.value = true;
   try {
+    const lookup = await lookupDiscountOverrideBatch({ country: country.value, rows: candidates.map((candidate) => ({
+      shopId: candidate.shopId, query: candidate.itemRef, priceTier: candidate.priceTier, note: candidate.note,
+    })) });
     const echoes = [];
-    for (const candidate of candidates) {
-      const lookup = await lookupDiscountOverrides({ country: country.value, shopIds: [candidate.shopId], query: candidate.itemRef,
-        priceTier: candidate.priceTier, note: candidate.note, limit: 2 });
-      if (lookup.rows.length !== 1) throw new Error(`第 ${candidate.line} 行：商品无法唯一解析`);
-      const row = lookup.rows[0];
+    for (const row of lookup.rows) {
+      const candidate = candidates[row.index];
+      if (row.status !== "READY" || !row.itemId) throw new Error(`第 ${candidate.line} 行：${row.errorCode || "商品无法唯一解析"}`);
       if (linkOverrides.value.some((entry) => entry.shopId === row.shopId && entry.itemId === row.itemId)) throw new Error(`第 ${candidate.line} 行：商品已经添加`);
-      echoes.push({ ...row, priceTier: candidate.priceTier, note: candidate.note });
+      echoes.push({ ...row, priceTier: row.finalTier || candidate.priceTier, note: row.note || candidate.note });
     }
     batchValidatedRows.value = echoes;
     ElMessage.success(`已校验 ${echoes.length} 条，请确认回显后导入`);
@@ -279,7 +282,7 @@ function chooseOverride(row: DiscountOverrideLookupRow) {
   resetPlan();
 }
 async function reconcileIssue(issue: DiscountIssue, resolution: "LINK_VERIFIED_OBJECT" | "CONFIRMED_NOT_SENT" | "ABANDONED") {
-  const intentId = String(issue.evidence?.intentId || "");
+  const intentId = String(issue.intentId || issue.evidence?.intentId || "");
   if (!intentId) return ElMessage.error("该异常没有可协调的 Intent ID");
   try {
     let evidence: Record<string, unknown> | undefined;
@@ -297,6 +300,20 @@ async function reconcileIssue(issue: DiscountIssue, resolution: "LINK_VERIFIED_O
     await reconcileDiscountIntent(intentId, resolution, evidence);
     ElMessage.success("UNKNOWN 决策已记录审计"); await refreshOperationalData();
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : "UNKNOWN 协调失败"); }
+}
+async function reconcileUnknownIntent(intent: DiscountUnknownIntent, resolution: "LINK_VERIFIED_OBJECT" | "CONFIRMED_NOT_SENT" | "ABANDONED") {
+  await reconcileIssue({ intentId: intent.intentId, evidence: {}, planId: intent.planId } as DiscountIssue, resolution);
+}
+
+async function restorePlan(planId: string) {
+  try {
+    const restored = await loadDiscountPreview(planId);
+    const page = await loadDiscountPreviewItems(planId, { pageSize: 100 });
+    preview.value = restored;
+    previewItems.value = page.items;
+    nextCursor.value = page.nextCursor;
+    activeTab.value = "execution";
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "恢复执行方案失败"); }
 }
 async function loadSettingsPanel() { try { settings.value = await loadDiscountSettings(); } catch { settings.value = null; } }
 async function saveSettingsPanel() {
@@ -323,19 +340,25 @@ async function loadDashboard() {
   loading.value = true;
   errorMessage.value = "";
   try {
-    const [nextStatus, nextShops, nextRuns, nextActivities, nextIssues] = await Promise.all([
+    const [nextStatus, nextShops, nextRuns, nextActivities, nextIssues, nextUnknownIntents] = await Promise.all([
       loadDiscountStatus(), loadDiscountShops(), loadDiscountRuns({ limit: 50 }),
-      loadDiscountActivities({ limit: 50 }), loadDiscountIssues({ limit: 50 }),
+      loadDiscountActivities({ limit: 50 }), loadDiscountIssues({ limit: 50 }), loadDiscountUnknownIntents(50),
     ]);
     pageFlow.commitOperationalSnapshot(snapshotTicket, () => {
       runs.value = nextRuns;
       activities.value = nextActivities;
       issues.value = nextIssues;
+      unknownIntents.value = nextUnknownIntents;
     });
     if (requestGuard.isCurrent(dashboardTicket, {})) {
       status.value = nextStatus;
       shops.value = nextShops;
       if (!country.value) country.value = countries.value[0] || "";
+    }
+    await nextTick();
+    if (!preview.value) {
+      const recoverable = nextRuns.find((run) => ["RUNNING", "PENDING"].includes(run.status));
+      if (recoverable) await restorePlan(recoverable.planId);
     }
   } catch (error) {
     if (requestGuard.isCurrent(dashboardTicket, {}) && pageFlow.isOperationalSnapshotCurrent(snapshotTicket)) {
@@ -620,6 +643,7 @@ onBeforeUnmount(() => {
 
         <el-tab-pane name="execution">
           <template #label><span class="tab-label"><Play :size="15" />执行进度</span></template>
+          <div class="batch-actions" aria-label="恢复历史执行方案"><span>最近执行：</span><el-button v-for="run in runs.slice(0, 10)" :key="run.id" size="small" @click="restorePlan(run.planId)">{{ run.planId }} · {{ run.status }}</el-button></div>
           <div v-if="currentRun" class="execution-panel" aria-live="polite">
             <div class="execution-head"><div><strong>{{ currentRun.id }}</strong><span>{{ currentRun.status }}，更新于 {{ formatDate(currentRun.updatedAt) }}</span></div><el-button :icon="RefreshCw" @click="refreshOperationalData">刷新状态</el-button></div>
             <el-progress :percentage="executionPercent" :status="currentRun.status === 'SUCCEEDED' ? 'success' : currentRun.status === 'FAILED' ? 'exception' : undefined" />
@@ -631,12 +655,13 @@ onBeforeUnmount(() => {
         <el-tab-pane name="issues">
           <template #label><span class="tab-label"><AlertTriangle :size="15" />异常与 UNKNOWN 协调 <el-badge v-if="unknownCount" :value="unknownCount" /></span></template>
           <el-alert v-if="unknownCount" title="UNKNOWN 表示平台请求结果无法确认。请先按待办回查，不要重复提交。" type="warning" :closable="false" show-icon />
-          <el-table :data="issues" class="discount-table" empty-text="暂无需要协调的异常">
-            <el-table-column label="时间" width="170"><template #default="scope">{{ formatDate(scope.row.occurredAt) }}</template></el-table-column>
+          <el-table :data="unknownIntents" class="discount-table" empty-text="暂无需要协调的 UNKNOWN Intent">
+            <el-table-column label="时间" width="170"><template #default="scope">{{ formatDate(scope.row.dispatchedAt) }}</template></el-table-column>
             <el-table-column prop="planId" label="方案" min-width="180" />
-            <el-table-column label="问题代码" min-width="220"><template #default="scope"><strong>{{ scope.row.code || 'UNKNOWN' }}</strong></template></el-table-column>
-            <el-table-column label="证据摘要" min-width="260"><template #default="scope"><span class="evidence">{{ JSON.stringify(scope.row.evidence || {}) }}</span></template></el-table-column>
-            <el-table-column label="协调决策" min-width="330"><template #default="scope"><div class="batch-actions"><el-button size="small" @click="reconcileIssue(scope.row, 'LINK_VERIFIED_OBJECT')">关联已核验对象</el-button><el-button size="small" @click="reconcileIssue(scope.row, 'CONFIRMED_NOT_SENT')">确认未发送</el-button><el-button size="small" type="danger" @click="reconcileIssue(scope.row, 'ABANDONED')">接受并放弃</el-button></div></template></el-table-column>
+            <el-table-column prop="intentId" label="Intent ID" min-width="210" />
+            <el-table-column label="问题代码" min-width="220"><template #default="scope"><strong>{{ scope.row.reasonCode || 'UNKNOWN' }}</strong></template></el-table-column>
+            <el-table-column label="目标" min-width="260"><template #default="scope"><span class="evidence">{{ scope.row.targetType }} · {{ scope.row.targetKey }}</span></template></el-table-column>
+            <el-table-column label="协调决策" min-width="330"><template #default="scope"><div class="batch-actions"><el-button size="small" @click="reconcileUnknownIntent(scope.row, 'LINK_VERIFIED_OBJECT')">关联已核验对象</el-button><el-button size="small" @click="reconcileUnknownIntent(scope.row, 'CONFIRMED_NOT_SENT')">确认未发送</el-button><el-button size="small" type="danger" @click="reconcileUnknownIntent(scope.row, 'ABANDONED')">接受并放弃</el-button></div></template></el-table-column>
           </el-table>
         </el-tab-pane>
 

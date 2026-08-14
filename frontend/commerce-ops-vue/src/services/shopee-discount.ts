@@ -161,6 +161,7 @@ export interface DiscountIssue {
   id: string;
   planId?: string | null;
   jobId?: string | null;
+  intentId?: string | null;
   eventType?: string;
   code?: string | null;
   evidence?: Record<string, unknown>;
@@ -187,6 +188,8 @@ export interface DiscountScanJob {
 export interface DiscountSettings { enabled: boolean; timezone: string; warehouseConfigured: boolean; warehouseKeyHint?: string | null; warehouseKeyReference?: string | null; warehouseKeyVerifiedAt?: string | null; updatedAt?: string | null; updatedBy?: string | null }
 export interface DiscountOverrideLookupRow { shopId: string; shopName: string; itemId: string; sku: string; variantCount: number; finalTier?: DiscountTier | null; ruleSource?: string | null; note?: string | null }
 export interface DiscountOverrideLookup { query: string; parsedItemId?: string | null; rows: DiscountOverrideLookupRow[] }
+export interface DiscountUnknownIntent { intentId: string; id: string; planId: string; jobId: string; operationUuid: string; targetType: string; targetKey: string; status: "UNKNOWN"; reasonCode?: string | null; dispatchedAt?: string | null }
+export interface DiscountOverrideBatchEcho extends DiscountOverrideLookupRow { index: number; status: "READY" | "ERROR"; query: string; errorCode?: string }
 
 export type DiscountRequestLane = "dashboard" | "operationalSnapshot" | "preview" | "approve" | "execute" | "items" | "scan";
 export interface DiscountRequestBinding { scopeKey?: string; planId?: string; merkleRoot?: string }
@@ -383,6 +386,10 @@ export function verifyDiscountSettings() { return apiJson<DiscountSettings>(`${B
 export function lookupDiscountOverrides(input: { country: string; shopIds: string[]; query: string; limit?: number; priceTier?: DiscountTier; note?: string }) {
   return apiJson<DiscountOverrideLookup>(`${BASE}/overrides/lookup`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
 }
+export function lookupDiscountOverrideBatch(input: { country: string; rows: Array<{ shopId: string; query: string; priceTier: DiscountTier; note: string }> }) {
+  return apiJson<{ country: string; rowCount: number; rows: DiscountOverrideBatchEcho[] }>(`${BASE}/overrides/lookup-batch`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
+}
+export function loadDiscountUnknownIntents(limit = 50) { return apiJson<DiscountUnknownIntent[]>(`${BASE}/intents${query({ limit })}`); }
 export function loadDiscountIntent(intentId: string) { return apiJson<Record<string, unknown>>(`${BASE}/intents/${encodeURIComponent(intentId)}`); }
 export function reconcileDiscountIntent(intentId: string, resolution: "LINK_VERIFIED_OBJECT" | "CONFIRMED_NOT_SENT" | "ABANDONED", evidence?: Record<string, unknown>) {
   return apiJson<Record<string, unknown>>(`${BASE}/intents/${encodeURIComponent(intentId)}/reconcile`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resolution, evidence }) });

@@ -343,6 +343,9 @@ test("SQLite integration survives restart without replaying an UNKNOWN write", a
     assert.equal(blocked.counts.UNKNOWN, 1);
     assert.equal(writeCalls.length, 2);
     assert.equal((await access.repositories.shopeeDiscount.getJob(job.id)).status, "RUNNING");
+    const discoverableUnknown = await service.listUnknownIntents({ limit: 10 }, { identity: { actorId: "operator-1" }, authorizedShopIds: ["1"] });
+    assert.equal(discoverableUnknown.length, 1);
+    assert.equal(discoverableUnknown[0].intentId, discoverableUnknown[0].id);
 
     access.close();
     clock = new Date(NOW.getTime() + 10_000);

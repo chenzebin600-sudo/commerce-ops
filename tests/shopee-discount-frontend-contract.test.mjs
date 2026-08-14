@@ -275,7 +275,7 @@ test("page uses backend field names, one request fingerprint and accessible fail
   const sidebar = read("frontend/commerce-ops-vue/src/components/OpsSidebar.vue");
   assert.match(router, /path: "\/shopee-discount"/);
   assert.match(sidebar, /path: "\/shopee-discount", label: "折扣控价"/);
-  for (const text of ["discountPreviewInputKey", "DiscountPageFlowController", ".name", ".endsAt", ".occurredAt", "输入完整确认语句", "异常与 UNKNOWN 协调", "续期提醒"]) assert.ok(page.includes(text), `missing ${text}`);
+  for (const text of ["discountPreviewInputKey", "DiscountPageFlowController", ".name", ".endsAt", ".dispatchedAt", ".intentId", "loadDiscountUnknownIntents", "lookupDiscountOverrideBatch", "restorePlan", "输入完整确认语句", "异常与 UNKNOWN 协调", "续期提醒"]) assert.ok(page.includes(text), `missing ${text}`);
   assert.match(page, /watch\(previewRequestKey, resetPlan\)/);
   assert.match(page, /pageFlow\.beginPreview\(binding\.scopeKey\)/);
   assert.match(page, /pageFlow\.canApprove/);
