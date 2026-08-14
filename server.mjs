@@ -3178,7 +3178,10 @@ async function serveStatic(req, res, url) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const auditContext = createHttpAuditContext(req, url, { trustedProxies: trustedAuditProxies });
+  const auditContext = createHttpAuditContext(req, url, {
+    trustedProxies: trustedAuditProxies,
+    localCompatibilityMode: accessPolicy.localCompatibilityMode,
+  });
   res.setHeader("x-request-id", auditContext.requestId);
   let requestError = null;
   try {
