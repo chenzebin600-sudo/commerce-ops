@@ -290,3 +290,16 @@ test("page uses backend field names, one request fingerprint and accessible fail
   assert.match(page, /role="alert"/);
   assert.match(page, /@media \(max-width:/);
 });
+
+test("restore request generation rejects a deferred response after scope invalidation", async () => {
+  const { DiscountRequestGuard } = await import(clientUrl.href);
+  const guard = new DiscountRequestGuard();
+  const binding = { scopeKey: "TH", planId: "plan-old" };
+  const ticket = guard.begin("restore", binding);
+  let release;
+  const deferred = new Promise((resolve) => { release = resolve; });
+  const result = deferred.then(() => guard.isCurrent(ticket, binding));
+  guard.invalidateAll();
+  release();
+  assert.equal(await result, false);
+});

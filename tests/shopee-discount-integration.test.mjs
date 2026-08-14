@@ -344,8 +344,8 @@ test("SQLite integration survives restart without replaying an UNKNOWN write", a
     assert.equal(writeCalls.length, 2);
     assert.equal((await access.repositories.shopeeDiscount.getJob(job.id)).status, "RUNNING");
     const discoverableUnknown = await service.listUnknownIntents({ limit: 10 }, { identity: { actorId: "operator-1" }, authorizedShopIds: ["1"] });
-    assert.equal(discoverableUnknown.length, 1);
-    assert.equal(discoverableUnknown[0].intentId, discoverableUnknown[0].id);
+    assert.equal(discoverableUnknown.items.length, 1);
+    assert.equal(discoverableUnknown.items[0].intentId, discoverableUnknown.items[0].id);
 
     access.close();
     clock = new Date(NOW.getTime() + 10_000);
@@ -400,6 +400,7 @@ test("SQLite migrations are fresh-install, 027-upgrade, and reopen idempotent th
       "032_shopee_discount_notification_legacy_sending.sql",
       "033_shopee_discount_baseline_lookup.sql",
       "034_shopee_discount_preview_fencing.sql",
+      "035_shopee_discount_settings_generation.sql",
     ]);
     const columns = access.provider.connection.prepare("PRAGMA table_info('shopee_discount_notifications')").all().map(({ name }) => name);
     assert.equal(columns.includes("coordination_state"), true);

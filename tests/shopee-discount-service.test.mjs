@@ -1117,14 +1117,21 @@ test("batch override lookup scans each shop once and returns stable ordered echo
   const context = await fixture({ shopee });
   try {
     const result = await context.service.lookupOverrideBatch({ country: "TH", rows: [
-      { shopId: "1", query: "https://shopee.co.th/name-i.1.10", priceTier: "EVENT", note: "row one" },
-      { shopId: "1", query: "SKU-ONE", priceTier: "MEGA", note: "row two" },
+      { shopId: "1", query: "https://shopee.co.th/name-i.1.10", priceTier: "EVENT", note: "same reason" },
+      { shopId: "1", query: "SKU-ONE", priceTier: "EVENT", note: "same reason" },
     ] }, { requestId: "batch-lookup" });
     assert.equal(listingCalls, 1);
     assert.equal(modelCalls, 1);
     assert.deepEqual(result.rows.map(({ index, status, itemId, variantCount, finalTier }) => ({ index, status, itemId, variantCount, finalTier })), [
       { index: 0, status: "READY", itemId: "10", variantCount: 2, finalTier: "EVENT" },
-      { index: 1, status: "READY", itemId: "10", variantCount: 2, finalTier: "MEGA" },
+    ]);
+    const conflicting = await context.service.lookupOverrideBatch({ country: "TH", rows: [
+      { shopId: "1", query: "10", priceTier: "EVENT", note: "first" },
+      { shopId: "1", query: "SKU-ONE", priceTier: "MEGA", note: "second" },
+    ] }, { requestId: "batch-conflict" });
+    assert.deepEqual(conflicting.rows.map(({ status, errorCode }) => ({ status, errorCode })), [
+      { status: "ERROR", errorCode: "SHOPEE_DISCOUNT_OVERRIDE_DUPLICATE_CONFLICT" },
+      { status: "ERROR", errorCode: "SHOPEE_DISCOUNT_OVERRIDE_DUPLICATE_CONFLICT" },
     ]);
   } finally { await context.close(); }
 });

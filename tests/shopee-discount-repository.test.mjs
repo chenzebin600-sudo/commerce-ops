@@ -440,7 +440,8 @@ test("settings persist encrypted warehouse references and never accept or return
     assert.equal(settings.encryptedWarehouseKeyCiphertext, "ciphertext-value");
     assert.equal(settings.warehouseKeyReference, "vault://commerce/shopee-discount");
     assert.equal(settings.warehouseKeyHint, "key-…9f2a");
-    assert.deepEqual(settings.metadata, metadata);
+    assert.deepEqual(settings.metadata, {}, "credential changes atomically clear prior verification metadata");
+    assert.equal(settings.credentialGeneration, 1);
     assert.equal(Object.hasOwn(settings, "warehouseKey"), false);
     assert.equal(JSON.stringify(settings).includes("plaintext-secret"), false);
     assert.deepEqual(await context.repository.getSettings(), settings);

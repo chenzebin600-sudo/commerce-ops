@@ -191,7 +191,7 @@ export interface DiscountOverrideLookup { query: string; parsedItemId?: string |
 export interface DiscountUnknownIntent { intentId: string; id: string; planId: string; jobId: string; operationUuid: string; targetType: string; targetKey: string; status: "UNKNOWN"; reasonCode?: string | null; dispatchedAt?: string | null }
 export interface DiscountOverrideBatchEcho extends DiscountOverrideLookupRow { index: number; status: "READY" | "ERROR"; query: string; errorCode?: string }
 
-export type DiscountRequestLane = "dashboard" | "operationalSnapshot" | "preview" | "approve" | "execute" | "items" | "scan";
+export type DiscountRequestLane = "dashboard" | "operationalSnapshot" | "preview" | "approve" | "execute" | "items" | "scan" | "restore";
 export interface DiscountRequestBinding { scopeKey?: string; planId?: string; merkleRoot?: string }
 export interface DiscountRequestTicket { lane: DiscountRequestLane; generation: number; bindingKey: string }
 
@@ -232,7 +232,7 @@ export class DiscountRequestGuard {
   }
 
   invalidateAll() {
-    for (const lane of ["dashboard", "operationalSnapshot", "preview", "approve", "execute", "items", "scan"] as const) this.invalidate(lane);
+    for (const lane of ["dashboard", "operationalSnapshot", "preview", "approve", "execute", "items", "scan", "restore"] as const) this.invalidate(lane);
   }
 
   isCurrent(ticket: DiscountRequestTicket, binding: DiscountRequestBinding) {
@@ -389,7 +389,9 @@ export function lookupDiscountOverrides(input: { country: string; shopIds: strin
 export function lookupDiscountOverrideBatch(input: { country: string; rows: Array<{ shopId: string; query: string; priceTier: DiscountTier; note: string }> }) {
   return apiJson<{ country: string; rowCount: number; rows: DiscountOverrideBatchEcho[] }>(`${BASE}/overrides/lookup-batch`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
 }
-export function loadDiscountUnknownIntents(limit = 50) { return apiJson<DiscountUnknownIntent[]>(`${BASE}/intents${query({ limit })}`); }
+export function loadDiscountUnknownIntents(input: { limit?: number; cursor?: string | null } = {}) {
+  return apiJson<{ items: DiscountUnknownIntent[]; nextCursor: string | null }>(`${BASE}/intents${query(input)}`);
+}
 export function loadDiscountIntent(intentId: string) { return apiJson<Record<string, unknown>>(`${BASE}/intents/${encodeURIComponent(intentId)}`); }
 export function reconcileDiscountIntent(intentId: string, resolution: "LINK_VERIFIED_OBJECT" | "CONFIRMED_NOT_SENT" | "ABANDONED", evidence?: Record<string, unknown>) {
   return apiJson<Record<string, unknown>>(`${BASE}/intents/${encodeURIComponent(intentId)}/reconcile`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resolution, evidence }) });

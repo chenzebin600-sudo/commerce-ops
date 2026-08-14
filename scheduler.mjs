@@ -28,6 +28,7 @@ import { decryptSecret } from "./lib/mabang-scheduler/crypto.mjs";
 import { sendDingtalkMessage } from "./lib/mabang-scheduler/dingtalk.mjs";
 import { ShopeeReadAdapter } from "./lib/shopee-discount/shopee-read-adapter.mjs";
 import { WarehouseControlPriceClient } from "./lib/shopee-discount/warehouse-client.mjs";
+import { resolveWarehouseSettingsKey } from "./lib/shopee-discount/production-runtime.mjs";
 import { ShopeeDiscountService } from "./lib/shopee-discount/service.mjs";
 import {
   ShopeeDiscountScheduler,
@@ -163,13 +164,22 @@ const discountReadAdapter = new ShopeeReadAdapter({
   },
   retryPolicy: { maxAttempts: 3, delaysMs: [5_000, 15_000] },
 });
+const discountManagedReferenceMap = (() => {
+  try { const value = JSON.parse(runtimeEnv.SHOPEE_DISCOUNT_MANAGED_SECRET_REFERENCES || "{}"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }
+  catch { return {}; }
+})();
+const resolveDiscountManagedSecret = async (reference) => {
+  const environmentName = discountManagedReferenceMap[reference];
+  if (typeof environmentName !== "string" || !/^SHOPEE_DISCOUNT_SECRET_[A-Z0-9_]+$/.test(environmentName)) throw Object.assign(new Error("Managed warehouse secret reference is not allowlisted"), { code: "SHOPEE_DISCOUNT_MANAGED_SECRET_REFERENCE_DENIED" });
+  return runtimeEnv[environmentName] || null;
+};
 const discountWarehouse = shopeeDiscountStartupConfig.warehouseBaseUrl
   ? new WarehouseControlPriceClient({
       fetchImpl: globalThis.fetch,
       baseUrl: shopeeDiscountStartupConfig.warehouseBaseUrl,
       getKey: async () => {
         const settings = await dataAccess.repositories.shopeeDiscount.getSettings();
-        return settings?.encryptedWarehouseKeyCiphertext ? decryptSecret(settings.encryptedWarehouseKeyCiphertext) : null;
+        return resolveWarehouseSettingsKey(settings, { decryptCiphertext: decryptSecret, resolveManagedReference: resolveDiscountManagedSecret });
       },
     })
   : {

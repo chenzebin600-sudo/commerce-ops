@@ -62,6 +62,7 @@ const runs = ref<DiscountRun[]>([]);
 const activities = ref<DiscountActivity[]>([]);
 const issues = ref<DiscountIssue[]>([]);
 const unknownIntents = ref<DiscountUnknownIntent[]>([]);
+const unknownIntentCursor = ref<string | null>(null);
 const activeTab = ref("preview");
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 const requestGuard = new DiscountRequestGuard();
@@ -224,7 +225,7 @@ async function validateBatch() {
   const errors: string[] = [];
   const seen = new Set<string>();
   const lines = batchText.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (lines.length > 101) errors.push("单次最多校验 100 条链接覆盖");
+  if (lines.length > 1001) errors.push("单次最多校验 1000 条链接覆盖");
   lines.forEach((line, index) => {
     const cells = line.split(/[,\t]/).map((cell) => cell.trim());
     if (index === 0 && cells[0]?.toLowerCase().includes("shop")) return;
@@ -306,14 +307,18 @@ async function reconcileUnknownIntent(intent: DiscountUnknownIntent, resolution:
 }
 
 async function restorePlan(planId: string) {
+  const binding = { scopeKey: previewRequestKey.value, planId };
+  const ticket = requestGuard.begin("restore", binding);
   try {
     const restored = await loadDiscountPreview(planId);
+    if (!requestGuard.isCurrent(ticket, binding)) return;
     const page = await loadDiscountPreviewItems(planId, { pageSize: 100 });
+    if (!requestGuard.isCurrent(ticket, binding)) return;
     preview.value = restored;
     previewItems.value = page.items;
     nextCursor.value = page.nextCursor;
     activeTab.value = "execution";
-  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "恢复执行方案失败"); }
+  } catch (error) { if (requestGuard.isCurrent(ticket, binding)) ElMessage.error(error instanceof Error ? error.message : "恢复执行方案失败"); }
 }
 async function loadSettingsPanel() { try { settings.value = await loadDiscountSettings(); } catch { settings.value = null; } }
 async function saveSettingsPanel() {
@@ -342,13 +347,14 @@ async function loadDashboard() {
   try {
     const [nextStatus, nextShops, nextRuns, nextActivities, nextIssues, nextUnknownIntents] = await Promise.all([
       loadDiscountStatus(), loadDiscountShops(), loadDiscountRuns({ limit: 50 }),
-      loadDiscountActivities({ limit: 50 }), loadDiscountIssues({ limit: 50 }), loadDiscountUnknownIntents(50),
+      loadDiscountActivities({ limit: 50 }), loadDiscountIssues({ limit: 50 }), loadDiscountUnknownIntents({ limit: 50 }),
     ]);
     pageFlow.commitOperationalSnapshot(snapshotTicket, () => {
       runs.value = nextRuns;
       activities.value = nextActivities;
       issues.value = nextIssues;
-      unknownIntents.value = nextUnknownIntents;
+      unknownIntents.value = nextUnknownIntents.items;
+      unknownIntentCursor.value = nextUnknownIntents.nextCursor;
     });
     if (requestGuard.isCurrent(dashboardTicket, {})) {
       status.value = nextStatus;
@@ -464,15 +470,24 @@ async function executePlan() {
 async function refreshOperationalData() {
   const ticket = pageFlow.beginOperationalSnapshot();
   try {
-    const [nextRuns, nextActivities, nextIssues] = await Promise.all([
-      loadDiscountRuns({ limit: 50 }), loadDiscountActivities({ limit: 50 }), loadDiscountIssues({ limit: 50 }),
+    const [nextRuns, nextActivities, nextIssues, nextUnknownIntents] = await Promise.all([
+      loadDiscountRuns({ limit: 50 }), loadDiscountActivities({ limit: 50 }), loadDiscountIssues({ limit: 50 }), loadDiscountUnknownIntents({ limit: 50 }),
     ]);
     pageFlow.commitOperationalSnapshot(ticket, () => {
       [runs.value, activities.value, issues.value] = [nextRuns, nextActivities, nextIssues];
+      unknownIntents.value = nextUnknownIntents.items;
+      unknownIntentCursor.value = nextUnknownIntents.nextCursor;
     });
   } catch (error) {
     if (pageFlow.isOperationalSnapshotCurrent(ticket)) ElMessage.error(error instanceof Error ? error.message : "刷新执行状态失败");
   }
+}
+
+async function loadMoreUnknownIntents() {
+  if (!unknownIntentCursor.value) return;
+  const page = await loadDiscountUnknownIntents({ limit: 50, cursor: unknownIntentCursor.value });
+  unknownIntents.value.push(...page.items);
+  unknownIntentCursor.value = page.nextCursor;
 }
 
 function startPolling() {
@@ -663,6 +678,7 @@ onBeforeUnmount(() => {
             <el-table-column label="目标" min-width="260"><template #default="scope"><span class="evidence">{{ scope.row.targetType }} · {{ scope.row.targetKey }}</span></template></el-table-column>
             <el-table-column label="协调决策" min-width="330"><template #default="scope"><div class="batch-actions"><el-button size="small" @click="reconcileUnknownIntent(scope.row, 'LINK_VERIFIED_OBJECT')">关联已核验对象</el-button><el-button size="small" @click="reconcileUnknownIntent(scope.row, 'CONFIRMED_NOT_SENT')">确认未发送</el-button><el-button size="small" type="danger" @click="reconcileUnknownIntent(scope.row, 'ABANDONED')">接受并放弃</el-button></div></template></el-table-column>
           </el-table>
+          <div class="pagination-row"><span>已加载 {{ unknownIntents.length }} 条 UNKNOWN Intent</span><el-button v-if="unknownIntentCursor" @click="loadMoreUnknownIntents">加载下一页</el-button></div>
         </el-tab-pane>
 
         <el-tab-pane name="renewals">

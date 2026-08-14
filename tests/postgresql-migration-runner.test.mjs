@@ -92,6 +92,7 @@ test("shared migration set contains the additive bridge for every missing C modu
     "040_shopee_discount_notification_legacy_sending",
     "041_shopee_discount_baseline_lookup",
     "042_shopee_discount_preview_fencing",
+    "043_shopee_discount_settings_generation",
   ]);
   const byVersion = new Map(migrations.map((migration) => [migration.version, migration.sql]));
   const additive = byVersion.get("033_shared_development_modules");
