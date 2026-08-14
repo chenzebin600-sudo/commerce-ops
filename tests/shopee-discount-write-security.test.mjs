@@ -149,6 +149,26 @@ test("plain HTTP is enabled only with a complete signed-request binding and repl
   assert.equal(missingReplay.reasonCode, "SHOPEE_WRITE_TRANSPORT_INSECURE");
 });
 
+test("trusted single role may explicitly allow a canonical private HTTP relay", () => {
+  const enabled = resolveShopeeWriteSecurity({
+    env: trustedEnv({ SHOPEE_WRITE_ALLOW_PRIVATE_HTTP: "true" }),
+    listener: { host: "127.0.0.1", exposure: "private" },
+    relay: { url: "http://10.110.80.95:8788" },
+  });
+  assert.equal(enabled.enabled, true);
+  assert.equal(enabled.reasonCode, "SHOPEE_WRITE_ENABLED");
+  assert.equal(enabled.safeStatus.transportSecure, true);
+
+  for (const url of ["http://8.8.8.8:8788", "http://relay.internal.example", "http://127.000.0.1:8788"]) {
+    const rejected = resolveShopeeWriteSecurity({
+      env: trustedEnv({ SHOPEE_WRITE_ALLOW_PRIVATE_HTTP: "true" }),
+      listener: { host: "127.0.0.1", exposure: "private" },
+      relay: { url },
+    });
+    assert.equal(rejected.reasonCode, "SHOPEE_WRITE_TRANSPORT_INSECURE", url);
+  }
+});
+
 test("mTLS requires a TLS URL and safeStatus contains only redacted booleans, mode, and reason", () => {
   const secret = "do-not-expose-attestation-or-host";
   const security = resolveShopeeWriteSecurity({
