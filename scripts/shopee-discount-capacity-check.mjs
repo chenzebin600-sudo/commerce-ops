@@ -13,9 +13,10 @@ function positiveInteger(value, name) {
   return result;
 }
 
-function syntheticPage(kind, shopOffset, offset, count) {
+function syntheticItems(kind, shopOffset, offset, count) {
   return Array.from({ length: count }, (_, index) => ({
     kind,
+    id: `${kind}-${shopOffset}-${offset + index}`,
     shopOffset,
     ordinal: offset + index,
   }));
@@ -57,6 +58,7 @@ export async function runCapacityCheck({
   let peakHeap = initialHeap;
   let maxResidentRecords = 0;
   const pages = { shops: 0, links: 0, variants: 0 };
+  const observed = { shops: 0, links: 0, variants: 0 };
 
   const observe = (records) => {
     if (!Array.isArray(records) || records.length > batch) {
@@ -67,27 +69,60 @@ export async function runCapacityCheck({
   };
 
   const source = mode === "postgresql" ? postgresSource : {
-    async shops(offset, limit) { return syntheticPage("shop", 0, offset, Math.min(limit, shops - offset)); },
-    async links(shopOffset, offset, limit) { return syntheticPage("link", shopOffset, offset, Math.min(limit, links - offset)); },
-    async variants(shopOffset, offset, limit) { return syntheticPage("variant", shopOffset, offset, Math.min(limit, variants - offset)); },
+    async shops(cursor, limit) {
+      const offset = cursor == null ? 0 : Number(cursor);
+      const count = Math.min(limit, shops - offset);
+      const nextOffset = offset + count;
+      return { items: syntheticItems("shop", 0, offset, count), nextCursor: nextOffset < shops ? String(nextOffset) : null, total: shops };
+    },
+    async links(shop, cursor, limit) {
+      const offset = cursor == null ? 0 : Number(cursor);
+      const count = Math.min(limit, links - offset);
+      const nextOffset = offset + count;
+      return { items: syntheticItems("link", shop.shopOffset, offset, count), nextCursor: nextOffset < links ? String(nextOffset) : null, total: links };
+    },
+    async variants(shop, cursor, limit) {
+      const offset = cursor == null ? 0 : Number(cursor);
+      const count = Math.min(limit, variants - offset);
+      const nextOffset = offset + count;
+      return { items: syntheticItems("variant", shop.shopOffset, offset, count), nextCursor: nextOffset < variants ? String(nextOffset) : null, total: variants };
+    },
   };
 
-  for (let shopCursor = 0; shopCursor < shops; shopCursor += batch) {
-    const shopPage = await source.shops(shopCursor, Math.min(batch, shops - shopCursor));
-    observe(shopPage);
-    pages.shops += 1;
-    for (let pageShopIndex = 0; pageShopIndex < shopPage.length; pageShopIndex += 1) {
-      const shopOffset = shopCursor + pageShopIndex;
-      for (let cursor = 0; cursor < links; cursor += batch) {
-        observe(await source.links(shopOffset, cursor, Math.min(batch, links - cursor)));
-        pages.links += 1;
+  const consume = async (kind, expected, fetchPage, onItems = null) => {
+    let cursor = null;
+    let count = 0;
+    const seenCursors = new Set();
+    for (;;) {
+      const page = await fetchPage(cursor, Math.min(batch, expected - count));
+      if (!page || !Array.isArray(page.items) || !Number.isSafeInteger(Number(page.total)) || Number(page.total) !== expected) {
+        throw capacityError("SHOPEE_DISCOUNT_CAPACITY_INCOMPLETE", `${kind} source did not prove its declared total`);
       }
-      for (let cursor = 0; cursor < variants; cursor += batch) {
-        observe(await source.variants(shopOffset, cursor, Math.min(batch, variants - cursor)));
-        pages.variants += 1;
+      observe(page.items);
+      pages[kind] += 1;
+      count += page.items.length;
+      if (!page.items.length || count > expected || (count === expected && page.nextCursor != null)) {
+        throw capacityError("SHOPEE_DISCOUNT_CAPACITY_INCOMPLETE", `${kind} source did not make bounded progress`);
       }
+      await onItems?.(page.items);
+      if (page.nextCursor == null) break;
+      const next = String(page.nextCursor);
+      if (!next || seenCursors.has(next)) {
+        throw capacityError("SHOPEE_DISCOUNT_CAPACITY_INCOMPLETE", `${kind} source repeated a cursor`);
+      }
+      seenCursors.add(next);
+      cursor = next;
     }
-  }
+    if (count !== expected) throw capacityError("SHOPEE_DISCOUNT_CAPACITY_INCOMPLETE", `${kind} source ended before its declared total`);
+    observed[kind] += count;
+  };
+
+  await consume("shops", shops, (cursor, limit) => source.shops(cursor, limit), async (shopPage) => {
+    for (const shop of shopPage) {
+      await consume("links", links, (cursor, limit) => source.links(shop, cursor, limit));
+      await consume("variants", variants, (cursor, limit) => source.variants(shop, cursor, limit));
+    }
+  });
 
   const heapGrowthBytes = Math.max(0, peakHeap - initialHeap);
   if (heapGrowthBytes > maxHeapGrowthBytes) {
@@ -95,6 +130,7 @@ export async function runCapacityCheck({
   }
   return Object.freeze({
     scale: { shops, links: shops * links, variants: shops * variants },
+    observed,
     pages,
     bounds: { pageSize: batch, maxResidentRecords, heapGrowthBytes, maxHeapGrowthBytes },
     elapsedMs: Number(now()) - startedAt,

@@ -31,3 +31,12 @@
 - No live Shopee call, DingTalk send, PostgreSQL connection or PostgreSQL DDL was executed.
 - Capacity CLI defaults to synthetic paged dry-run. PostgreSQL mode refuses to run without explicit URL and an injected paged source.
 - Generated frontend build artifacts and unrelated dirty files are intentionally excluded from the scoped commit.
+
+## Breaker review fix round 1
+
+- Replaced the PostgreSQL production preview's country-wide accumulation and global 20,000/100,000 ceiling with sequential per-shop planning and immediate bounded shard persistence. Limits are now 1,000 links and 10,000 variants/memberships per shop; all shops and tiers share one pinned warehouse watermark and deterministic shard accumulator.
+- Added PREVIEWING-only activity/metadata updates and shop-scoped warehouse baseline lookup. Existing schema is sufficient, so no migration was added and no live DDL was run.
+- Tightened the capacity source contract to require exact totals, bounded non-empty progress, unique advancing cursors and exact observed counts. Empty, truncated and duplicate-cursor sources fail closed.
+- Added async startup probes for the durable warehouse-key reference, warehouse key verification, exact healthy/authorized Shopee shops and the enabled single DingTalk configuration. Root startup performs only reads before enablement and reuses one normalized HTTPS URL.
+- Added an executable composed contract from the real TypeScript frontend client through the real API handler and SQLite service/due-job repository into scheduler processing, a Foundation reminder task and a fake DingTalk delivery. No browser, Shopee or DingTalk network was used.
+- Fix-round verification: focused Shopee Discount/PostgreSQL suites passed 264/264; full `npm test` passed 1,389 with 2 intentional skips; frontend check and build passed. The locked capacity run observed exactly 1,000 shops, 1,000,000 links and 10,000,000 variants across 11,001 pages, with a maximum resident page of 1,000 records and 17,003,048 bytes measured heap growth. It reported `livePostgresqlDdlExecuted=false`.

@@ -19,6 +19,8 @@
 - `SHOPEE_DISCOUNT_ENTRY_BASE_URL`：运营进入折扣页的 HTTP(S) 地址。
 - 外部任务共享 lease 必须处于 active；没有 lease 时调度器不运行。
 
+环境变量只完成静态校验。根调度器在启动前还会执行只读探测：解密设置中必须存在可解析的数仓密钥引用、数仓必须接受该密钥、每个配置店铺必须存在且授权健康、指定钉钉配置必须存在并启用。探测不创建草稿、待办、通知或 Shopee 写；任一条件失败时返回安全原因码并保持关闭。HTTPS 地址只解析和规范化一次，根组件复用该结果。
+
 任一条件缺失时 Shopee Discount 调度器保持关闭。根调度器只自动做扫描、草稿、系统待办和提醒，不注入执行器；平台写入仍必须由人工批准后的受控 worker 完成。
 
 真实写还必须满足以下一种安全模式：
@@ -52,7 +54,9 @@ SQLite 仅允许 1 店、最多 10 变体试点；超过该范围必须使用 Po
 
 三个干净批次要求：无未协调 `UNKNOWN`，无跨店授权泄漏，无重复 POST，无数仓水位变化，异常率未越线，提醒去重正常，人工批准绑定一致。
 
-使用 `npm run shopee-discount:capacity-check` 运行本地分页 dry-run。它会流式遍历锁定规模并报告最大页、heap 增量和耗时，不连接 PostgreSQL、不执行 DDL。PostgreSQL 基准模式必须显式提供数据库配置和分页 source，禁止从环境中猜测凭证。
+生产预览按店铺串行读取并按确定顺序落不可变分片；常驻工作集上限为一个店铺的 10,000 个变体、一个仓库 SKU chunk 和一个审批分片，不保留国家级变体集合。所有档位共享同一数仓水位；分片根按店铺、商品、变体稳定排序，进程恢复时逐页核对已落分片。
+
+使用 `npm run shopee-discount:capacity-check` 运行本地分页 dry-run。它会流式遍历锁定规模并报告实际观察总数、最大页、heap 增量和耗时，不连接 PostgreSQL、不执行 DDL。PostgreSQL 基准模式必须显式提供数据库配置和分页 source，禁止从环境中猜测凭证；每页必须返回 `items + total + nextCursor/end` 完整性证据，空页、提前结束、声明总数不符、重复或不前进 cursor 都会失败。
 
 ## 5. 停写阈值与应急开关
 
@@ -90,6 +94,6 @@ SQLite 仅允许 1 店、最多 10 变体试点；超过该范围必须使用 Po
 
 ## 8. 数据库迁移与回滚
 
-SQLite fresh、从 027 升级到 032、重复启动幂等均由自动化测试覆盖。PostgreSQL 本地 migration contract 覆盖 027、035–040；在没有受控 PostgreSQL 实例时，只能报告“未执行 live DDL”。
+SQLite fresh、从 027 升级到 032、重复启动幂等均由自动化测试覆盖。PostgreSQL 本地 migration contract 覆盖 027、035–040；流式预览复用现有 plan/activity/shard/item/event 字段，不新增迁移。在没有受控 PostgreSQL 实例时，只能报告“未执行 live DDL”。
 
 迁移前备份数据库和文件清单并验证恢复。回滚时先停所有写 worker 和 scheduler，等待在途任务结束，保留 dispatch intent、事件和 `UNKNOWN` 证据；切回旧版本前确认旧代码能够读取当前 additive schema。不得删除活动、计划、intent 或审计记录来“恢复”。若 PostgreSQL 切回 SQLite，只允许在试点范围内写，其余保持只读。

@@ -829,3 +829,49 @@ test("multi-shop execution applies identity once and batch caps per shop", async
     assert.equal(job.status, "PENDING");
   } finally { await context.close(); }
 });
+
+test("production preview persists deterministic shards while retaining at most one shop and one shard", async () => {
+  const itemsByShop = { "1": [], "2": [] };
+  const modelsByItem = {};
+  for (const shopId of ["1", "2"]) for (let index = 0; index < 6; index += 1) {
+    const itemId = `${shopId}${index}`;
+    itemsByShop[shopId].push({ item_id: itemId, item_status: "NORMAL" });
+    modelsByItem[itemId] = [model(`${shopId}${index}0`, `SKU-${shopId}-${index}`, "10000", "9500")];
+  }
+  const resident = [];
+  let productionRoot;
+  const context = await fixture({
+    shopee: fakeShopee({ shops: [shop("2", "TH"), shop("1", "TH")], itemsByShop, modelsByItem }),
+    security: readySecurity({ constraints: { countries: ["TH"], shops: ["1", "2"], maxBatchItems: 10 } }),
+    serviceOptions: { shardSize: 4, previewObserver: (sample) => resident.push(sample) },
+  });
+  context.access.repositories.shopeeDiscount.getStorageMode = async () => ({ dialect: "postgres", productionScale: true, pilotLimits: null });
+  try {
+    const preview = await context.service.createPreview(previewInput({ shopIds: ["2", "1"], activitySelection: [
+      { shopId: "2", discountId: "900", priceTier: "DAILY" },
+      { shopId: "1", discountId: "900", priceTier: "DAILY" },
+    ] }), { requestId: "bounded-production-preview" });
+    productionRoot = preview.merkleRoot;
+    assert.equal(preview.itemCount, 12);
+    assert.equal(Math.max(...resident.map(({ shopVariants }) => shopVariants)), 6);
+    assert.equal(Math.max(...resident.map(({ shardBuffer }) => shardBuffer)), 4);
+    assert.equal(resident.every(({ countryVariants }) => countryVariants == null), true);
+    const page = await context.access.repositories.shopeeDiscount.listPlanItems(preview.id, { pageSize: 100 });
+    assert.deepEqual(page.items.map((item) => item.shopId), ["1", "1", "1", "1", "1", "1", "2", "2", "2", "2", "2", "2"]);
+  } finally { await context.close(); }
+
+  const legacy = await fixture({
+    shopee: fakeShopee({ shops: [shop("1", "TH"), shop("2", "TH")], itemsByShop, modelsByItem }),
+    security: readySecurity({ constraints: { countries: ["TH"], shops: ["1", "2"], maxBatchItems: 10 } }),
+    serviceOptions: { shardSize: 4 },
+  });
+  legacy.access.repositories.shopeeDiscount.getStorageMode = async () => ({ dialect: "sqlite", productionScale: false,
+    pilotLimits: { shops: 100, variants: 1_000 } });
+  try {
+    const preview = await legacy.service.createPreview(previewInput({ shopIds: ["1", "2"], activitySelection: [
+      { shopId: "1", discountId: "900", priceTier: "DAILY" },
+      { shopId: "2", discountId: "900", priceTier: "DAILY" },
+    ] }), { requestId: "legacy-equivalence" });
+    assert.equal(preview.merkleRoot, productionRoot);
+  } finally { await legacy.close(); }
+});

@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 import { runCapacityCheck } from "../scripts/shopee-discount-capacity-check.mjs";
-import { resolveShopeeDiscountSchedulerStartup } from "../lib/shopee-discount/scheduler.mjs";
+import { createShopeeDiscountApi } from "../lib/shopee-discount/api.mjs";
+import {
+  ShopeeDiscountScheduler,
+  resolveShopeeDiscountSchedulerReadiness,
+  resolveShopeeDiscountSchedulerStartup,
+} from "../lib/shopee-discount/scheduler.mjs";
 import { openCommerceDataAccess } from "../lib/data/data-access.mjs";
 import { FoundationService } from "../lib/foundation/foundation-service.mjs";
 import { ShopeeDiscountService } from "../lib/shopee-discount/service.mjs";
@@ -104,6 +110,42 @@ test("capacity check rejects unbounded pages and PostgreSQL mode without explici
   await assert.rejects(runCapacityCheck({ mode: "postgresql" }), { code: "SHOPEE_DISCOUNT_CAPACITY_POSTGRES_CONFIG_REQUIRED" });
 });
 
+test("PostgreSQL capacity mode proves observed totals and cursor progress", async () => {
+  const exactSource = {
+    async shops(cursor) {
+      return cursor == null
+        ? { items: [{ id: "1" }], nextCursor: "shop-1", total: 2 }
+        : { items: [{ id: "2" }], nextCursor: null, total: 2 };
+    },
+    async links(shop, cursor) {
+      return cursor == null
+        ? { items: [{ id: `${shop.id}-l1` }], nextCursor: "link-1", total: 2 }
+        : { items: [{ id: `${shop.id}-l2` }], nextCursor: null, total: 2 };
+    },
+    async variants(shop, cursor) {
+      return cursor == null
+        ? { items: [{ id: `${shop.id}-v1` }], nextCursor: "variant-1", total: 2 }
+        : { items: [{ id: `${shop.id}-v2` }], nextCursor: null, total: 2 };
+    },
+  };
+  const report = await runCapacityCheck({ mode: "postgresql", databaseUrl: "postgres://configured", postgresSource: exactSource,
+    shopCount: 2, linksPerShop: 2, variantsPerShop: 2, pageSize: 1 });
+  assert.deepEqual(report.observed, { shops: 2, links: 4, variants: 4 });
+
+  for (const [name, source] of [
+    ["empty", { ...exactSource, shops: async () => ({ items: [], nextCursor: null, total: 2 }) }],
+    ["short", { ...exactSource, links: async () => ({ items: [{ id: "only" }], nextCursor: null, total: 2 }) }],
+    ["duplicate cursor", { ...exactSource, variants: async () => ({ items: [{ id: "v" }], nextCursor: "same", total: 2 }) }],
+    ["empty terminal page", { ...exactSource, shops: async (cursor) => cursor == null
+      ? { items: [{ id: "1" }], nextCursor: "second", total: 2 }
+      : cursor === "second" ? { items: [{ id: "2" }], nextCursor: "surplus", total: 2 }
+        : { items: [], nextCursor: null, total: 2 } }],
+  ]) {
+    await assert.rejects(runCapacityCheck({ mode: "postgresql", databaseUrl: "postgres://configured", postgresSource: source,
+      shopCount: 2, linksPerShop: 2, variantsPerShop: 2, pageSize: 1 }), { code: "SHOPEE_DISCOUNT_CAPACITY_INCOMPLETE" }, name);
+  }
+});
+
 test("root scheduler startup remains disabled until every preview and reminder gate is configured", () => {
   const complete = {
     SHOPEE_DISCOUNT_SCHEDULER_ENABLED: "true",
@@ -128,7 +170,94 @@ test("root scheduler startup remains disabled until every preview and reminder g
     reasonCode: "SHOPEE_DISCOUNT_SCHEDULER_READY",
     shopIds: ["1", "2"],
     shopTimeZones: { 1: "Asia/Bangkok", 2: "Asia/Bangkok" },
+    warehouseBaseUrl: "https://warehouse.internal.example",
   });
+});
+
+test("scheduler readiness verifies durable keys, shop authorization, and the enabled DingTalk group before READY", async () => {
+  const env = {
+    SHOPEE_DISCOUNT_SCHEDULER_ENABLED: "true",
+    SHOPEE_DISCOUNT_SCHEDULER_SHOP_IDS: "1",
+    SHOPEE_DISCOUNT_SHOP_TIMEZONES_JSON: JSON.stringify({ 1: "Asia/Bangkok" }),
+    SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL: "HTTPS://warehouse.example/path",
+    SHOPEE_DISCOUNT_DINGTALK_CONFIG_ID: "group",
+    SHOPEE_DISCOUNT_ENTRY_BASE_URL: "http://localhost/discount",
+  };
+  const probes = {
+    async getDiscountSettings() { return { encryptedWarehouseKeyCiphertext: "cipher" }; },
+    async verifyWarehouseKey() { return true; },
+    async listAuthorizedShops() { return [{ shopId: "1", authorized: true }]; },
+    async getDingTalkConfig() { return { id: "group", enabled: true }; },
+  };
+  const ready = await resolveShopeeDiscountSchedulerReadiness({ env, ...probes });
+  assert.equal(ready.enabled, true);
+  assert.equal(ready.warehouseBaseUrl, "https://warehouse.example/path");
+  for (const [override, reasonCode] of [
+    [{ getDiscountSettings: async () => ({}) }, "SHOPEE_DISCOUNT_SCHEDULER_WAREHOUSE_KEY_REQUIRED"],
+    [{ verifyWarehouseKey: async () => false }, "SHOPEE_DISCOUNT_SCHEDULER_WAREHOUSE_KEY_INVALID"],
+    [{ listAuthorizedShops: async () => [] }, "SHOPEE_DISCOUNT_SCHEDULER_SHOP_AUTH_REQUIRED"],
+    [{ getDingTalkConfig: async () => ({ enabled: false }) }, "SHOPEE_DISCOUNT_SCHEDULER_DINGTALK_UNAVAILABLE"],
+  ]) {
+    const result = await resolveShopeeDiscountSchedulerReadiness({ env, ...probes, ...override });
+    assert.equal(result.enabled, false);
+    assert.equal(result.reasonCode, reasonCode);
+  }
+});
+
+test("frontend manual scan traverses the real API and scheduler into a Foundation reminder and DingTalk delivery", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "shopee-discount-client-e2e-"));
+  const access = openCommerceDataAccess({ rootDir: path.resolve("."), databasePath: path.join(root, "commerce.sqlite"),
+    migrationsDir: path.resolve("migrations") });
+  const { service, foundation } = createService(access);
+  const handler = createShopeeDiscountApi({ service, maxBodyBytes: 1024 });
+  const originalFetch = globalThis.fetch;
+  const originalSessionStorage = globalThis.sessionStorage;
+  const deliveries = [];
+  globalThis.sessionStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+  globalThis.fetch = async (input, init = {}) => {
+    const raw = init.body == null ? "" : String(init.body);
+    const req = Readable.from(raw ? [Buffer.from(raw)] : []);
+    req.method = init.method || "GET";
+    req.headers = Object.fromEntries(new Headers(init.headers));
+    req.auditContext = { requestId: "client-e2e", actorIdentifier: "operator-1", authorizedShopIds: ["1"], annotate() {} };
+    const res = {
+      statusCode: 500, body: "", writeHead(status) { this.statusCode = status; }, end(chunk = "") { this.body += chunk; },
+    };
+    await handler(req, res, new URL(String(input), "http://localhost"));
+    return new Response(res.body, { status: res.statusCode, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const client = await import(new URL("../frontend/commerce-ops-vue/src/services/shopee-discount.ts", import.meta.url).href);
+    const scanJob = await client.requestDiscountScan("TH", ["1"]);
+    assert.equal(scanJob.jobType, "MANUAL_SCAN");
+
+    const scheduler = new ShopeeDiscountScheduler({
+      repository: access.repositories.shopeeDiscount, foundation, ownerId: "client-e2e-worker", now: () => NOW,
+      externalTaskPolicy: { status: () => ({ enabled: true, state: "active" }), assertAllowed() {} },
+      scan: async ({ country, shopIds, dueJobId }) => {
+        await access.repositories.shopeeDiscount.createDueJob({ jobType: "REMINDER", dedupeKey: `reminder:${dueJobId}`,
+          dueAt: NOW, payload: { country, shopId: shopIds[0], planId: "manual-scan-followup", severity: "INFO" } });
+        return { checkedShops: shopIds.length };
+      },
+      notifications: { async sendReminder(payload) { deliveries.push(payload); return { status: "SENT" }; } },
+    });
+    const scanOutcome = await scheduler.tick({ enqueueDaily: false });
+    const reminderOutcome = await scheduler.tick({ enqueueDaily: false });
+    assert.deepEqual(scanOutcome.map(({ status }) => status), ["SUCCEEDED"]);
+    assert.deepEqual(reminderOutcome.map(({ status }) => status), ["SUCCEEDED"]);
+    assert.equal(reminderOutcome[0].result.notification.status, "SENT");
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0].shopId, "1");
+    const tasks = await access.repositories.foundation.listTasks({ limit: 20 });
+    const reminderTask = tasks.find(({ taskKind }) => taskKind === "shopee_discount_renewal_reminder");
+    assert.ok(reminderTask);
+    assert.equal(reminderTask.input.planId, "manual-scan-followup");
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.sessionStorage = originalSessionStorage;
+    access.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test("SQLite integration survives restart without replaying an UNKNOWN write", async () => {

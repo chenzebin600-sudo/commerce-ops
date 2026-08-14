@@ -13,7 +13,7 @@ const PUBLIC_METHODS = [
   "renewJobLease", "checkpointJob", "createDispatchIntent", "completeDispatchIntent",
   "markDispatchUnknown", "getDispatchIntent", "listDispatchIntents", "recordIntentOutcome", "reconcileIntent",
   "appendEvent", "createDueJob", "claimDueJobs", "renewDueJobLease", "deferDueJob", "completeDueJob", "completeJob", "bindActivityPlatformId",
-  "bindFoundationPlan", "getPlanShopIds", "listPlanShards", "listPlanShardsPage", "listPlanItems", "getPlanItem", "getPlanApproval",
+  "bindFoundationPlan", "updatePreviewActivity", "finalizePreviewMetadata", "getPlanShopIds", "listPlanShards", "listPlanShardsPage", "listPlanItems", "getPlanItem", "getPlanApproval",
   "countPlanItemsByShop", "countPlanShops", "listExecutionJobs", "listPlanActivities", "listPlanActivitiesPage", "getPlanActivity", "prepareExecutionItems", "listExecutionItems",
   "listExecutionItemsPage", "listDispatchIntentsPage", "countExecutionItemsByStatus",
   "setExecutionItemStatus", "listRunsScoped", "listActivitiesScoped", "listIssuesScoped",

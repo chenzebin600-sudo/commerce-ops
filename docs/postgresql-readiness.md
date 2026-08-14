@@ -108,6 +108,8 @@ All UUID-like `TEXT` primary keys should become PostgreSQL `uuid`; integer ident
 
 ### Shopee Discount additive inventory
 
+当前清单截至 PostgreSQL `040_shopee_discount_notification_legacy_sending.sql`。生产预览的逐店/逐分片持久化、启动只读探测和容量完整性协议均复用下列表结构，不产生新的 PostgreSQL migration；本报告仍不声称执行过 live DDL。
+
 The following tables were added after the row-count snapshot. Their schemas and migration contracts were verified locally; production row counts have not been sampled and must not be inferred as zero.
 
 | Table | SQLite migration | PostgreSQL migration | Operational invariant |

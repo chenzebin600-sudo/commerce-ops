@@ -32,6 +32,7 @@ import { ShopeeDiscountService } from "./lib/shopee-discount/service.mjs";
 import {
   ShopeeDiscountScheduler,
   durableActivityVariantCount,
+  resolveShopeeDiscountSchedulerReadiness,
   resolveShopeeDiscountSchedulerStartup,
   schedulerRequestId,
 } from "./lib/shopee-discount/scheduler.mjs";
@@ -139,10 +140,9 @@ const shopeeHealthService = new ShopeeHealthService({
   robotRepository: db,
 });
 
-const shopeeDiscountStartup = resolveShopeeDiscountSchedulerStartup(runtimeEnv);
-const shopeeDiscountSchedulerEnabled = shopeeDiscountStartup.enabled;
-const shopeeDiscountShopIds = shopeeDiscountStartup.shopIds;
-const shopeeDiscountShopTimeZones = shopeeDiscountStartup.shopTimeZones;
+const shopeeDiscountStartupConfig = resolveShopeeDiscountSchedulerStartup(runtimeEnv);
+const shopeeDiscountShopIds = shopeeDiscountStartupConfig.shopIds;
+const shopeeDiscountShopTimeZones = shopeeDiscountStartupConfig.shopTimeZones;
 const shopeeDiscountCountry = String(runtimeEnv.SHOPEE_DISCOUNT_COUNTRY || "TH").trim().toUpperCase();
 const shopeeDiscountCategory = String(runtimeEnv.SHOPEE_DISCOUNT_CATEGORY || "家具").trim();
 const shopeeDiscountTier = String(runtimeEnv.SHOPEE_DISCOUNT_DEFAULT_TIER || "DAILY").trim().toUpperCase();
@@ -163,16 +163,19 @@ const discountReadAdapter = new ShopeeReadAdapter({
   },
   retryPolicy: { maxAttempts: 3, delaysMs: [5_000, 15_000] },
 });
-const discountWarehouse = /^https:\/\//.test(String(runtimeEnv.SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL || ""))
+const discountWarehouse = shopeeDiscountStartupConfig.warehouseBaseUrl
   ? new WarehouseControlPriceClient({
       fetchImpl: globalThis.fetch,
-      baseUrl: runtimeEnv.SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL,
+      baseUrl: shopeeDiscountStartupConfig.warehouseBaseUrl,
       getKey: async () => {
         const settings = await dataAccess.repositories.shopeeDiscount.getSettings();
         return settings?.encryptedWarehouseKeyCiphertext ? decryptSecret(settings.encryptedWarehouseKeyCiphertext) : null;
       },
     })
-  : { async scanPrices() { return { status: "BLOCKED", code: "WAREHOUSE_UNAVAILABLE", rows: [], warnings: [], evidence: {} }; } };
+  : {
+      async verifyKey() { return { status: "BLOCKED", code: "WAREHOUSE_UNAVAILABLE", rows: [], warnings: [], evidence: {} }; },
+      async scanPrices() { return { status: "BLOCKED", code: "WAREHOUSE_UNAVAILABLE", rows: [], warnings: [], evidence: {} }; },
+    };
 const discountService = new ShopeeDiscountService({
   repository: dataAccess.repositories.shopeeDiscount,
   foundation: foundationService,
@@ -193,21 +196,30 @@ const discountService = new ShopeeDiscountService({
 let discountNotifications = null;
 const discountDingtalkConfigId = String(runtimeEnv.SHOPEE_DISCOUNT_DINGTALK_CONFIG_ID || "").trim();
 const discountEntryBaseUrl = String(runtimeEnv.SHOPEE_DISCOUNT_ENTRY_BASE_URL || "").trim();
+let discountDingtalkRobot = null;
 if (discountDingtalkConfigId && discountEntryBaseUrl) {
-  const robot = await db.getDingtalkConfig(discountDingtalkConfigId, { includeSecret: true });
-  if (!robot?.enabled) throw new Error("Configured Shopee Discount DingTalk group is unavailable");
-  discountNotifications = new ShopeeDiscountNotifications({
+  discountDingtalkRobot = await db.getDingtalkConfig(discountDingtalkConfigId, { includeSecret: true });
+  if (discountDingtalkRobot?.enabled) discountNotifications = new ShopeeDiscountNotifications({
     repository: dataAccess.repositories.shopeeDiscount,
     groupId: discountDingtalkConfigId,
     entryBaseUrl: discountEntryBaseUrl,
     transport: async ({ payload }) => sendDingtalkMessage({
-      webhookUrl: decryptSecret(robot.encryptedWebhookUrl),
-      secret: robot.encryptedSecret ? decryptSecret(robot.encryptedSecret) : "",
+      webhookUrl: decryptSecret(discountDingtalkRobot.encryptedWebhookUrl),
+      secret: discountDingtalkRobot.encryptedSecret ? decryptSecret(discountDingtalkRobot.encryptedSecret) : "",
       title: payload.markdown.title,
       markdown: payload.markdown.text,
     }),
   });
 }
+const shopeeDiscountStartup = await resolveShopeeDiscountSchedulerReadiness({
+  env: runtimeEnv,
+  getDiscountSettings: () => dataAccess.repositories.shopeeDiscount.getSettings(),
+  verifyWarehouseKey: async () => (await discountWarehouse.verifyKey({ requestId: "scheduler-startup:warehouse" }))?.status === "READY",
+  listAuthorizedShops: async () => (await discountService.listShops({ requestId: "scheduler-startup:shops" }))
+    .map((shop) => ({ shopId: shop.shopId, authorized: true, healthy: shop.healthy !== false })),
+  getDingTalkConfig: async () => discountDingtalkRobot,
+});
+const shopeeDiscountSchedulerEnabled = shopeeDiscountStartup.enabled;
 
 let discountScheduler;
 discountScheduler = new ShopeeDiscountScheduler({
