@@ -46,7 +46,7 @@ export interface DiscountShop {
 }
 
 export interface TierOverride { shopId: string; priceTier: DiscountTier }
-export interface LinkTierOverride extends TierOverride { itemId: string }
+export interface LinkTierOverride extends TierOverride { itemId: string; note?: string }
 export interface ActivityTierSelection extends TierOverride { discountId: string }
 
 export interface CreateDiscountPreviewInput {
@@ -183,6 +183,10 @@ export interface DiscountScanJob {
   updatedAt?: string;
   completedAt?: string | null;
 }
+
+export interface DiscountSettings { enabled: boolean; timezone: string; warehouseConfigured: boolean; warehouseKeyHint?: string | null; warehouseKeyReference?: string | null; warehouseKeyVerifiedAt?: string | null; updatedAt?: string | null; updatedBy?: string | null }
+export interface DiscountOverrideLookupRow { shopId: string; shopName: string; itemId: string; sku: string; variantCount: number }
+export interface DiscountOverrideLookup { query: string; parsedItemId?: string | null; rows: DiscountOverrideLookupRow[] }
 
 export type DiscountRequestLane = "dashboard" | "operationalSnapshot" | "preview" | "approve" | "execute" | "items" | "scan";
 export interface DiscountRequestBinding { scopeKey?: string; planId?: string; merkleRoot?: string }
@@ -369,4 +373,17 @@ export function requestDiscountScan(country: string, shopIds: string[]) {
   return apiJson<DiscountScanJob>(`${BASE}${ROUTES.scans}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ country, shopIds }),
   });
+}
+
+export function loadDiscountSettings() { return apiJson<DiscountSettings>(`${BASE}/settings`); }
+export function saveDiscountSettings(input: { enabled?: boolean; timezone?: string; warehouseKey?: string; warehouseKeyReference?: string }) {
+  return apiJson<DiscountSettings>(`${BASE}/settings`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
+}
+export function verifyDiscountSettings() { return apiJson<DiscountSettings>(`${BASE}/settings/verify`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); }
+export function lookupDiscountOverrides(input: { country: string; shopIds: string[]; query: string; limit?: number }) {
+  return apiJson<DiscountOverrideLookup>(`${BASE}/overrides/lookup`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
+}
+export function loadDiscountIntent(intentId: string) { return apiJson<Record<string, unknown>>(`${BASE}/intents/${encodeURIComponent(intentId)}`); }
+export function reconcileDiscountIntent(intentId: string, resolution: "LINK_VERIFIED_OBJECT" | "CONFIRMED_NOT_SENT" | "ABANDONED", evidence?: Record<string, unknown>) {
+  return apiJson<Record<string, unknown>>(`${BASE}/intents/${encodeURIComponent(intentId)}/reconcile`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resolution, evidence }) });
 }

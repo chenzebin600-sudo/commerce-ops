@@ -32,7 +32,7 @@ function response() {
 function serviceDouble() {
   const calls = [];
   const service = {};
-  for (const name of ["status", "listShops", "createPreview", "getPreview", "listPreviewItems", "approvePreview", "requestExecution", "listRuns", "listActivities", "listIssues", "requestManualScan"]) {
+  for (const name of ["status", "listShops", "createPreview", "getPreview", "listPreviewItems", "approvePreview", "requestExecution", "listRuns", "listActivities", "listIssues", "requestManualScan", "getSettings", "updateSettings", "verifySettings", "lookupOverrides", "getIntent", "reconcileUnknown"]) {
     service[name] = async (...args) => {
       calls.push({ name, args });
       if (name === "createPreview") return { id: "plan-1", merkleRoot: "root-1", summary: { counts: { ready: 2 } } };
@@ -69,6 +69,12 @@ test("API exposes only fixed Shopee Discount routes and returns false outside th
     ["GET", "/api/shopee-discount/activities?shopId=1", "listActivities"],
     ["GET", "/api/shopee-discount/issues?code=BLOCKED", "listIssues"],
     ["POST", "/api/shopee-discount/scans", "requestManualScan", { country: "TH", shopIds: ["1"] }],
+    ["GET", "/api/shopee-discount/settings", "getSettings"],
+    ["PUT", "/api/shopee-discount/settings", "updateSettings", { enabled: true, warehouseKey: "zndr_test" }],
+    ["POST", "/api/shopee-discount/settings/verify", "verifySettings", {}],
+    ["POST", "/api/shopee-discount/overrides/lookup", "lookupOverrides", { country: "TH", shopIds: ["1"], query: "https://shopee.co.th/name-i.1.2" }],
+    ["GET", "/api/shopee-discount/intents/intent-1", "getIntent"],
+    ["POST", "/api/shopee-discount/intents/intent-1/reconcile", "reconcileUnknown", { resolution: "ABANDONED", evidence: { accepted: true, reasonCode: "OPERATOR_ACCEPTED_UNKNOWN" } }],
   ];
   for (const [method, path, expected, body] of routes) {
     const result = await invoke(handler, method, path, body);

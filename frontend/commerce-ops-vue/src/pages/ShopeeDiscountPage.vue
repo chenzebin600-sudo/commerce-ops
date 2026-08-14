@@ -9,7 +9,8 @@ import {
   approveDiscountPreview, createDiscountPreview, executeDiscountPreview, loadDiscountActivities,
   discountPreviewInputKey, DiscountPageFlowController, DiscountRequestGuard,
   loadDiscountIssues, loadDiscountPreviewItems, loadDiscountRuns, loadDiscountShops, loadDiscountStatus,
-  requestDiscountScan, type ActivityTierSelection, type DiscountActivity, type DiscountIssue,
+  requestDiscountScan, lookupDiscountOverrides, reconcileDiscountIntent, loadDiscountSettings, saveDiscountSettings, verifyDiscountSettings,
+  type ActivityTierSelection, type DiscountActivity, type DiscountIssue, type DiscountOverrideLookupRow, type DiscountSettings,
   type DiscountPreview, type DiscountPreviewItem, type DiscountRun, type DiscountShop, type DiscountStatus,
   type CreateDiscountPreviewInput, type DiscountTier, type DiscountWorkflow, type LinkTierOverride, type TierOverride,
 } from "@/services/shopee-discount";
@@ -43,6 +44,11 @@ const activitySelection = ref<ActivityTierSelection[]>([]);
 const batchText = ref("");
 const batchErrors = ref<string[]>([]);
 const batchFileInput = ref<HTMLInputElement | null>(null);
+const overrideQuery = ref("");
+const overrideMatches = ref<DiscountOverrideLookupRow[]>([]);
+const overrideSearching = ref(false);
+const settings = ref<DiscountSettings | null>(null);
+const settingsKey = ref("");
 const preview = ref<DiscountPreview | null>(null);
 const previewItems = ref<DiscountPreviewItem[]>([]);
 const nextCursor = ref<string | number | null>(null);
@@ -193,7 +199,7 @@ function addShopOverride() {
 function addLinkOverride() {
   const shopId = effectiveShopIds.value[0];
   if (!shopId) return ElMessage.warning("请先选择店铺范围");
-  linkOverrides.value.push({ shopId, itemId: "", priceTier: defaultTier.value });
+  linkOverrides.value.push({ shopId, itemId: "", priceTier: defaultTier.value, note: "运营手动覆盖" });
   resetPlan();
 }
 
@@ -212,14 +218,15 @@ function validateBatch() {
   lines.forEach((line, index) => {
     const cells = line.split(/[,\t]/).map((cell) => cell.trim());
     if (index === 0 && cells[0]?.toLowerCase().includes("shop")) return;
-    const [shopId = "", itemId = "", rawTier = ""] = cells;
+    const [shopId = "", itemId = "", rawTier = "", note = ""] = cells;
     const priceTier = rawTier.toUpperCase() as DiscountTier;
     const key = `${shopId}:${itemId}`;
     if (!/^\d+$/.test(shopId) || !/^\d+$/.test(itemId)) errors.push(`第 ${index + 1} 行：Shop ID 与 Item ID 必须为数字`);
     else if (!effectiveShopIds.value.includes(shopId)) errors.push(`第 ${index + 1} 行：店铺不在当前范围`);
     else if (!tiers.some((entry) => entry.value === priceTier)) errors.push(`第 ${index + 1} 行：价格档位仅支持 DAILY、EVENT、MEGA`);
+    else if (!note) errors.push(`第 ${index + 1} 行：必须填写备注`);
     else if (seen.has(key) || linkOverrides.value.some((entry) => `${entry.shopId}:${entry.itemId}` === key)) errors.push(`第 ${index + 1} 行：店铺与链接重复`);
-    else { seen.add(key); rows.push({ shopId, itemId, priceTier }); }
+    else { seen.add(key); rows.push({ shopId, itemId, priceTier, note }); }
   });
   batchErrors.value = errors;
   if (!errors.length && rows.length) {
@@ -229,6 +236,33 @@ function validateBatch() {
     resetPlan();
   } else if (!lines.length) batchErrors.value = ["请粘贴或选择 CSV 内容"];
 }
+
+async function searchOverrides() {
+  if (!overrideQuery.value.trim() || !scopeValid.value) return;
+  overrideSearching.value = true;
+  try { overrideMatches.value = (await lookupDiscountOverrides({ country: country.value, shopIds: effectiveShopIds.value, query: overrideQuery.value.trim() })).rows; }
+  catch (error) { ElMessage.error(error instanceof Error ? error.message : "搜索链接失败"); }
+  finally { overrideSearching.value = false; }
+}
+function chooseOverride(row: DiscountOverrideLookupRow) {
+  if (linkOverrides.value.some((entry) => entry.shopId === row.shopId && entry.itemId === row.itemId)) return ElMessage.warning("该链接已经添加");
+  linkOverrides.value.push({ shopId: row.shopId, itemId: row.itemId, priceTier: defaultTier.value, note: `搜索确认 SKU ${row.sku}` });
+  resetPlan();
+}
+async function reconcileIssue(issue: DiscountIssue, resolution: "LINK_VERIFIED_OBJECT" | "CONFIRMED_NOT_SENT" | "ABANDONED") {
+  const intentId = String(issue.evidence?.intentId || "");
+  if (!intentId) return ElMessage.error("该异常没有可协调的 Intent ID");
+  try {
+    await reconcileDiscountIntent(intentId, resolution, resolution === "ABANDONED" ? { accepted: true, reasonCode: "OPERATOR_ACCEPTED_UNKNOWN" } : undefined);
+    ElMessage.success("UNKNOWN 决策已记录审计"); await refreshOperationalData();
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "UNKNOWN 协调失败"); }
+}
+async function loadSettingsPanel() { try { settings.value = await loadDiscountSettings(); } catch { settings.value = null; } }
+async function saveSettingsPanel() {
+  try { settings.value = await saveDiscountSettings({ enabled: settings.value?.enabled, timezone: settings.value?.timezone, ...(settingsKey.value ? { warehouseKey: settingsKey.value } : {}) }); settingsKey.value = ""; ElMessage.success("设置已保存，旧审批已失效"); await loadDashboard(); }
+  catch (error) { ElMessage.error(error instanceof Error ? error.message : "保存设置失败"); }
+}
+async function verifySettingsPanel() { try { settings.value = await verifyDiscountSettings(); ElMessage.success("数仓 Key 验证通过"); } catch (error) { ElMessage.error(error instanceof Error ? error.message : "验证失败"); } }
 
 function readBatchFile(event: Event) {
   const input = event.target as HTMLInputElement;
@@ -401,7 +435,7 @@ async function scanNow() {
   } finally { if (requestGuard.isCurrent(ticket, scopeBinding())) scanning.value = false; }
 }
 
-onMounted(loadDashboard);
+onMounted(() => { void loadDashboard(); void loadSettingsPanel(); });
 onBeforeUnmount(() => {
   pageFlow.dispose();
   if (pollTimer) clearInterval(pollTimer);
@@ -445,6 +479,17 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <section v-if="settings" class="scope-panel" aria-label="折扣控价设置">
+      <header><div><h3>安全设置</h3><p>密钥仅提交到服务端加密保存，页面只显示脱敏提示。</p></div></header>
+      <div class="scope-grid">
+        <label class="field"><span>启用模块</span><el-switch v-model="settings.enabled" /></label>
+        <label class="field"><span>IANA 时区</span><el-input v-model="settings.timezone" /></label>
+        <label class="field"><span>数仓 Key（留空不修改）</span><el-input v-model="settingsKey" type="password" show-password :placeholder="settings.warehouseKeyHint || 'zndr_…'" /></label>
+        <div class="field"><span>验证状态</span><small>{{ settings.warehouseKeyVerifiedAt ? `已验证 ${formatDate(settings.warehouseKeyVerifiedAt)}` : '尚未验证' }}</small></div>
+      </div>
+      <div class="approval-actions"><el-button @click="saveSettingsPanel">保存设置</el-button><el-button @click="verifySettingsPanel">验证 Key</el-button></div>
+    </section>
+
     <section class="override-grid">
       <article class="config-panel">
         <header><div><h3>店铺覆盖</h3><p>仅影响本期方案，下一期重新选择。</p></div><el-button text type="primary" :icon="Plus" @click="addShopOverride">添加</el-button></header>
@@ -459,11 +504,14 @@ onBeforeUnmount(() => {
 
       <article class="config-panel">
         <header><div><h3>链接覆盖</h3><p>按 Shop ID 与 Item ID 指定活动价或大促价。</p></div><el-button text type="primary" :icon="Plus" @click="addLinkOverride">添加</el-button></header>
+        <div class="batch-actions"><el-input v-model="overrideQuery" aria-label="搜索链接、Item ID 或 SKU" placeholder="粘贴 Shopee 商品链接，或输入 Item ID / SKU" @keyup.enter="searchOverrides" /><el-button :loading="overrideSearching" @click="searchOverrides">搜索</el-button></div>
+        <div v-if="overrideMatches.length" class="edit-list" aria-label="覆盖搜索结果"><div v-for="row in overrideMatches" :key="`${row.shopId}-${row.itemId}`" class="edit-row"><span>{{ row.shopName }} · {{ row.itemId }} · {{ row.sku }} · {{ row.variantCount }} 变体</span><el-button text type="primary" @click="chooseOverride(row)">选择</el-button></div></div>
         <div v-if="linkOverrides.length" class="edit-list">
           <div v-for="(entry, index) in linkOverrides" :key="`${entry.shopId}-${entry.itemId}-${index}`" class="edit-row link-row">
             <el-select v-model="entry.shopId" aria-label="链接覆盖店铺"><el-option v-for="shop in countryShops.filter((item) => effectiveShopIds.includes(item.shopId))" :key="shop.shopId" :label="shop.name" :value="shop.shopId" /></el-select>
             <el-input v-model="entry.itemId" aria-label="链接 Item ID" placeholder="Item ID" @change="resetPlan" />
             <el-select v-model="entry.priceTier" aria-label="链接覆盖价格档位"><el-option v-for="tier in tiers" :key="tier.value" :label="tier.label" :value="tier.value" /></el-select>
+            <el-input v-model="entry.note" aria-label="链接覆盖备注" placeholder="必填：本期覆盖原因" @change="resetPlan" />
             <el-button text type="danger" :icon="Trash2" aria-label="删除链接覆盖" @click="linkOverrides.splice(index, 1); resetPlan()" />
           </div>
         </div><el-empty v-else description="默认使用店铺价格档位" :image-size="52" />
@@ -482,8 +530,8 @@ onBeforeUnmount(() => {
       </article>
 
       <article class="config-panel batch-panel">
-        <header><div><h3>批量导入链接覆盖</h3><p>CSV 列：shop_id,item_id,price_tier。导入前校验范围、档位与重复行。</p></div><FileSpreadsheet :size="19" /></header>
-        <el-input v-model="batchText" type="textarea" :rows="4" aria-label="批量导入链接覆盖" placeholder="shop_id,item_id,price_tier" />
+        <header><div><h3>批量导入链接覆盖</h3><p>CSV 列：shop_id,item_id,price_tier,note。导入前回显店铺、Item、SKU、变体数、最终档位与规则来源。</p></div><FileSpreadsheet :size="19" /></header>
+        <el-input v-model="batchText" type="textarea" :rows="4" aria-label="批量导入链接覆盖" placeholder="shop_id,item_id,price_tier,note" />
         <div class="batch-actions"><button type="button" class="file-button" @click="batchFileInput?.click()">选择 CSV</button><input ref="batchFileInput" class="visually-hidden" type="file" accept=".csv,text/csv,text/plain" aria-label="选择链接覆盖 CSV 文件" @change="readBatchFile" /><el-button @click="validateBatch">校验并导入</el-button></div>
         <div v-if="batchErrors.length" class="validation-errors" role="alert"><strong>导入未通过</strong><span v-for="message in batchErrors.slice(0, 8)" :key="message">{{ message }}</span></div>
       </article>
@@ -546,6 +594,7 @@ onBeforeUnmount(() => {
             <el-table-column prop="planId" label="方案" min-width="180" />
             <el-table-column label="问题代码" min-width="220"><template #default="scope"><strong>{{ scope.row.code || 'UNKNOWN' }}</strong></template></el-table-column>
             <el-table-column label="证据摘要" min-width="260"><template #default="scope"><span class="evidence">{{ JSON.stringify(scope.row.evidence || {}) }}</span></template></el-table-column>
+            <el-table-column label="协调决策" min-width="330"><template #default="scope"><div class="batch-actions"><el-button size="small" @click="reconcileIssue(scope.row, 'LINK_VERIFIED_OBJECT')">关联已核验对象</el-button><el-button size="small" @click="reconcileIssue(scope.row, 'CONFIRMED_NOT_SENT')">确认未发送</el-button><el-button size="small" type="danger" @click="reconcileIssue(scope.row, 'ABANDONED')">接受并放弃</el-button></div></template></el-table-column>
           </el-table>
         </el-tab-pane>
 

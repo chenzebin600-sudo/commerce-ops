@@ -98,3 +98,14 @@ test("download path policy failures use the dedicated path rejection action", ()
   completeHttpAudit(audit, context, { httpStatus: 403 });
   assert.equal(events[0].action, "file.path.rejected");
 });
+
+test("Shopee privileged identity is accepted only from an authenticated trusted proxy", () => {
+  const make = (remoteAddress) => ({ method: "POST", headers: { authorization: "Bearer fixed", "x-authenticated-user": "ops-1", "x-authenticated-roles": "viewer,shopee_discount_execute" }, socket: { remoteAddress } });
+  const trustedContext = createHttpAuditContext(make("10.0.0.2"), new URL("http://local/api/shopee-discount/status"), { trustedProxies: new Set(["10.0.0.2"]) });
+  assert.equal(trustedContext.identity.actorId, "ops-1");
+  assert.deepEqual(trustedContext.identity.roles, ["shopee_discount_execute", "viewer"]);
+  assert.equal(trustedContext.privilegedIdentity, "privileged_execute_identity");
+  const directContext = createHttpAuditContext(make("127.0.0.1"), new URL("http://local/api/shopee-discount/status"), { trustedProxies: new Set(["10.0.0.2"]) });
+  assert.equal(directContext.identity, null);
+  assert.equal(directContext.privilegedIdentity, null);
+});

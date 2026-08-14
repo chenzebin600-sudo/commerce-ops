@@ -114,7 +114,7 @@ test("preview input key changes for every request field that can affect scope, h
     { ...base, country: "SG" }, { ...base, shopIds: ["9"], useDefaultShops: false },
     { ...base, workflow: "CURRENT_CORRECTION", renewal: undefined }, { ...base, defaultTier: "EVENT" },
     { ...base, shopOverrides: [{ shopId: "9", priceTier: "MEGA" }] },
-    { ...base, linkOverrides: [{ shopId: "9", itemId: "88", priceTier: "EVENT" }] },
+    { ...base, linkOverrides: [{ shopId: "9", itemId: "88", priceTier: "EVENT", note: "本期活动覆盖" }] },
     { ...base, activitySelection: [{ shopId: "9", discountId: "77", priceTier: "DAILY" }] },
     { ...base, category: "灯具" },
     { ...base, renewal: { requestedStartAt: "2026-08-16T00:00:00.000Z", durationDays: 30 } },

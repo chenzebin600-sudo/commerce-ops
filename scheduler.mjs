@@ -238,7 +238,10 @@ discountScheduler = new ShopeeDiscountScheduler({
     : null,
   pollIntervalMs: Number(runtimeEnv.SHOPEE_DISCOUNT_POLL_INTERVAL_MS || 60_000),
   onError: (cause) => console.error(`Shopee Discount scheduler tick failed: ${cause?.code || cause?.message || "unknown"}`),
-  scan: async ({ country, shopIds, timeZone }) => {
+  scan: async ({ country, shopIds, timeZone, dueJobId }) => {
+    const correction = await discountService.runCurrentCorrectionScan({
+      country, shopIds, category: shopeeDiscountCategory, defaultTier: shopeeDiscountTier,
+    }, { actorId: "shopee-discount-scheduler", requestId: schedulerRequestId(dueJobId) });
     let scheduled = 0;
     for (const shopId of shopIds) {
       const shopTimeZone = String(shopeeDiscountShopTimeZones[shopId] || timeZone || "").trim();
@@ -260,7 +263,7 @@ discountScheduler = new ShopeeDiscountScheduler({
       });
       scheduled += 1;
     }
-    return { scheduled };
+    return { scheduled, correctionPlanId: correction.id, correctionState: correction.state };
   },
   createRenewalDraft: async (payload) => discountService.createPreview({
     country: payload.country,

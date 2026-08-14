@@ -670,7 +670,7 @@ test("warehouse watermark is pinned across different price tiers", async () => {
   const context = await fixture({ shopee, warehouse });
   try {
     await assert.rejects(context.service.createPreview(previewInput({
-      linkOverrides: [{ shopId: "1", itemId: "11", priceTier: "EVENT" }],
+      linkOverrides: [{ shopId: "1", itemId: "11", priceTier: "EVENT", note: "本期活动覆盖" }],
     }), {}), { code: "WAREHOUSE_WATERMARK_CHANGED" });
     assert.equal(calls.length, 2);
     assert.equal(calls[1].watermark, "2026-08-13T09:00:00.000Z");
@@ -1007,4 +1007,51 @@ test("heartbeat failure drains the single flight and never renews after preview 
     await new Promise((resolve) => setTimeout(resolve, 40));
     assert.equal(calls, settledCalls, "no heartbeat may renew after preview returns");
   } finally { await new Promise((resolve) => setTimeout(resolve, 270)); await context.close(); }
+});
+
+test("manual execution invokes only the authenticated production callback after exact approval", async () => {
+  const invoked = [];
+  const context = await fixture({
+    shopee: fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] } }),
+    serviceOptions: { executeApprovedPlan: async (planId, envelope) => invoked.push({ planId, envelope }) },
+  });
+  try {
+    const preview = await context.service.createPreview(previewInput({ workflow: "NEXT_RENEWAL", renewal: { requestedStartAt: "2026-08-15T00:00:00.000Z", durationDays: 30 } }), { requestId: "manual-runtime-preview" });
+    await context.service.approvePreview({ planId: preview.id, merkleRoot: preview.merkleRoot, operatorName: "Alice", confirmationText: preview.confirmationText }, { actorId: "ops-1" });
+    await context.service.requestExecution({ planId: preview.id, merkleRoot: preview.merkleRoot }, { actorId: "ops-1", identity: { actorId: "ops-1", roles: ["shopee_discount_execute"] }, requestId: "manual-runtime-execute" });
+    assert.equal(invoked.length, 1);
+    assert.equal(invoked[0].planId, preview.id);
+    assert.equal(invoked[0].envelope.context.identity.actorId, "ops-1");
+  } finally { await context.close(); }
+});
+
+test("current correction scan reads live Discounts and produces a draft without approval or execution", async () => {
+  const context = await fixture({ shopee: fakeShopee({
+    itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU", "10000", "9500")] },
+    discountDetails: { "900": { discount_id: "900", status: "ongoing", start_time: String(NOW.getTime() / 1000 - 3600), end_time: String(NOW.getTime() / 1000 + 86400), item_list: [{ item_id: "10", model_list: [{ model_id: "100" }] }], more: false } },
+  }) });
+  try {
+    const draft = await context.service.runCurrentCorrectionScan({ country: "TH", shopIds: ["1"], category: "HOME", defaultTier: "DAILY" }, { actorId: "scheduler", requestId: "scan-due-1" });
+    assert.equal(draft.state, "PREVIEWED");
+    assert.equal(draft.summary.counts.ready, 1);
+    assert.equal((await context.access.repositories.shopeeDiscount.listExecutionJobs(draft.id)).length, 0);
+  } finally { await context.close(); }
+});
+
+test("settings stay redacted, verify fail-closed, and Shopee links resolve to bounded validation echoes", async () => {
+  const context = await fixture({
+    shopee: fakeShopee({ itemsByShop: { "1": [{ item_id: "10", item_status: "NORMAL" }] }, modelsByItem: { "10": [model("100", "SKU-ONE", "10000", "9500"), model("101", "SKU-ONE", "10000", "9500")] } }),
+    serviceOptions: { protectWarehouseKey: async (value) => `encrypted:${value.length}`, verifyWarehouseKey: async () => true },
+  });
+  const identity = { actorId: "admin-1", roles: ["shopee_discount_execute"] };
+  try {
+    const saved = await context.service.updateSettings({ enabled: true, timezone: "Asia/Bangkok", warehouseKey: "zndr_super_secret" }, { identity });
+    assert.equal(saved.warehouseConfigured, true);
+    assert.equal(JSON.stringify(saved).includes("super_secret"), false);
+    const verified = await context.service.verifySettings({ identity });
+    assert.ok(verified.warehouseKeyVerifiedAt);
+    const lookup = await context.service.lookupOverrides({ country: "TH", shopIds: ["1"], query: "https://shopee.co.th/product-name-i.1.10", limit: 10 }, { requestId: "lookup-1" });
+    assert.equal(lookup.parsedItemId, "10");
+    assert.deepEqual(lookup.rows.map(({ shopId, itemId, sku, variantCount }) => ({ shopId, itemId, sku, variantCount })), [{ shopId: "1", itemId: "10", sku: "SKU-ONE", variantCount: 2 }]);
+  } finally { await context.close(); }
 });

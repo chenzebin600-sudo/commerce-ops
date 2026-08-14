@@ -108,7 +108,7 @@ import { createMabangImageAuditRecord, MabangSkuImageCollectorService } from "./
 import { createMabangImageAccessPolicy } from "./lib/mabang-images/access-policy.mjs";
 import { createMabangImageApi } from "./lib/mabang-images/api.mjs";
 import { createFulfillmentDashboardProxy } from "./lib/fulfillment-dashboard-proxy.mjs";
-import { decryptSecret } from "./lib/mabang-scheduler/crypto.mjs";
+import { decryptSecret, encryptSecret } from "./lib/mabang-scheduler/crypto.mjs";
 import { FoundationService } from "./lib/foundation/foundation-service.mjs";
 import { MabangListingInternalClient } from "./lib/inventory-sync/mabang-listing-client.mjs";
 import { InventorySyncService } from "./lib/inventory-sync/inventory-sync-service.mjs";
@@ -121,10 +121,13 @@ import { ShopeeHealthClient } from "./lib/shopee-health/client.mjs";
 import { ShopeeHealthService } from "./lib/shopee-health/service.mjs";
 import { createShopeeHealthApi } from "./lib/shopee-health/api.mjs";
 import { ShopeeReadAdapter } from "./lib/shopee-discount/shopee-read-adapter.mjs";
+import { ShopeeWriteAdapter } from "./lib/shopee-discount/shopee-write-adapter.mjs";
 import { WarehouseControlPriceClient } from "./lib/shopee-discount/warehouse-client.mjs";
 import { resolveShopeeWriteSecurity } from "./lib/shopee-discount/write-security.mjs";
 import { ShopeeDiscountService } from "./lib/shopee-discount/service.mjs";
 import { createShopeeDiscountApi } from "./lib/shopee-discount/api.mjs";
+import { createManualExecutionRuntime, createProductionReaders } from "./lib/shopee-discount/production-runtime.mjs";
+import { foundationContentHash } from "./lib/foundation/foundation-contracts.mjs";
 import { ShopeeAdvertisingService } from "./lib/advertising/shopee-advertising-service.mjs";
 import { createShopeeAdvertisingApi } from "./lib/advertising/shopee-advertising-api.mjs";
 
@@ -369,8 +372,7 @@ const handleShopeeHealthApi = createShopeeHealthApi({
   service: shopeeHealthService,
   repository: dataAccess.repositories.shopeeHealth,
 });
-const shopeeDiscountReadAdapter = new ShopeeReadAdapter({
-  transport: async (request) => {
+const shopeeDiscountRelayTransport = async (request) => {
     const settings = await dataAccess.repositories.shopeeHealth.getSettings({ includeSecret: true });
     if (!settings?.encryptedTokenKey) return { status: 503, body: { error: "SHOPEE_TOKEN_NOT_CONFIGURED" } };
     const tokenKey = decryptSecret(settings.encryptedTokenKey);
@@ -383,7 +385,9 @@ const shopeeDiscountReadAdapter = new ShopeeReadAdapter({
     } catch (error) {
       return { status: Number(error?.status) || 503, body: { error: String(error?.code || "SHOPEE_RELAY_FAILED") } };
     }
-  },
+};
+const shopeeDiscountReadAdapter = new ShopeeReadAdapter({
+  transport: shopeeDiscountRelayTransport,
   retryPolicy: { maxAttempts: 3, delaysMs: [5_000, 15_000] },
 });
 const shopeeDiscountWarehouse = /^https:\/\//.test(String(runtimeEnv.SHOPEE_DISCOUNT_WAREHOUSE_BASE_URL || ""))
@@ -411,12 +415,48 @@ const shopeeDiscountSecurity = () => resolveShopeeWriteSecurity({
     },
   },
 });
+const shopeeDiscountSiteCapability = {
+  priceScale: Number(runtimeEnv.SHOPEE_DISCOUNT_PRICE_SCALE || 2),
+  minPriceMinor: runtimeEnv.SHOPEE_DISCOUNT_MIN_PRICE_MINOR || "1",
+  maxPriceMinor: runtimeEnv.SHOPEE_DISCOUNT_MAX_PRICE_MINOR || "999999999",
+  priceStepMinor: runtimeEnv.SHOPEE_DISCOUNT_PRICE_STEP_MINOR || "1",
+  maxAddItems: Math.min(50, Number(runtimeEnv.SHOPEE_DISCOUNT_MAX_ADD_ITEMS || 50)),
+};
+const shopeeDiscountWriteAdapter = new ShopeeWriteAdapter({ transport: shopeeDiscountRelayTransport, siteCapability: shopeeDiscountSiteCapability });
+const shopeeDiscountPolicy = { version: 1, fallback: "ORIGINAL_1_PERCENT_OFF", staleApprovalWarningDays: 35 };
+const shopeeDiscountPolicyHash = foundationContentHash(shopeeDiscountPolicy);
+const shopeeDiscountProductionReaders = createProductionReaders({ shopee: shopeeDiscountReadAdapter, warehouse: shopeeDiscountWarehouse });
+const executeShopeeDiscountManually = createManualExecutionRuntime({
+  repository: dataAccess.repositories.shopeeDiscount, foundation: foundationService,
+  shopeeRead: shopeeDiscountReadAdapter, shopeeWrite: shopeeDiscountWriteAdapter, warehouse: shopeeDiscountWarehouse,
+  writeSecurity: shopeeDiscountSecurity, currentPolicyHash: shopeeDiscountPolicyHash,
+  siteCapability: shopeeDiscountSiteCapability,
+});
 const shopeeDiscountService = new ShopeeDiscountService({
   repository: dataAccess.repositories.shopeeDiscount,
   foundation: foundationService,
   shopee: shopeeDiscountReadAdapter,
   warehouse: shopeeDiscountWarehouse,
   writeSecurity: shopeeDiscountSecurity,
+  policy: () => ({ hash: shopeeDiscountPolicyHash, value: shopeeDiscountPolicy }),
+  protectWarehouseKey: (value) => encryptSecret(value),
+  verifyWarehouseKey: async () => (await shopeeDiscountWarehouse.verifyKey({ requestId: `settings:${Date.now()}` }))?.status === "READY",
+  reconciliationEvidence: {
+    readbackIntent: async (intent) => {
+      const item = intent.planItemId ? await dataAccess.repositories.shopeeDiscount.getPlanItem(intent.planItemId) : null;
+      const shopId = item?.shopId || String(intent.targetKey || "").split("\u001f")[0];
+      const activity = await dataAccess.repositories.shopeeDiscount.getPlanActivity(intent.planId, shopId);
+      if (!activity) return null;
+      return shopeeDiscountProductionReaders.readbackIntent({ intent, item, activity, requestId: `reconcile:${intent.id}` });
+    },
+    confirmNotSent: async (intent) => {
+      const response = await shopeeHealthClient.request("/api/shopee/operation-status", decryptSecret((await dataAccess.repositories.shopeeHealth.getSettings({ includeSecret: true })).encryptedTokenKey), {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ operation_uuid: intent.operationUuid }),
+      });
+      return { deterministic: response?.transmitted === false, transmitted: response?.transmitted, source: "RELAY", operationUuid: intent.operationUuid, relayRequestId: response?.request_id || null };
+    },
+  },
+  executeApprovedPlan: executeShopeeDiscountManually,
   approvalTtlMs: Number(runtimeEnv.SHOPEE_DISCOUNT_APPROVAL_TTL_MS || 10 * 60_000),
   siteCapabilities: {
     [String(runtimeEnv.SHOPEE_DISCOUNT_COUNTRY || "TH").toUpperCase()]: {
