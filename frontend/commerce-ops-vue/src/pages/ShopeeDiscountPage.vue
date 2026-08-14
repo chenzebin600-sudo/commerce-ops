@@ -7,7 +7,7 @@ import { ElMessage } from "element-plus";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   approveDiscountPreview, createDiscountPreview, executeDiscountPreview, loadDiscountActivities,
-  discountPreviewInputKey,
+  discountPreviewInputKey, DiscountRequestGuard,
   loadDiscountIssues, loadDiscountPreviewItems, loadDiscountRuns, loadDiscountShops, loadDiscountStatus,
   requestDiscountScan, type ActivityTierSelection, type DiscountActivity, type DiscountIssue,
   type DiscountPreview, type DiscountPreviewItem, type DiscountRun, type DiscountShop, type DiscountStatus,
@@ -54,6 +54,7 @@ const activities = ref<DiscountActivity[]>([]);
 const issues = ref<DiscountIssue[]>([]);
 const activeTab = ref("preview");
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+const requestGuard = new DiscountRequestGuard();
 
 const countries = computed(() => [...new Set(shops.value.map((shop) => shop.country))].sort());
 const countryShops = computed(() => shops.value.filter((shop) => shop.country === country.value));
@@ -116,12 +117,26 @@ function defaultRenewalStart() {
 }
 
 function resetPlan() {
+  requestGuard.invalidatePlan();
+  requestGuard.invalidate("scan");
   preview.value = null;
   previewItems.value = [];
   nextCursor.value = null;
   operatorName.value = "";
   confirmationInput.value = "";
+  previewing.value = false;
+  approving.value = false;
+  executing.value = false;
+  itemLoading.value = false;
+  scanning.value = false;
   activeTab.value = "preview";
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+}
+
+function scopeBinding() { return { scopeKey: previewRequestKey.value }; }
+function planBinding(plan = preview.value) {
+  return plan ? { scopeKey: previewRequestKey.value, planId: plan.id, merkleRoot: plan.merkleRoot } : null;
 }
 
 watch(country, () => {
@@ -219,6 +234,7 @@ function readBatchFile(event: Event) {
 }
 
 async function loadDashboard() {
+  const ticket = requestGuard.begin("dashboard", {});
   loading.value = true;
   errorMessage.value = "";
   try {
@@ -226,6 +242,7 @@ async function loadDashboard() {
       loadDiscountStatus(), loadDiscountShops(), loadDiscountRuns({ limit: 50 }),
       loadDiscountActivities({ limit: 50 }), loadDiscountIssues({ limit: 50 }),
     ]);
+    if (!requestGuard.isCurrent(ticket, {})) return;
     status.value = nextStatus;
     shops.value = nextShops;
     runs.value = nextRuns;
@@ -233,73 +250,118 @@ async function loadDashboard() {
     issues.value = nextIssues;
     if (!country.value) country.value = countries.value[0] || "";
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "折扣控价数据加载失败";
-  } finally { loading.value = false; }
+    if (requestGuard.isCurrent(ticket, {})) errorMessage.value = error instanceof Error ? error.message : "折扣控价数据加载失败";
+  } finally { if (requestGuard.isCurrent(ticket, {})) loading.value = false; }
 }
 
 async function generatePreview() {
   const request = previewRequest.value;
   if (!canPreview.value || !request) return;
+  const binding = scopeBinding();
+  const ticket = requestGuard.begin("preview", binding);
   previewing.value = true;
   errorMessage.value = "";
   try {
     const next = await createDiscountPreview(request);
+    if (!requestGuard.isCurrent(ticket, scopeBinding())) return;
+    requestGuard.invalidatePlanDependents();
+    approving.value = false;
+    executing.value = false;
+    itemLoading.value = false;
     preview.value = next;
     previewItems.value = [];
     nextCursor.value = null;
     await loadMoreItems();
+    if (!requestGuard.isCurrent(ticket, scopeBinding())) return;
     activeTab.value = "preview";
     ElMessage.success("价格预览已生成，尚未执行任何 Shopee 写入");
-  } catch (error) { errorMessage.value = error instanceof Error ? error.message : "生成预览失败"; }
-  finally { previewing.value = false; }
+  } catch (error) {
+    if (requestGuard.isCurrent(ticket, scopeBinding())) errorMessage.value = error instanceof Error ? error.message : "生成预览失败";
+  } finally { if (requestGuard.isCurrent(ticket, scopeBinding())) previewing.value = false; }
 }
 
 async function loadMoreItems() {
-  if (!preview.value || itemLoading.value) return;
+  const plan = preview.value;
+  const binding = planBinding(plan);
+  if (!plan || !binding || itemLoading.value) return;
+  const ticket = requestGuard.begin("items", binding);
   itemLoading.value = true;
   try {
-    const page = await loadDiscountPreviewItems(preview.value.id, { cursor: nextCursor.value, pageSize: 50 });
+    const page = await loadDiscountPreviewItems(plan.id, { cursor: nextCursor.value, pageSize: 50 });
+    const current = planBinding();
+    if (!current || !requestGuard.isCurrent(ticket, current)) return;
     previewItems.value.push(...page.items);
     nextCursor.value = page.nextCursor;
-  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "加载预览明细失败"); }
-  finally { itemLoading.value = false; }
+  } catch (error) {
+    const current = planBinding();
+    if (current && requestGuard.isCurrent(ticket, current)) ElMessage.error(error instanceof Error ? error.message : "加载预览明细失败");
+  } finally {
+    const current = planBinding();
+    if (current && requestGuard.isCurrent(ticket, current)) itemLoading.value = false;
+  }
 }
 
 async function approvePlan() {
-  if (!preview.value || !canApprove.value) return;
+  const plan = preview.value;
+  const binding = planBinding(plan);
+  if (!plan || !binding || !canApprove.value) return;
+  const ticket = requestGuard.begin("approve", binding);
   approving.value = true;
   try {
-    preview.value = await approveDiscountPreview({ planId: preview.value.id, merkleRoot: preview.value.merkleRoot,
+    const approved = await approveDiscountPreview({ planId: plan.id, merkleRoot: plan.merkleRoot,
       operatorName: operatorName.value.trim(), confirmationText: confirmationInput.value,
-      ...(status.value?.writeSecurity.mode === "separate_execute_identity" && preview.value.expiresAt ? {
-        privilegedApproval: { planId: preview.value.id, merkleRoot: preview.value.merkleRoot,
-          policyHash: preview.value.policyHash, expiresAt: preview.value.expiresAt },
+      ...(status.value?.writeSecurity.mode === "separate_execute_identity" && plan.expiresAt ? {
+        privilegedApproval: { planId: plan.id, merkleRoot: plan.merkleRoot,
+          policyHash: plan.policyHash, expiresAt: plan.expiresAt },
       } : {}),
     });
+    const current = planBinding();
+    if (!current || !requestGuard.isCurrent(ticket, current)) return;
+    preview.value = approved;
     ElMessage.success("价格方案已由运营确认，尚未提交执行任务");
-  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "确认价格方案失败"); }
-  finally { approving.value = false; }
+  } catch (error) {
+    const current = planBinding();
+    if (current && requestGuard.isCurrent(ticket, current)) ElMessage.error(error instanceof Error ? error.message : "确认价格方案失败");
+  } finally {
+    const current = planBinding();
+    if (current && requestGuard.isCurrent(ticket, current)) approving.value = false;
+  }
 }
 
 async function executePlan() {
-  if (!preview.value || !canExecute.value) return;
+  const plan = preview.value;
+  const binding = planBinding(plan);
+  if (!plan || !binding || !canExecute.value) return;
+  const ticket = requestGuard.begin("execute", binding);
   executing.value = true;
   try {
-    const job = await executeDiscountPreview({ planId: preview.value.id, merkleRoot: preview.value.merkleRoot });
+    const job = await executeDiscountPreview({ planId: plan.id, merkleRoot: plan.merkleRoot });
+    const current = planBinding();
+    if (!current || !requestGuard.isCurrent(ticket, current)) return;
     runs.value = [job, ...runs.value.filter((entry) => entry.id !== job.id)];
     activeTab.value = "execution";
     startPolling();
     ElMessage.success("已提交人工确认后的执行任务");
-  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "提交执行任务失败"); }
-  finally { executing.value = false; }
+  } catch (error) {
+    const current = planBinding();
+    if (current && requestGuard.isCurrent(ticket, current)) ElMessage.error(error instanceof Error ? error.message : "提交执行任务失败");
+  } finally {
+    const current = planBinding();
+    if (current && requestGuard.isCurrent(ticket, current)) executing.value = false;
+  }
 }
 
 async function refreshOperationalData() {
+  const ticket = requestGuard.begin("refresh", {});
   try {
-    [runs.value, activities.value, issues.value] = await Promise.all([
+    const [nextRuns, nextActivities, nextIssues] = await Promise.all([
       loadDiscountRuns({ limit: 50 }), loadDiscountActivities({ limit: 50 }), loadDiscountIssues({ limit: 50 }),
     ]);
-  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "刷新执行状态失败"); }
+    if (!requestGuard.isCurrent(ticket, {})) return;
+    [runs.value, activities.value, issues.value] = [nextRuns, nextActivities, nextIssues];
+  } catch (error) {
+    if (requestGuard.isCurrent(ticket, {})) ElMessage.error(error instanceof Error ? error.message : "刷新执行状态失败");
+  }
 }
 
 function startPolling() {
@@ -315,12 +377,15 @@ function startPolling() {
 
 async function scanNow() {
   if (!scopeValid.value || scanning.value) return;
+  const binding = scopeBinding();
+  const ticket = requestGuard.begin("scan", binding);
   scanning.value = true;
   try {
     await requestDiscountScan(country.value, effectiveShopIds.value);
-    ElMessage.success("立即检查已加入系统待办，不会自动确认或写入")
-  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "创建检查待办失败"); }
-  finally { scanning.value = false; }
+    if (requestGuard.isCurrent(ticket, scopeBinding())) ElMessage.success("立即检查已加入系统待办，不会自动确认或写入")
+  } catch (error) {
+    if (requestGuard.isCurrent(ticket, scopeBinding())) ElMessage.error(error instanceof Error ? error.message : "创建检查待办失败");
+  } finally { if (requestGuard.isCurrent(ticket, scopeBinding())) scanning.value = false; }
 }
 
 onMounted(loadDashboard);

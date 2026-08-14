@@ -184,6 +184,42 @@ export interface DiscountScanJob {
   completedAt?: string | null;
 }
 
+export type DiscountRequestLane = "dashboard" | "preview" | "approve" | "execute" | "items" | "refresh" | "scan";
+export interface DiscountRequestBinding { scopeKey?: string; planId?: string; merkleRoot?: string }
+export interface DiscountRequestTicket { lane: DiscountRequestLane; generation: number; bindingKey: string }
+
+function requestBindingKey(binding: DiscountRequestBinding) {
+  return JSON.stringify(Object.fromEntries(Object.entries(binding).sort(([left], [right]) => left.localeCompare(right))));
+}
+
+export class DiscountRequestGuard {
+  private readonly generations = new Map<DiscountRequestLane, number>();
+
+  begin(lane: DiscountRequestLane, binding: DiscountRequestBinding): DiscountRequestTicket {
+    const generation = (this.generations.get(lane) || 0) + 1;
+    this.generations.set(lane, generation);
+    return Object.freeze({ lane, generation, bindingKey: requestBindingKey(binding) });
+  }
+
+  invalidate(lane: DiscountRequestLane) {
+    this.generations.set(lane, (this.generations.get(lane) || 0) + 1);
+  }
+
+  invalidatePlan() {
+    this.invalidate("preview");
+    this.invalidatePlanDependents();
+  }
+
+  invalidatePlanDependents() {
+    for (const lane of ["approve", "execute", "items"] as const) this.invalidate(lane);
+  }
+
+  isCurrent(ticket: DiscountRequestTicket, binding: DiscountRequestBinding) {
+    return this.generations.get(ticket.lane) === ticket.generation
+      && ticket.bindingKey === requestBindingKey(binding);
+  }
+}
+
 export function discountPreviewInputKey(input: CreateDiscountPreviewInput) {
   return JSON.stringify(input);
 }

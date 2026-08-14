@@ -34,6 +34,12 @@ function previewInput(overrides = {}) {
   };
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 test("typed client executes only fixed first-party URLs, methods and exact request bodies", async () => {
   const client = await import(clientUrl.href);
   const preview = { id: "plan-1", country: "TH", state: "PREVIEWED", merkleRoot: "root", policyHash: "policy", itemCount: 1, confirmationText: "确认", summary: {} };
@@ -116,14 +122,83 @@ test("preview input key changes for every request field that can affect scope, h
   for (const variant of variants) assert.notEqual(discountPreviewInputKey(variant), discountPreviewInputKey(base));
 });
 
+test("request guard rejects deferred preview and approval responses after their binding changes", async () => {
+  const { DiscountRequestGuard } = await import(clientUrl.href);
+  const guard = new DiscountRequestGuard();
+  let scopeKey = "scope-a";
+  let activePlan = null;
+
+  const previewResponse = deferred();
+  const previewTicket = guard.begin("preview", { scopeKey });
+  const previewFlow = previewResponse.promise.then((plan) => {
+    if (guard.isCurrent(previewTicket, { scopeKey })) activePlan = plan;
+  });
+  scopeKey = "scope-b";
+  guard.invalidatePlan();
+  previewResponse.resolve({ id: "stale-plan", state: "PREVIEWED" });
+  await previewFlow;
+  assert.equal(activePlan, null);
+
+  activePlan = { id: "plan-b", merkleRoot: "root-b", state: "PREVIEWED" };
+  const approvalResponse = deferred();
+  const approvalBinding = { scopeKey, planId: activePlan.id, merkleRoot: activePlan.merkleRoot };
+  const approvalTicket = guard.begin("approve", approvalBinding);
+  const approvalFlow = approvalResponse.promise.then((plan) => {
+    const current = activePlan && { scopeKey, planId: activePlan.id, merkleRoot: activePlan.merkleRoot };
+    if (current && guard.isCurrent(approvalTicket, current)) activePlan = plan;
+  });
+  activePlan = null;
+  scopeKey = "scope-c";
+  guard.invalidatePlan();
+  approvalResponse.resolve({ id: "plan-b", merkleRoot: "root-b", state: "APPROVED" });
+  await approvalFlow;
+  assert.equal(activePlan, null);
+});
+
+test("request guard invalidates execute and item reads and gives latest refresh sole write ownership", async () => {
+  const { DiscountRequestGuard } = await import(clientUrl.href);
+  const guard = new DiscountRequestGuard();
+  const binding = { scopeKey: "scope-a", planId: "plan-a", merkleRoot: "root-a" };
+  const executeTicket = guard.begin("execute", binding);
+  const itemTicket = guard.begin("items", binding);
+  guard.invalidatePlan();
+  assert.equal(guard.isCurrent(executeTicket, binding), false);
+  assert.equal(guard.isCurrent(itemTicket, binding), false);
+
+  const firstRefresh = guard.begin("refresh", {});
+  const secondRefresh = guard.begin("refresh", {});
+  assert.equal(guard.isCurrent(firstRefresh, {}), false);
+  assert.equal(guard.isCurrent(secondRefresh, {}), true);
+});
+
+test("an accepted replacement preview invalidates old-plan work without invalidating its own request", async () => {
+  const { DiscountRequestGuard } = await import(clientUrl.href);
+  const guard = new DiscountRequestGuard();
+  const scope = { scopeKey: "scope-a" };
+  const oldPlan = { ...scope, planId: "plan-a", merkleRoot: "root-a" };
+  const previewTicket = guard.begin("preview", scope);
+  const approvalTicket = guard.begin("approve", oldPlan);
+  const executeTicket = guard.begin("execute", oldPlan);
+  const itemTicket = guard.begin("items", oldPlan);
+
+  guard.invalidatePlanDependents();
+
+  assert.equal(guard.isCurrent(previewTicket, scope), true);
+  assert.equal(guard.isCurrent(approvalTicket, oldPlan), false);
+  assert.equal(guard.isCurrent(executeTicket, oldPlan), false);
+  assert.equal(guard.isCurrent(itemTicket, oldPlan), false);
+});
+
 test("page uses backend field names, one request fingerprint and accessible fail-closed controls", () => {
   const page = read("frontend/commerce-ops-vue/src/pages/ShopeeDiscountPage.vue");
   const router = read("frontend/commerce-ops-vue/src/router/index.ts");
   const sidebar = read("frontend/commerce-ops-vue/src/components/OpsSidebar.vue");
   assert.match(router, /path: "\/shopee-discount"/);
   assert.match(sidebar, /path: "\/shopee-discount", label: "折扣控价"/);
-  for (const text of ["discountPreviewInputKey", ".name", ".endsAt", ".occurredAt", "输入完整确认语句", "异常与 UNKNOWN 协调", "续期提醒"]) assert.ok(page.includes(text), `missing ${text}`);
+  for (const text of ["discountPreviewInputKey", "DiscountRequestGuard", ".name", ".endsAt", ".occurredAt", "输入完整确认语句", "异常与 UNKNOWN 协调", "续期提醒"]) assert.ok(page.includes(text), `missing ${text}`);
   assert.match(page, /watch\(previewRequestKey, resetPlan\)/);
+  assert.match(page, /requestGuard\.invalidatePlanDependents\(\)/);
+  for (const lane of ["preview", "approve", "execute", "items", "refresh"]) assert.ok(page.includes(`requestGuard.begin(\"${lane}\"`), `missing stale guard for ${lane}`);
   assert.match(page, /:disabled="!canApprove"/);
   assert.match(page, /:disabled="!canExecute"/);
   assert.match(page, /aria-live="polite"/);
