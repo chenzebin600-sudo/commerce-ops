@@ -205,6 +205,31 @@ export interface DiscountPageFlowState {
   confirmationInput: string;
 }
 
+export interface DiscountPreviewAvailabilityInput {
+  status: Pick<DiscountStatus, "enabled" | "warehouseConfigured"> | null;
+  settings: Pick<DiscountSettings, "enabled" | "warehouseConfigured" | "warehouseKeyVerifiedAt"> | null;
+  scopeValid: boolean;
+  renewalStartValid: boolean;
+  hasBatchErrors: boolean;
+  previewing: boolean;
+}
+
+export function discountPreviewAvailability(input: DiscountPreviewAvailabilityInput) {
+  if (!input.status || !input.settings) return { allowed: false, reason: "安全设置尚未加载" };
+  if (!input.status.enabled || !input.settings.enabled) {
+    return { allowed: false, reason: "请先在安全设置中启用模块并点击“保存设置”" };
+  }
+  if (!input.status.warehouseConfigured || !input.settings.warehouseConfigured) {
+    return { allowed: false, reason: "请先填写并保存数仓 Key" };
+  }
+  if (!input.settings.warehouseKeyVerifiedAt) return { allowed: false, reason: "请先验证数仓 Key" };
+  if (!input.scopeValid) return { allowed: false, reason: "请选择国家和至少一家店铺" };
+  if (!input.renewalStartValid) return { allowed: false, reason: "请填写有效的续期开始时间" };
+  if (input.hasBatchErrors) return { allowed: false, reason: "请先处理批量覆盖校验错误" };
+  if (input.previewing) return { allowed: false, reason: "正在生成价格预览" };
+  return { allowed: true, reason: "" };
+}
+
 function requestBindingKey(binding: DiscountRequestBinding) {
   return JSON.stringify(Object.fromEntries(Object.entries(binding).sort(([left], [right]) => left.localeCompare(right))));
 }

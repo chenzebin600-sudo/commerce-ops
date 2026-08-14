@@ -7,7 +7,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   approveDiscountPreview, createDiscountPreview, executeDiscountPreview, loadDiscountActivities,
-  discountPreviewInputKey, DiscountPageFlowController, DiscountRequestGuard,
+  discountPreviewAvailability, discountPreviewInputKey, DiscountPageFlowController, DiscountRequestGuard,
   loadDiscountIssues, loadDiscountPreviewItems, loadDiscountRuns, loadDiscountShops, loadDiscountStatus,
   requestDiscountScan, lookupDiscountOverrides, lookupDiscountOverrideBatch, reconcileDiscountIntent, loadDiscountSettings, saveDiscountSettings, verifyDiscountSettings,
   loadDiscountPreview, loadDiscountUnknownIntents,
@@ -112,7 +112,16 @@ const previewRequest = computed<CreateDiscountPreviewInput | null>(() => {
 const previewRequestKey = computed(() => previewRequest.value
   ? discountPreviewInputKey(previewRequest.value)
   : `INVALID_RENEWAL:${renewalStart.value}`);
-const canPreview = computed(() => scopeValid.value && renewalStartValid.value && !batchErrors.value.length && !previewing.value);
+const previewAvailability = computed(() => discountPreviewAvailability({
+  status: status.value,
+  settings: settings.value,
+  scopeValid: scopeValid.value,
+  renewalStartValid: renewalStartValid.value,
+  hasBatchErrors: Boolean(batchErrors.value.length),
+  previewing: previewing.value,
+}));
+const canPreview = computed(() => previewAvailability.value.allowed);
+const previewBlockedReason = computed(() => previewAvailability.value.reason);
 const canApprove = computed(() => pageFlow.canApprove(Boolean(preview.value?.state === "PREVIEWED" && preview.value.itemCount > 0 && gateOpen.value
   && operatorName.value.trim() && confirmationInput.value === preview.value.confirmationText && !approving.value)));
 const currentRun = computed(() => preview.value ? runs.value.find((run) => run.planId === preview.value?.id) || null : null);
@@ -408,7 +417,11 @@ async function generatePreview() {
     activeTab.value = "preview";
     ElMessage.success("价格预览已生成，尚未执行任何 Shopee 写入");
   } catch (error) {
-    if (requestGuard.isCurrent(ticket, scopeBinding())) errorMessage.value = error instanceof Error ? error.message : "生成预览失败";
+    if (requestGuard.isCurrent(ticket, scopeBinding())) {
+      const message = error instanceof Error ? error.message : "生成预览失败";
+      errorMessage.value = message;
+      ElMessage.error(message);
+    }
   } finally { pageFlow.finishPreview(ticket, scopeBinding().scopeKey); }
 }
 
@@ -652,7 +665,7 @@ onBeforeUnmount(() => {
     </section>
 
     <section class="preview-action" aria-label="价格预览操作">
-      <div><strong>所有价格均按站点最小货币单位向下取整</strong><span>数仓无有效目标价时，使用 Shopee 原价的 1% off；异常变体单独跳过。</span></div>
+      <div><strong>所有价格均按站点最小货币单位向下取整</strong><span>数仓无有效目标价时，使用 Shopee 原价的 1% off；异常变体单独跳过。</span><span v-if="!canPreview" class="preview-action-error">{{ previewBlockedReason }}</span><span v-else-if="errorMessage" class="preview-action-error">{{ errorMessage }}</span></div>
       <el-button type="primary" :icon="SearchCheck" :loading="previewing" :disabled="!canPreview" @click="generatePreview">生成价格预览</el-button>
     </section>
 
@@ -759,7 +772,7 @@ onBeforeUnmount(() => {
 .batch-panel textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }.batch-actions { justify-content: flex-end; gap: 8px; margin-top: 9px; }
 .file-button { display: inline-flex; align-items: center; min-height: 30px; padding: 0 12px; border: 1px solid var(--ops-border); border-radius: 5px; color: var(--ops-text-secondary); background: var(--ops-surface); cursor: pointer; font: inherit; font-size: 12px; }.file-button:hover, .file-button:focus-visible { color: var(--ops-primary); border-color: var(--ops-primary); outline: 2px solid color-mix(in srgb, var(--ops-primary) 24%, transparent); outline-offset: 2px; }.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .validation-errors { display: grid; gap: 3px; margin-top: 9px; padding: 9px 11px; border-radius: 7px; color: #991b1b; background: #fef2f2; font-size: 11px; }
-.preview-action { justify-content: space-between; gap: 18px; padding: 13px 15px; }.preview-action > div { display: grid; gap: 3px; }.preview-action strong { font-size: 12px; }.preview-action span { color: var(--ops-text-secondary); font-size: 11px; }
+.preview-action { justify-content: space-between; gap: 18px; padding: 13px 15px; }.preview-action > div { display: grid; gap: 3px; }.preview-action strong { font-size: 12px; }.preview-action span { color: var(--ops-text-secondary); font-size: 11px; }.preview-action .preview-action-error { color: var(--el-color-danger); font-weight: 600; }
 .workbench { padding: 0 14px 14px; overflow: hidden; }.workbench :deep(.el-tabs__header) { margin-bottom: 13px; }.tab-label { gap: 6px; }
 .preview-content { display: grid; gap: 13px; }.metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }.metric-grid article { display: grid; gap: 4px; padding: 12px; border-left: 3px solid var(--ops-primary); border-radius: 7px; background: var(--ops-surface-muted); }.metric-grid article.success { border-color: var(--ops-success); }.metric-grid article.warning { border-color: var(--ops-warning); }.metric-grid span { color: var(--ops-text-secondary); font-size: 11px; }.metric-grid strong { font-size: 21px; font-variant-numeric: tabular-nums; }
 .discount-table { --el-table-header-bg-color: var(--ops-surface-muted); --el-table-border-color: var(--ops-border-light); }.discount-table :deep(th.el-table__cell) { color: var(--ops-text-secondary); font-size: 11px; }.discount-table :deep(td.el-table__cell) { font-size: 12px; }.stack { display: grid; gap: 2px; }.stack small, .muted-text { color: var(--ops-text-muted); font-size: 10px; }.target-price { color: var(--ops-primary); font-variant-numeric: tabular-nums; }.danger-text { color: var(--ops-danger); }.evidence { display: block; overflow: hidden; color: var(--ops-text-secondary); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }

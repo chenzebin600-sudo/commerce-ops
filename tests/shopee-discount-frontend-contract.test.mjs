@@ -349,3 +349,29 @@ test("CSV data-row cap is exactly 1000 with or without a header", () => {
   assert.match(page, /if \(dataRowCount > 1000\)/);
   assert.doesNotMatch(page, /lines\.length > 1001/);
 });
+
+test("price preview availability is fail-closed and explains the blocking setting", async () => {
+  const { discountPreviewAvailability } = await import(clientUrl.href);
+  const ready = {
+    status: { enabled: true, warehouseConfigured: true },
+    settings: { enabled: true, warehouseConfigured: true, warehouseKeyVerifiedAt: "2026-08-14T08:41:05.312Z" },
+    scopeValid: true,
+    renewalStartValid: true,
+    hasBatchErrors: false,
+    previewing: false,
+  };
+
+  assert.deepEqual(discountPreviewAvailability({ ...ready, status: { ...ready.status, enabled: false } }), {
+    allowed: false,
+    reason: "请先在安全设置中启用模块并点击“保存设置”",
+  });
+  assert.deepEqual(discountPreviewAvailability({ ...ready, settings: { ...ready.settings, warehouseKeyVerifiedAt: null } }), {
+    allowed: false,
+    reason: "请先验证数仓 Key",
+  });
+  assert.deepEqual(discountPreviewAvailability(ready), { allowed: true, reason: "" });
+
+  const page = read("frontend/commerce-ops-vue/src/pages/ShopeeDiscountPage.vue");
+  for (const marker of ["discountPreviewAvailability", "previewBlockedReason", "preview-action-error", "ElMessage.error(message)"])
+    assert.ok(page.includes(marker), `missing visible preview failure feedback: ${marker}`);
+});
